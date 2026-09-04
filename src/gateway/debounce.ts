@@ -1,21 +1,28 @@
 /**
- * debounce.ts — 延迟聚合回复(2026-09-05 新增, 与"群冷却"并行的另一套机制)
+ * debounce.ts — 延迟聚合回复(2026-09-05 新增; 与"群冷却"融合的终版)
  *
- * 要解决的问题: 用户连发 N 句, AI 只回第一句。
- * 机制:
- *  - 输入: 已经冷却中间件判定"本次可派发"的消息(@ / 私聊 / 冷却外群普通消息)。
- *  - 窗口: 这些消息不立即下发, 进 per-peer 窗口(peerKey = group:<groupOpenid> | c2c:<senderId>)。
- *  - 触发: 以"最近说话者"为基准 —— 有新消息就重置计时器; 静默 X 秒 或 窗口攒满 Y 条 → flush。
- *  - flush: 仿 scheduler fireTask —— 取窗口内"最后一条被@的消息"(窗口含@时; 它才是请求回复的那条,
- *           之后的补充消息留在历史里一起打包), 否则取最后一条真实消息, 直连 handleInbound 绕过中间件链;
- *           state 置 batchDispatch / mention + 现拉群历史 → 下游 includeHistory 把窗口期全部消息
- *           一次打包喂 AI 综合回复(不打假 (@you))。
- *  - 私聊: mediaHistoryBuffer 只管 group, 私聊消息没有历史缓冲 → 窗口自缓冲文本,
- *           flush 时按序拼接 content + 合并全部 attachments 成一条合成消息直连(附件/语音 ASR 走 handleInbound 原有组装)。
- *  - 斜杠命令(以 / 开头)不聚合直放行: 保 /approve /bot-stop 等命令的即时性。
- *  - 群消息进窗口时已被链第4步 mediaHistoryBuffer 记录(在 debounce 之前), 吞消息不丢历史。
+ * 要解决的问题: 用户连发 N 句, AI 只回第一句 / 上下文顺序倒置。
  *
- * 配置: config.behavior.debounce { enabled, silenceSec, maxMsgs, mentionDelayed }, 每次现读(live 热更)。
+ * 链路位置: 插在群冷却中间件**之前**(middleware-setup 第6.6步)。所有群消息(普通/@)与私聊
+ * 先聚合进 per-peer 窗口(peerKey = group:<groupOpenid> | c2c:<senderId>), 冷却中间件收不到被吞的消息。
+ *
+ * 窗口/触发: 有新消息(按 QQ 服务器时间戳更新)就重置计时; 静默 X 秒 或 攒满 Y 条 → 尝试派发。
+ *
+ * 派发判定(与群冷却融合):
+ *  - 窗口含 @: @ 无视冷却, 随时整批派发(只多等 debounce 静默)。
+ *  - 群普通(无@): 距上次普通派发不足 freeIntervalSec → 窗口保留继续攒, 冷却结束再整批
+ *    按服务器时间序一次综合回(两次"批派发"仍 ≥60s, 防刷屏语义保留; 冷却是 60s 级的、聚合是 3s 级的, 不再打架)。
+ *  - 私聊: 无冷却, 直接派发。
+ *
+ * 派发内容(防倒序): 以 store(mediaHistoryBuffer 记录的全量, 含被吞消息)为权威,
+ * 与窗口合并去重后按服务器时间戳升序: current = 时间序最后一条; 更早的 @ 消息在 history 里补
+ * " (@you)" 标注并置 mustReply(inbound 注入"这次要开口回复"提示, 避免"没@不吃瓜"误判);
+ * 其余按序进 [Chat history]。私聊无 store → 窗口文本按序拼接+合并附件成合成消息直连。
+ *
+ * 斜杠命令(以 / 开头)不聚合直放行: 保 /approve /bot-stop 等命令的即时性。
+ * debounce.enabled=false 或 @ 秒回(mentionDelayed=false) → 直放行, 交回下方群冷却中间件与既有链路。
+ *
+ * 配置: config.behavior.debounce { enabled, silenceSec, maxMsgs, mentionDelayed } + behavior.freeIntervalSec, 每次现读(live 热更)。
  * ⚠️ 本地手改功能: 同步纪律同 middleware-setup.ts 内群冷却中间件(改完保持 src 与部署 dist 一致)。
  */
 import type { Middleware, MiddlewareContext, HistoryEntry } from '@tencent-connect/qqbot-nodejs';
@@ -63,13 +70,17 @@ function num(v: unknown, d: number): number {
 }
 
 /**
- * 构造延迟聚合中间件。config 为 live 对象引用(behavior.debounce 每次现读, Web 设置热更新即时生效)。
- * 插在群冷却中间件之后、slash 之前。
+ * 构造延迟聚合中间件(与群冷却融合, 2026-09-05 终版)。
+ * 插在群冷却中间件**之前**: 所有群消息(普通/@)与私聊先聚合进 per-peer 窗口;
+ * flush 时群普通消息仍受 60s 冷却约束(未过则窗口保留等冷却结束整批按时间序派发),
+ * @ 消息无视冷却随时派发。
+ * cooldownAt: 与 middleware-setup 群冷却中间件共享的 lastDispatchAt(groupOpenid -> 上次普通派发 ms)。
  */
 export function debounceLayer(
   config: ImQQBotConfig,
   manager: SessionManager,
   logger: Logger,
+  cooldownAt: Map<string, number>,
 ): Middleware {
   const windows = new Map<string, DebounceWindow>();
 
@@ -93,8 +104,42 @@ export function debounceLayer(
     }
   }
 
-  /** 派发一批: 窗口内全部消息 → AI 一次综合回复 */
+  /** 尝试派发一批(窗口内全部消息 → AI 一次综合回复)。
+   *  群普通(无@)受 60s 冷却约束: 未过冷却 → 窗口保留、重排计时器, 冷却结束再整批按时间序派发。
+   *  @ 消息(窗口含@)/私聊: 随时派发。 */
   async function flush(key: string, w: DebounceWindow): Promise<void> {
+    const pre = w.entries;
+    if (pre.length === 0) {
+      clearTimer(w);
+      windows.delete(key);
+      return;
+    }
+    const f0 = pre[0];
+    if (!f0) {
+      clearTimer(w);
+      windows.delete(key);
+      return;
+    }
+    const fKind = String(f0.msg.kind ?? '');
+    const hasMention = pre.some(e => e.wasMentioned);
+    if (fKind === 'group' && !hasMention) {
+      // 群普通消息: 距上次普通派发不足 freeIntervalSec → 冷却中, 窗口保留继续攒
+      const gid = String(f0.msg.groupOpenid ?? f0.msg.senderId ?? '');
+      const freeSec = Math.max(0, num((config.behavior as { freeIntervalSec?: unknown })?.freeIntervalSec, 0));
+      if (gid && freeSec > 0) {
+        const nowMs = Date.now();
+        const lastAt = cooldownAt.get(gid) ?? 0;
+        const passedMs = nowMs - lastAt;
+        if (passedMs < freeSec * 1000) {
+          clearTimer(w);
+          const retryMs = Math.max(500, freeSec * 1000 - passedMs);
+          w.timer = setTimeout(() => void flush(key, w), retryMs);
+          w.timer.unref?.();
+          dbg(`flush 冷却中 defer ${Math.round(retryMs / 1000)}s key=${key} n=${pre.length}`);
+          return; // 窗口保留, 不派发
+        }
+      }
+    }
     clearTimer(w);
     windows.delete(key);
     const entries = w.entries;
@@ -103,20 +148,11 @@ export function debounceLayer(
     // QQ 官方推送可能乱序: 派发前统一按服务器时间戳升序排(旧→新)
     entries.sort((a, b) => a.ts - b.ts);
 
-    // 当前触发消息: 窗口含被@的消息时用"最后一条被@的"(它才是请求回复的; 之后的补充在历史里),
-    // 否则用窗口最后一条真实消息。
-    let triggerIdx = entries.length - 1;
-    for (let i = entries.length - 1; i >= 0; i--) {
-      const e = entries[i];
-      if (e && e.wasMentioned) {
-        triggerIdx = i;
-        break;
-      }
-    }
-    const trigger = entries[triggerIdx];
+    // 触发消息形状(仅取 kind/gid 参考; 真正的 current 在群分支按时间序从 merged 里取)
+    const trigger = entries[entries.length - 1];
     if (!trigger) return;
     const kind = String(trigger.msg.kind ?? '');
-    dbg(`flush key=${key} n=${entries.length} sorted-order=[${entries.map(e => JSON.stringify(String(e.msg.content ?? '').slice(0, 24))).join(',')}] trigger=${JSON.stringify(String(trigger.msg.content ?? '').slice(0, 24))}`);
+    dbg(`flush key=${key} n=${entries.length} sorted-order=[${entries.map(e => JSON.stringify(String(e.msg.content ?? '').slice(0, 24))).join(',')}] hasMention=${hasMention}`);
 
     try {
       if (kind === 'group') {
@@ -161,27 +197,25 @@ export function debounceLayer(
         }
         merged.sort((a, b) => a.ts - b.ts);
 
-        // current = 窗口内最后一条被@的消息(它才是请求回复的); 否则 = 时间序最后一条
-        let cur: MergedItem | undefined;
-        for (let i = merged.length - 1; i >= 0; i--) {
-          const m = merged[i];
-          if (m && m.wasMentioned) {
-            cur = m;
-            break;
-          }
-        }
-        if (!cur) cur = merged[merged.length - 1];
+        // C 方案: current 恒取时间序最后一条(纯时间序, 上下文永不倒置)。
+        // 窗口内含更早的 @ 消息时, 把它在 history 里补 " (@you)" 标注,
+        // 并置 mustReply 让 inbound 注入"这次要开口回复"的系统提示。
+        const cur = merged[merged.length - 1];
         if (!cur) return;
 
         const hist: HistoryEntry[] = merged
           .filter(m => m.messageId !== cur.messageId)
-          .map(m => ({
-            senderId: m.senderId ?? '',
-            senderName: m.senderName,
-            content: m.content ?? String(m.msg?.content ?? ''),
-            timestamp: m.ts,
-            messageId: m.messageId,
-          }));
+          .map(m => {
+            const baseContent = m.content ?? String(m.msg?.content ?? '');
+            return {
+              senderId: m.senderId ?? '',
+              senderName: m.senderName,
+              // 窗口内曾 @ 机器人、但时间上早于 current 的消息: 在历史里补 (@you) 标注, AI 不会漏掉这次点名
+              content: m.wasMentioned ? `${baseContent} (@you)` : baseContent,
+              timestamp: m.ts,
+              messageId: m.messageId,
+            };
+          });
 
         // current 消息: 窗口条目有完整 msg; store 来源的只有 HistoryEntry 字段,
         // 从群窗口消息继承 kind/groupOpenid/attachments 等再补齐本人字段。
@@ -195,11 +229,15 @@ export function debounceLayer(
         };
         const state: Record<string, unknown> = { history: hist };
         if (cur.wasMentioned) {
+          // current 本身就是 @ 消息 → 走正常 mention, AI 见 (@you)
           state.mention = { wasMentioned: true };
         } else {
           state.batchDispatch = true;
+          if (hasMention) state.mustReply = true; // @ 在 history 里 → 强制开口
         }
-        dbg(`  merged-order=[${merged.map(m => JSON.stringify(String(m.content ?? m.msg?.content ?? '').slice(0, 16))).join(',')}] cur=${JSON.stringify(String(cur.content ?? cur.msg?.content ?? '').slice(0, 16))}`);
+        dbg(`  merged-order=[${merged.map(m => JSON.stringify(String(m.content ?? m.msg?.content ?? '').slice(0, 16))).join(',')}] cur=${JSON.stringify(String(cur.content ?? cur.msg?.content ?? '').slice(0, 16))} hasMention=${hasMention}`);
+        // 群普通(无@)批派发 → 记冷却(与群冷却中间件共享 lastDispatchAt, 防刷屏语义保留)
+        if (!hasMention) cooldownAt.set(gid, Date.now());
         logger.info(`[debounce] flush(group ${gid}) 窗口${entries.length}条/store${storeHist.length}条 → handleInbound`);
         await handleInbound(curMsg, manager, config, logger, state);
       } else {
@@ -258,6 +296,10 @@ export function debounceLayer(
     if (!w) {
       w = { entries: [], timer: null };
       windows.set(key, w);
+    }
+    // 防御: 窗口保留等冷却期间可能持续进消息 → 超上限丢最老(只留最近 100 条)
+    if (w.entries.length >= 100) {
+      w.entries.splice(0, w.entries.length - 80);
     }
     const ts = msgTs(msg);
     const arrivedAt = Date.now();

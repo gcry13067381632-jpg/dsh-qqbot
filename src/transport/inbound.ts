@@ -58,6 +58,11 @@ interface MiddlewareState {
   mention?: MentionState;
   /** 冷却派发标记：群内非@消息在冷却结束后被派发时由冷却中间件置 true（不打假 @you） */
   batchDispatch?: boolean;
+  /**
+   * 延迟聚合(delay-debounce)标记: 窗口内存在 @ 了机器人、但时间序上更早的消息(current 取最新)。
+   * 置 true 时在 agentBody 注入"有人@了你, 这次要开口回复"的系统提示(弥补 current 不带 (@you) 导致的"没@不吃瓜"误判)。
+   */
+  mustReply?: boolean;
   processedAttachments?: ProcessedAttachment[];
   downloadedFiles?: DownloadedFile[];
   [key: string]: unknown;
@@ -191,7 +196,13 @@ function assembleAgentBody(
   const dynamicCtx = buildDynamicCtx(msg, state, downloaded);
 
   const base = dynamicCtx ? `${dynamicCtx}${userMessage}` : userMessage;
-  const agentBody = buildAgentBody(base, state.history, isGroup, wasMentioned, batchDispatch);
+  let agentBody = buildAgentBody(base, state.history, isGroup, wasMentioned, batchDispatch);
+
+  // 延迟聚合: current 取时间最新(可能非@), 但窗口内更早有群友 @ 了机器人 →
+  // 显式提示这次要开口回复(弥补 current 不带 (@you) 时"没@不吃瓜"守则的误判)。
+  if (isGroup && state.mustReply === true && !wasMentioned) {
+    agentBody = `[系统提示] 下面对话中有群友 @ 了你(历史里那条带 (@you) 标注), 这次请开口回复他, 不要因为"没@不插嘴"的守则而沉默。\n\n${agentBody}`;
+  }
 
   return agentBody;
 }

@@ -45,6 +45,8 @@ export function setupMiddlewares(
   //     ≠ 官方推送顺序(即真实发送序)。这里把每条消息的整条下游链排队串行:
   //     前一条消息处理完才放行下一条, 恢复官方帧序。零 SDK 改动, 只作用于本 bot 实例。
   //     ⚠️ 本地手改功能, 同步纪律同群冷却中间件。
+  // ── 群普通消息"上次派发时刻"(冷却中间件与 debounce 融合层共享) ──
+  const lastDispatchAt = new Map<string, number>(); // groupOpenid -> 上次普通派发时间(ms)
   let inboundTail: Promise<void> = Promise.resolve();
   bot.use(async (_ctx: MiddlewareContext, next: () => Promise<void>) => {
     const run = inboundTail.then(() => next());
@@ -110,11 +112,20 @@ export function setupMiddlewares(
     parseFaceTags: true,
   }));
 
+  // 6.6 延迟聚合(debounce)融合层(本地手改, 2026-09-05)：在群冷却**之前**拦截。
+  //     消息(群普通/@ + 私聊)先进 per-peer 窗口攒着(不进冷却中间件), 最近说话者停口 X 秒
+  //     或攒满 Y 条 → 尝试派发一次: 群普通受 60s 冷却约束(未过则窗口保留继续等, 到点整批
+  //     按服务器时间序综合回, 不再出现"current 早于 history"的倒序); @ 消息无视冷却随时派发。
+  //     debounce.enabled=false 或 @ 秒回(mentionDelayed=false)/斜杠命令 → 直放行, 交下方群冷却中间件
+  //     与既有链路处理(原 60s 冷却语义完整保留)。配置 config.behavior.debounce(live 热更)。
+  //     ⚠️ 本地手改功能, 同步纪律同下方群冷却中间件。
+  bot.use(debounceLayer(config, manager, logger, lastDispatchAt));
+
   // 7. 回复冷却调度(配置化, 替代写死 REPLY_COOLDOWN_MS=60000)：照常接收并记录所有群消息
   //    (mediaHistoryBuffer 已在上方记录), 但每群按 config.behavior 间隔才真正派发一次给 AI。
+  //    注: debounce 开启时群消息被其拦截, 此中间件仅兜底 debounce 直放行的消息(命令/@秒回/功能关闭)。
   //    ⚠️ 本地手改功能（曾被重编译冲掉），改完务必保持 src 与部署 dist 同步。
   //    ⚠️ 每次调用现读 config.behavior(勿外层解构)——支持 Web settings live 热更新。
-  const lastDispatchAt = new Map<string, number>(); // groupOpenid -> 上次派发时间(ms)
   bot.use(async (ctx: MiddlewareContext, next: () => Promise<void>) => {
     // 私聊/无群号：不纳入调度，直接放行
     if (ctx.message.kind !== 'group' || !ctx.message.groupOpenid) {
@@ -140,13 +151,6 @@ export function setupMiddlewares(
     ctx.state.batchDispatch = true;
     return next();
   });
-
-  // 7.5 延迟聚合(debounce, 独立于群冷却的另一套机制)：
-  //     已通过冷却判定"可派发"的消息(@ / 私聊 / 冷却外群普通)先进 per-peer 窗口,
-  //     最近说话者停口 X 秒 或 攒满 Y 条 → flush 直连 handleInbound, 窗口期历史一次打包综合回。
-  //     配置 config.behavior.debounce(live 热更); 斜杠命令自动跳过。详见 src/gateway/debounce.ts。
-  //     ⚠️ 本地手改功能, 同步纪律同上方群冷却中间件。
-  bot.use(debounceLayer(config, manager, logger));
 
   // 8. 斜杠命令（在 concurrencyGuard 之前，命令匹配后不排队直接响应）
   const slash = slashCommand({
