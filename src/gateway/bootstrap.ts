@@ -21,7 +21,7 @@ import { initStickerGate, bindStickerGates, flushStickerGate, getStickerGate, St
 import { startScheduler } from '../features/scheduler.js';
 import { configureScheduleStore, getScheduleStore } from '../features/schedule-store.js';
 import { setChannelBridge } from '../channel-tools.js';
-import { QqApprovalController } from '../features/qq-approval.js';
+import { QqApprovalController, setApprovalDispatch, makeApprovalListener } from '../features/qq-approval.js';
 
 export async function bootstrapGateway(
   ctx: Context,
@@ -222,19 +222,20 @@ export async function bootstrapGateway(
   // 全局桥: 通道工具 execute 的兜底解析(不依赖 setup/provide, 防重启后 setup 未跑)
   setChannelBridge({ manager, sender });
 
-  // ── QQ 远程审批: 订阅宿主 approval/request, 把权限申请发到发起者所在 QQ 会话 ──
-  // 宿主标准事件(官方 dsh-acp / Web 审批弹窗同款); 常挂订阅, handler 每次现读 live
-  // config.enableApprovals / config.approvalTimeoutMs → Web 设置面板可热开关, 无需重启。
+  // ── QQ 远程审批: ACP 模式接入(专家考古实证, 见 qq-approval.ts 头注) ──
+  // ①dispatch: ownership(只处理本 bot 的 agent)+ enableApprovals 闸门;
+  // ②监听: 注册在插件 apply ctx, 用 {prepend:true} 插到链首(抢在宿主 GUI 转发器 dsh-api-remotes 之前)。
   approvalController = new QqApprovalController(manager, sender, logger, () => config.approvalTimeoutMs);
-  (ctx as unknown as {
-    on(
-      event: 'approval/request',
-      handler: (request: unknown, next: () => Promise<string>) => Promise<string>,
-    ): void;
-  }).on('approval/request', ((request: unknown, next: () => Promise<string>) => {
+  setApprovalDispatch(((request: unknown, next: () => Promise<string>) => {
     if (!config.enableApprovals) return next();
+    const reqAgent = (request as { agent?: unknown }).agent;
+    if (!reqAgent || !manager.findByAgent(reqAgent as never)) return next(); // 非本 bot agent → 放行给 GUI/ACP
     return approvalController!.request(request as never, next as never);
   }) as never);
+  (ctx as unknown as {
+    on(event: string, handler: (...args: unknown[]) => unknown, config?: { prepend?: boolean }): void;
+  }).on('approval/request', makeApprovalListener() as never, { prepend: true });
+  console.log('[qq-approval] ACP-mode listener registered (apply-ctx + prepend)');
   logger.info(`[im-qqbot] QQ 远程审批接线就绪(${config.enableApprovals ? '已启用' : '默认关闭, Web 设置可热开'})`);
 
   const outboundHandler = createOutboundHandler(manager, sender, config, logger, toolsRegistry);

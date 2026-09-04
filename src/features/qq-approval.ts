@@ -181,3 +181,34 @@ export class QqApprovalController {
     for (const code of [...this.pending.keys()]) this.settle(code, 'cancelled');
   }
 }
+
+// ─────────────────────────────────────────────────────────────
+// 审批事件接入(宿主机制考古结论, 2026-09-05 专家 agent 源码实证):
+//   ApprovalService.decide() 用 ctx.waterfall(scopeTarget(agent), 'approval/request', …) 派发
+//   (dsh-user-approval/lib/index.js:179)。waterfall 为【严格注册序、单赢家】:
+//   先注册的监听先被调用, 返回非 next() 值即终结链路。
+//   Web GUI 转发器 dsh-api-remotes 在宿主引导期(早于一切 profile 插件)注册
+//   (dsh-api-remotes/lib/index.js:98,111-120), 浏览器连着且 agent 有 GUI 会话时
+//   它挂起请求不 next() → 内层任何监听都轮不到(这就是"插件收不到审批"的根因)。
+//   官方 ACP 模式(dsh-acp/lib/index.js:1118-1141)= 插件 apply ctx 上 ctx.on,
+//   handler 先做 ownership 判断(不是自己的 agent → 立即 next())。
+//   要抢在 GUI 前: 注册时传 { prepend: true } 把本监听插到链首。
+// ─────────────────────────────────────────────────────────────
+
+type ApprovalDispatch = (req: ApprovalRequestLike, next: () => Promise<ApprovalOutcome>) => Promise<ApprovalOutcome>;
+
+let dispatch: ApprovalDispatch | undefined;
+
+/** bootstrap 注册实际处理器(内含开关闸门 + ownership 由调用方处理); 传 undefined 可卸载 */
+export function setApprovalDispatch(fn: ApprovalDispatch | undefined): void {
+  dispatch = fn;
+}
+
+/** 生成挂在插件 apply ctx 的审批监听(ACP 模式): 非本 bot agent / 未启用 → next() 快速放行 */
+export function makeApprovalListener(): (req: unknown, next: () => Promise<string>) => Promise<string> {
+  return ((req: unknown, next: () => Promise<string>) => {
+    console.log('[qq-approval] ctx listener fired');
+    if (!dispatch) return next();
+    return dispatch(req as never, next as never);
+  }) as (req: unknown, next: () => Promise<string>) => Promise<string>;
+}
