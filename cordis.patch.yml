@@ -1,0 +1,36 @@
+# dsh-im-qqbot bundle patch
+#
+# 当本包通过 `dsh plugin --profile <name> add @tencent-connect/dsh-qqbot` 安装后，
+# dsh 启动时自动加载此 patch。
+#
+# 环境变量：
+#   QQBOT_APPID  - QQ Bot AppID（必填）
+#   QQBOT_SECRET - QQ Bot AppSecret（必填）
+#
+# 叠加顺序：dsh-base → 本 bundle patch → profile cordis.patch.yml → --patch
+
+# ── 插入 im-qqbot 插件行 ──
+- insert:
+    - id: im-qqbot
+      name: '@zaofan/dsh-qqbot'
+      config:
+        appId: __FROM_ENV__
+        appSecret: __FROM_ENV__
+        # provider/model 留空：从宿主默认模型路由继承
+        # 用户可通过 /model 命令在聊天中切换
+        requireMention: true
+        textChunkLimit: 4500
+        sessionIdleTimeout: 1800000
+        maxQueue: 20
+        processingTimeoutMs: 120000
+        historyLimit: 10
+        access:
+          c2cMode: open
+          c2cAllow: []
+          groupMode: open
+          groupAllow: []
+        debug: false
+
+# ── 设置面板(单包自含): host 桥由 im-qqbot 插件 apply 内动态装载(settings-host.js,
+#    仅 web profile 有 settings/webServer 服务时生效); 设置页 client 经 dsh.client
+#    (exports ./client) 自动出现在 dsh Web 设置里 —— 无需再单独安装 dsh-qqbot-settings。

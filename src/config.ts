@@ -1,0 +1,329 @@
+/**
+ * dsh-im-qqbot 插件配置 Schema
+ *
+ * 配置入口: profile 的 cordis.patch.yml → im-qqbot config(改动热重载, 无需重启)。
+ * Web 可视化设置: 注册 im-qqbot settings 命名空间(可编辑项 = EditableConfigSchema:
+ * behavior / sticker.gates / injectRules), 用户层存 ~/.dsh/settings.yaml, live 生效。
+ * ⚠️ 本地手改功能(配置化改造, 2026-09-03)。
+ */
+import Schema from '@deepseek-ai/schemastery';
+
+export interface AccessControlConfig {
+  /** C2C 访问模式 */
+  c2cMode: 'open' | 'allowlist' | 'disabled';
+  /** C2C 白名单（user openid） */
+  c2cAllow: string[];
+  /** 群聊访问模式 */
+  groupMode: 'open' | 'allowlist' | 'disabled';
+  /** 群聊白名单（group openid） */
+  groupAllow: string[];
+}
+
+/** 回复调度(冷却)配置 */
+export interface BehaviorConfig {
+  /** 群普通(未@)消息回复最小间隔(秒)。0=不限制; 默认60 */
+  freeIntervalSec: number;
+  /** 被@消息回复最小间隔(秒)。0=@总是立即回 */
+  mentionIntervalSec: number;
+  /** 私聊(C2C)回复最小间隔(秒)。0=不限制 */
+  directIntervalSec: number;
+}
+
+/** 表情包主动发送闸门(默认不限制; 总开关 enabled=false 一票关闭) */
+export interface StickerGatesConfig {
+  enabled: boolean;
+  perTurnMax: number;
+  perWindowSec: number;
+  maxPerWindow: number;
+  dailyBudgetPerGroup: number;
+  dupTTLHours: number;
+  activityWindowSec: number;
+  activityMinMsgs: number;
+  bannedGroups: string[];
+  libRoots: string[];
+}
+
+export interface StickerConfig {
+  /** 是否自动收藏群图片（默认开，只存本地不外发） */
+  collectEnabled: boolean;
+  /** 图库数据根目录（默认 {agent cwd}/表情包） */
+  dataDir: string;
+  /** 主动发送闸门(默认不限制) */
+  gates: StickerGatesConfig;
+  /** 新图自动打标总开关 */
+  autoTagEnabled: boolean;
+  /** 视觉CLI命令模板(含{img}占位); 空=自动探测本机视觉CLI(modlens等); 探测不到则不自动打标 */
+  visionCli: string;
+}
+
+/** 条件注入规则 */
+export interface InjectRuleConfig {
+  id: string;
+  name?: string;
+  enabled: boolean;
+  conditions: {
+    hasImage: boolean;
+    hasLink: boolean;
+    contentRegex: string;
+    contentKeywords: string[];
+    matchScope: 'any' | 'all';
+  };
+  prompt: string;
+}
+
+/** 定时唤醒时刻任务(M3): 一条时刻记录, 挂在某个目标(群/人)下面 */
+export interface ScheduledWakeTask {
+  id: string;
+  /** 每天触发时刻, 24h 本地时区 "HH:MM" */
+  time: string;
+  enabled: boolean;
+  /** 可选: 指定这次想让她聊的方向(空=自由发挥) */
+  prompt?: string;
+}
+
+/** 定时唤醒目标(M3): 一个群/一个人, 号码只填一次, 下面挂多条时刻任务(分组) */
+export interface ScheduleTargetConfig {
+  id: string;
+  /** 可选: 显示名/备注(帮认这个群/人) */
+  name?: string;
+  /** 目标会话: group=群(group_openid) / c2c=私聊(用户 openid) */
+  scope: 'group' | 'c2c';
+  targetId: string;
+  tasks: ScheduledWakeTask[];
+}
+
+export interface ScheduleConfig {
+  targets: ScheduleTargetConfig[];
+}
+
+/** Web 设置可编辑子集(不含 appId/appSecret 等敏感/底层字段) */
+export interface EditableConfig {
+  behavior: BehaviorConfig;
+  sticker: {
+    gates: StickerGatesConfig;
+    /** 新图后台自动识图打标(消耗视觉额度; 默认关, 开=后台自动) */
+    autoTagEnabled?: boolean;
+    /** 视觉引擎命令模板(留空自动探测) */
+    visionCli?: string;
+  };
+  injectRules: InjectRuleConfig[];
+  /** 群聊常驻守则(默认含表情包礼仪; QQ 通道级注入, 跨 preset 不碰 persona) */
+  groupPrompt?: string;
+  /** 定时唤醒任务(M3) */
+  schedule: ScheduleConfig;
+}
+
+/**
+ * 群聊默认常驻守则(表情包礼仪, P2 品味层)。
+ * 由 qqbot 通道注入 agentBody(scope=group 时), 所有走 QQ 的 preset 通用, 不修改任何 persona。
+ */
+export const DEFAULT_GROUP_PROMPT = [
+  '【表情包礼仪】你有一座本地表情包库(群友存的图,带标签)。想用表情包回应时先调 list_stickers 搜库,命中后再用 send_media 发出,别发没把握的图。',
+  '只在群里正热闹、情绪正浓时,才在回复末尾附 0~1 张:满屏哈哈/笑死(爆笑)、大家"确实/我也是"(共鸣)、有人抛梗你能接住(接梗)、有人当面夸你(被夸)、轻度吐槽可以接治愈/滑稽图。',
+  '绝不发:冷场没人接话、正事/技术问答/找资源、吵架互怼中、对方难过或聊严肃事、私聊。',
+  '出手前自检,缺一不发:①库里有 9 成贴切的图;②发出来群友会心一笑;③这轮没发过、今天这群没刷过图。',
+  '把图删掉话照样完整;一次最多一张;发离谱/冒犯/色气/羞辱人的图=人设崩塌,永远不许。',
+].join('\n');
+
+// ── 共享字段子 schema(主 ConfigSchema 与 EditableConfigSchema 复用) ──
+
+const behaviorSchema = Schema.object({
+  freeIntervalSec: Schema.number().min(0).default(60).description('群普通消息回复间隔(秒),0=不限制'),
+  mentionIntervalSec: Schema.number().min(0).default(0).description('@bot回复间隔(秒),0=立即回'),
+  directIntervalSec: Schema.number().min(0).default(0).description('私聊回复间隔(秒),0=不限制'),
+}).default({
+  freeIntervalSec: 60,
+  mentionIntervalSec: 0,
+  directIntervalSec: 0,
+}).description('回复调度');
+
+const stickerGatesSchema = Schema.object({
+  enabled: Schema.boolean().default(false).description('闸门总开关,false=不限制'),
+  perTurnMax: Schema.number().min(0).default(0).description('每轮最多发送张数,0=不限'),
+  perWindowSec: Schema.number().min(0).default(600).description('频率窗口(秒)'),
+  maxPerWindow: Schema.number().min(0).default(0).description('每窗口每群最多张数,0=不限'),
+  dailyBudgetPerGroup: Schema.number().min(0).default(0).description('每群每日预算,0=不限'),
+  dupTTLHours: Schema.number().min(0).default(0).description('同图去重(小时),0=关'),
+  activityWindowSec: Schema.number().min(0).default(3600).description('活性窗口(秒)'),
+  activityMinMsgs: Schema.number().min(0).default(0).description('活性窗口消息下限,0=不要求'),
+  bannedGroups: Schema.array(Schema.string()).default([]).description('禁发群group_openid'),
+  libRoots: Schema.array(Schema.string()).default([]).description('表情包路径白名单(追加)'),
+}).default({
+  enabled: false,
+  perTurnMax: 0,
+  perWindowSec: 600,
+  maxPerWindow: 0,
+  dailyBudgetPerGroup: 0,
+  dupTTLHours: 0,
+  activityWindowSec: 3600,
+  activityMinMsgs: 0,
+  bannedGroups: [],
+  libRoots: [],
+}).description('表情包主动发送闸门(默认不限制)');
+
+const injectRuleItemSchema = Schema.object({
+  id: Schema.string().required().description('规则ID'),
+  name: Schema.string().description('规则名'),
+  enabled: Schema.boolean().default(true).description('开关'),
+  conditions: Schema.object({
+    hasImage: Schema.boolean().default(false).description('消息含图片'),
+    hasLink: Schema.boolean().default(false).description('消息含链接'),
+    contentRegex: Schema.string().default('').description('正文正则,空=不启用'),
+    contentKeywords: Schema.array(Schema.string()).default([]).description('关键词(任一命中)'),
+    matchScope: Schema.union(['any', 'all']).default('any').description('any=任一命中;all=全部满足'),
+  }),
+  prompt: Schema.string().required().max(400).description('注入的系统提示文本(≤400字)'),
+});
+
+/** 一条时刻任务(挂在某个目标分组下) */
+const scheduleTaskSchema = Schema.object({
+  id: Schema.string().required().description('任务ID(唯一)'),
+  time: Schema.string().required().pattern(/^([01]\d|2[0-3]):[0-5]\d$/).description('每天触发时刻(24h本地时区 HH:MM)'),
+  enabled: Schema.boolean().default(true).description('启用'),
+  prompt: Schema.string().description('可选: 想让她聊的方向(空=自由发挥)'),
+}).default({
+  id: '',
+  time: '09:00',
+  enabled: true,
+  prompt: '',
+}).description('定时时刻');
+
+/** 一个目标(群/人), 号码填一次, 下面挂多个时刻 */
+const scheduleTargetSchema = Schema.object({
+  id: Schema.string().required().description('目标ID(唯一)'),
+  name: Schema.string().description('备注名(可选,帮认这个群/人)'),
+  scope: Schema.union(['group', 'c2c']).default('group').description('group=群 / c2c=私聊'),
+  targetId: Schema.string().required().description('目标: 群group_openid 或 用户openid'),
+  tasks: Schema.array(scheduleTaskSchema).default([]).description('该目标下的定时时刻列表'),
+}).default({
+  id: '',
+  name: '',
+  scope: 'group',
+  targetId: '',
+  tasks: [],
+}).description('定时目标(群/人)');
+
+const scheduleSchema = Schema.object({
+  targets: Schema.array(scheduleTargetSchema).default([]).description('定时目标列表(每个群/人一组,下面挂时刻)'),
+}).default({ targets: [] }).description('定时唤醒(M3): 每天固定时刻主动找聊天');
+
+/** Web 设置页可编辑项的 schema(behavior/sticker.gates/injectRules/groupPrompt/schedule) */
+export const EditableConfigSchema: Schema<EditableConfig> = Schema.object({
+  behavior: behaviorSchema,
+  sticker: Schema.object({
+    gates: stickerGatesSchema,
+    autoTagEnabled: Schema.boolean().default(false).description('新图后台自动识图打标(耗视觉额度,默认关)'),
+    visionCli: Schema.string().default('').description('视觉引擎命令模板(留空自动探测)'),
+  }).description('表情包图库'),
+  injectRules: Schema.array(injectRuleItemSchema).default([]).description('条件注入规则'),
+  groupPrompt: Schema.string().default(DEFAULT_GROUP_PROMPT).description('群聊常驻守则(默认含表情包礼仪;可清空关闭)'),
+  schedule: scheduleSchema,
+});
+
+export interface ImQQBotConfig {
+  /** QQ Bot AppID */
+  appId: string;
+  /** QQ Bot AppSecret */
+  appSecret: string;
+  /** dsh LLM 提供商名称 */
+  provider?: string;
+  /** 模型名称 */
+  model?: string;
+  /** Agent preset id */
+  preset?: string;
+  /** Agent 工作目录（缺省回落到进程 cwd） */
+  cwd?: string;
+  /** Web 设置命名空间(多账号时每个实例唯一, 默认 im-qqbot; 同进程多实例必须互不相同) */
+  settingsNs?: string;
+  /** 是否启用群消息 @mention 门控 */
+  requireMention: boolean;
+  /** 群聊常驻守则(默认=表情包礼仪, 通道级注入; 空=关闭) */
+  groupPrompt?: string;
+  /** 私聊额外 system prompt */
+  directPrompt?: string;
+  /** 单条消息最大长度（QQ 限制约 5000 字符） */
+  textChunkLimit: number;
+  /** 是否启用流式输出（群聊始终不启用） */
+  streaming: boolean;
+  /** 每会话最大闲置时长(ms)，超时自动回收 */
+  sessionIdleTimeout: number;
+  /** 并发队列最大长度 */
+  maxQueue: number;
+  /** 处理超时(ms)，超时中断当前 LLM 调用 */
+  processingTimeoutMs: number;
+  /** 群历史缓冲条数 */
+  historyLimit: number;
+  /** 访问控制 */
+  access: AccessControlConfig;
+  /** 回复调度(冷却) */
+  behavior: BehaviorConfig;
+  /** 表情包图库 */
+  sticker: StickerConfig;
+  /** 条件注入规则 */
+  injectRules: InjectRuleConfig[];
+  /** 定时唤醒任务(M3) */
+  schedule: ScheduleConfig;
+  /** 是否展示工具调用成功结果（工具错误始终展示） */
+  showToolResults: boolean;
+  /** 调试模式 */
+  debug: boolean;
+}
+
+export const ConfigSchema: Schema<ImQQBotConfig> = Schema.object({
+  appId: Schema.string().default('').description('QQ Bot AppID'),
+  appSecret: Schema.string().default('').description('QQ Bot AppSecret'),
+  provider: Schema.string().description('LLM provider name'),
+  model: Schema.string().description('Model name'),
+  preset: Schema.string().description('Agent preset id'),
+  cwd: Schema.string().description('Agent working directory'),
+  settingsNs: Schema.string().description('Web 设置命名空间(多账号时每实例唯一, 默认 im-qqbot)'),
+  requireMention: Schema.boolean().default(true).description('群聊是否需要@bot触发'),
+  groupPrompt: Schema.string().default(DEFAULT_GROUP_PROMPT).description('群聊常驻守则(默认表情包礼仪, 可清空关闭)'),
+  directPrompt: Schema.string().description('私聊额外system prompt'),
+  textChunkLimit: Schema.number().default(4500).description('单条消息最大字符数'),
+  streaming: Schema.boolean().default(true).description('是否启用流式输出（群聊始终不启用）'),
+  sessionIdleTimeout: Schema.number().default(30 * 60 * 1000).description('会话闲置超时(ms)'),
+  maxQueue: Schema.number().default(20).description('并发队列最大长度'),
+  processingTimeoutMs: Schema.number().default(120000).description('处理超时(ms)'),
+  historyLimit: Schema.number().default(10).description('群历史缓冲条数'),
+  access: Schema.object({
+    c2cMode: Schema.union(['open', 'allowlist', 'disabled']).default('open').description('C2C访问模式'),
+    c2cAllow: Schema.array(Schema.string()).default([]).description('C2C白名单'),
+    groupMode: Schema.union(['open', 'allowlist', 'disabled']).default('open').description('群聊访问模式'),
+    groupAllow: Schema.array(Schema.string()).default([]).description('群聊白名单'),
+  }).default({
+    c2cMode: 'open',
+    c2cAllow: [],
+    groupMode: 'open',
+    groupAllow: [],
+  }).description('访问控制'),
+  behavior: behaviorSchema,
+  sticker: Schema.object({
+    collectEnabled: Schema.boolean().default(true).description('自动收藏群图片(只存本地)'),
+    dataDir: Schema.string().default('').description('图库数据根目录(默认 {agent cwd}/表情包)'),
+    gates: stickerGatesSchema,
+    autoTagEnabled: Schema.boolean().default(false).description('新图后台自动识图打标(耗视觉额度,默认关;开需可用视觉CLI)'),
+    visionCli: Schema.string().default('').description('视觉CLI命令模板(含{img}占位), 空=自动探测本机视觉CLI'),
+  }).default({
+    collectEnabled: true,
+    dataDir: '',
+    gates: {
+      enabled: false,
+      perTurnMax: 0,
+      perWindowSec: 600,
+      maxPerWindow: 0,
+      dailyBudgetPerGroup: 0,
+      dupTTLHours: 0,
+      activityWindowSec: 3600,
+      activityMinMsgs: 0,
+      bannedGroups: [],
+      libRoots: [],
+    },
+    autoTagEnabled: false,
+    visionCli: '',
+  }).description('表情包图库'),
+  injectRules: Schema.array(injectRuleItemSchema).default([]).description('条件注入规则:消息含图片/链接/自定义文本时自动插入系统提示'),
+  schedule: scheduleSchema,
+  showToolResults: Schema.boolean().default(false).description('是否展示工具调用成功结果（工具错误始终展示）'),
+  debug: Schema.boolean().default(false),
+});
