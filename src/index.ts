@@ -118,6 +118,8 @@ async function installLiveSettings(ctx: Context, live: ImQQBotConfig, logger: Lo
     injectRules: live.injectRules,
     groupPrompt: live.groupPrompt,
     schedule: live.schedule,
+    enableApprovals: live.enableApprovals,
+    approvalTimeoutMs: live.approvalTimeoutMs,
   };
   let source: () => EditableConfig = () => entry;
   const sync = (): void => {
@@ -129,7 +131,9 @@ async function installLiveSettings(ctx: Context, live: ImQQBotConfig, logger: Lo
       if (Array.isArray(next.injectRules)) live.injectRules = next.injectRules;
       if (typeof next.groupPrompt === 'string') live.groupPrompt = next.groupPrompt;
       if (next.schedule) live.schedule = next.schedule;
-      logger.info('[im-qqbot] 设置已同步(live): behavior/sticker/injectRules/groupPrompt/schedule');
+      if (typeof next.enableApprovals === 'boolean') live.enableApprovals = next.enableApprovals;
+      if (typeof next.approvalTimeoutMs === 'number') live.approvalTimeoutMs = next.approvalTimeoutMs;
+      logger.info('[im-qqbot] 设置已同步(live): behavior/sticker/injectRules/groupPrompt/schedule/approvals');
     } catch (err) {
       logger.warn?.(`im-qqbot: 设置同步失败: ${err instanceof Error ? err.message : String(err)}`);
     }

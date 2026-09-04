@@ -111,6 +111,10 @@ export interface EditableConfig {
   groupPrompt?: string;
   /** 定时唤醒任务(M3) */
   schedule: ScheduleConfig;
+  /** QQ 远程审批开关(live 热生效: 对"保存后的新审批请求"即时生效, 无需重启) */
+  enableApprovals?: boolean;
+  /** QQ 权限申请等待时长(ms), 超时自动拒绝 */
+  approvalTimeoutMs?: number;
 }
 
 /**
@@ -218,6 +222,8 @@ export const EditableConfigSchema: Schema<EditableConfig> = Schema.object({
   injectRules: Schema.array(injectRuleItemSchema).default([]).description('条件注入规则'),
   groupPrompt: Schema.string().default(DEFAULT_GROUP_PROMPT).description('群聊常驻守则(默认含表情包礼仪;可清空关闭)'),
   schedule: scheduleSchema,
+  enableApprovals: Schema.boolean().default(false).description('QQ 远程审批: dsh 权限申请发到 QQ, 用 /approve CODE 放行(保存后对新请求生效)'),
+  approvalTimeoutMs: Schema.number().default(120000).description('QQ 权限申请等待时长(ms), 超时自动拒绝'),
 });
 
 export interface ImQQBotConfig {

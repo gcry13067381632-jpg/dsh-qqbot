@@ -80,7 +80,8 @@ export class QqApprovalController {
     private readonly manager: SessionManager,
     private readonly sender: QQBotSender,
     private readonly logger: Logger,
-    private readonly timeoutMs: number,
+    /** 超时(ms)提供器: 每次 request 现读, 支持 Web 设置热改生效 */
+    private readonly timeoutMsProvider: () => number,
   ) {}
 
   /** 宿主 approval/request 处理器: 定位发起者会话并发 QQ 审批提示 */
@@ -88,6 +89,7 @@ export class QqApprovalController {
     const record = this.manager.findByAgent(req.agent as never);
     if (!record) return next();
     if (req.signal?.aborted) return 'cancelled';
+    const timeoutMs = Math.max(1000, this.timeoutMsProvider() || 120000);
 
     // 一次性 6 位大写码(与 parseApprovalCommand 正则一致)
     let code = '';
@@ -96,7 +98,7 @@ export class QqApprovalController {
     } while (this.pending.has(code));
 
     const outcome = new Promise<ApprovalOutcome>((resolve) => {
-      const timer = setTimeout(() => this.settle(code, 'rejected'), this.timeoutMs);
+      const timer = setTimeout(() => this.settle(code, 'rejected'), timeoutMs);
       const pending: PendingApproval = { record, resolve, timer, signal: req.signal };
       if (req.signal) {
         pending.onAbort = () => this.settle(code, 'cancelled');
@@ -107,7 +109,7 @@ export class QqApprovalController {
 
     const reason = String(req.reason ?? '').replace(/[\r\n]+/g, ' ').slice(0, 200);
     const tool = String(req.toolName ?? req.callId ?? '未知工具');
-    const seconds = Math.ceil(this.timeoutMs / 1000);
+    const seconds = Math.ceil(timeoutMs / 1000);
     const prompt = [
       '⚠️ **DSH 权限申请**',
       `工具：${tool}`,

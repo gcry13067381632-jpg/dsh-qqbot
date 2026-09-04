@@ -137,7 +137,9 @@ allow/deny right from QQ:
 > Deny this operation: `/deny A1B2C3`
 > One-time only; auto-denied after 120 s.
 
-**Enable** (add two lines to the instance `config` in `cordis.patch.yml`, then restart):
+**Enable** (either way; takes effect for new requests right after saving, no restart needed):
+- **Web settings panel**: Settings → "QQ bot" → ⑤ QQ remote approval → tick it on;
+- or add two lines to the instance `config` in `cordis.patch.yml`, then restart:
 
 ```yaml
 - id: im-qqbot

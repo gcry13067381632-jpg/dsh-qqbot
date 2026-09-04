@@ -223,18 +223,19 @@ export async function bootstrapGateway(
   setChannelBridge({ manager, sender });
 
   // ── QQ 远程审批: 订阅宿主 approval/request, 把权限申请发到发起者所在 QQ 会话 ──
-  // 宿主标准事件(官方 dsh-acp / Web 审批弹窗同款); 默认关闭, 需 config.enableApprovals=true。
-  if (config.enableApprovals) {
-    approvalController = new QqApprovalController(manager, sender, logger, config.approvalTimeoutMs);
-    (ctx as unknown as {
-      on(
-        event: 'approval/request',
-        handler: (request: unknown, next: () => Promise<string>) => Promise<string>,
-      ): void;
-    }).on('approval/request', ((request: unknown, next: () => Promise<string>) =>
-      approvalController!.request(request as never, next as never)) as never);
-    logger.info(`[im-qqbot] QQ 远程审批已启用(timeout=${config.approvalTimeoutMs}ms)`);
-  }
+  // 宿主标准事件(官方 dsh-acp / Web 审批弹窗同款); 常挂订阅, handler 每次现读 live
+  // config.enableApprovals / config.approvalTimeoutMs → Web 设置面板可热开关, 无需重启。
+  approvalController = new QqApprovalController(manager, sender, logger, () => config.approvalTimeoutMs);
+  (ctx as unknown as {
+    on(
+      event: 'approval/request',
+      handler: (request: unknown, next: () => Promise<string>) => Promise<string>,
+    ): void;
+  }).on('approval/request', ((request: unknown, next: () => Promise<string>) => {
+    if (!config.enableApprovals) return next();
+    return approvalController!.request(request as never, next as never);
+  }) as never);
+  logger.info(`[im-qqbot] QQ 远程审批接线就绪(${config.enableApprovals ? '已启用' : '默认关闭, Web 设置可热开'})`);
 
   const outboundHandler = createOutboundHandler(manager, sender, config, logger, toolsRegistry);
   (ctx as unknown as { on(event: string, handler: (...args: unknown[]) => void): void })

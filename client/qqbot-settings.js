@@ -114,6 +114,8 @@ window.__ModuleLoader__.load({
               // groupPrompt 必须读回来, 否则每次保存都会把它清空成 ''
               // undefined(从未设置)→ 显示默认守则; ''(用户明确清空)→ 保持空(无守则)
               groupPrompt: typeof v.groupPrompt === 'string' ? v.groupPrompt : DEFAULT_GROUP_PROMPT,
+              enableApprovals: v.enableApprovals === true,
+              approvalTimeoutMs: typeof v.approvalTimeoutMs === 'number' ? v.approvalTimeoutMs : 120000,
             }
             setCfg(base); setRev(d.revision); setMsg('')
           } else { setMsg('读取失败: ' + JSON.stringify(d)) }
@@ -157,6 +159,8 @@ window.__ModuleLoader__.load({
           // 定时唤醒(④)已并入「定时任务」页编辑; 这里原样带过不丢即可
           schedule: cfg.schedule && Array.isArray(cfg.schedule.targets) ? cfg.schedule : { targets: [] },
           groupPrompt: typeof gpOverride === 'string' ? gpOverride : (typeof cfg.groupPrompt === 'string' ? cfg.groupPrompt : ''),
+          enableApprovals: cfg.enableApprovals === true,
+          approvalTimeoutMs: typeof cfg.approvalTimeoutMs === 'number' ? cfg.approvalTimeoutMs : 120000,
         }
         fetch(UPDATE, {
           method: 'POST', headers: { 'content-type': 'application/json' },
@@ -169,6 +173,8 @@ window.__ModuleLoader__.load({
               injectRules: Array.isArray(v2.injectRules) ? v2.injectRules : [],
               schedule: v2.schedule && Array.isArray(v2.schedule.targets) ? v2.schedule : { targets: [] },
               groupPrompt: typeof v2.groupPrompt === 'string' ? v2.groupPrompt : (typeof cfg.groupPrompt === 'string' ? cfg.groupPrompt : DEFAULT_GROUP_PROMPT),
+              enableApprovals: v2.enableApprovals === true,
+              approvalTimeoutMs: typeof v2.approvalTimeoutMs === 'number' ? v2.approvalTimeoutMs : 120000,
             })
             setRev(d.revision); setMsg('已保存 ✓(live 生效)')
           }
@@ -227,6 +233,12 @@ window.__ModuleLoader__.load({
 
         h('div', { style: sectionTitle }, '④ 定时唤醒'),
         h('p', { style: { fontSize: 12, color: '#888' } }, '已合并到「定时任务」页(顶部 tab)一起编辑——到点主动开口的群/人分组,与她答应你的定时提醒,都在那边管理。'),
+
+        h('div', { style: sectionTitle }, '⑤ QQ 远程审批(在 QQ 里放行 dsh 权限申请)'),
+        h('p', { style: { fontSize: 12, color: '#888' } }, '机器人的工具要动"工作区外"的东西时,dsh 会申请权限。开启后审批请求直接发到你的 QQ(私聊/群聊看你从哪发起),回 /approve 验证码 放行、/deny 拒绝——只放行这一次,验证码一次性,只有你能批。'),
+        h('div', { style: boxStyle },
+          BoolRow({ label: '开启 QQ 远程审批(不勾=保持默认审批方式)', value: cfg.enableApprovals === true, onChange: function (v) { setCfg(function (c) { return { ...c, enableApprovals: v } }) } }),
+          NumRow({ label: '审批等待秒数(超时自动拒绝;默认120)', value: Math.round((cfg.approvalTimeoutMs || 120000) / 1000), onChange: function (v) { setCfg(function (c) { return { ...c, approvalTimeoutMs: v * 1000 } }) } })),
 
         h('div', { style: { margin: '12px 0' } },
           h('button', { className: 'qqs-btn', style: { marginRight: 8 }, onClick: save }, '保存'),

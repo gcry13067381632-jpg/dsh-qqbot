@@ -142,7 +142,9 @@ npx @deepseek-ai/dsh web --patch /path/to/dsh-qqbot/cordis.dev.yml
 > 拒绝本次操作：`/deny A1B2C3`
 > 仅本次有效，120 秒后自动拒绝。
 
-**启用**(`cordis.patch.yml` 的实例 config 加两行,重启生效):
+**启用**(二选一;保存即对新审批请求生效,无需重启):
+- **Web 设置面板**:设置 →「QQ 机器人」→ ⑤ QQ 远程审批 → 勾选开启;
+- 或 `cordis.patch.yml` 的实例 config 加两行后重启:
 
 ```yaml
 - id: im-qqbot
