@@ -48,6 +48,7 @@ interface ApprovableMessage {
 
 interface PendingApproval {
   record: SessionRecord;
+  toolName?: string;
   resolve: (outcome: ApprovalOutcome) => void;
   timer: ReturnType<typeof setTimeout>;
   signal?: AbortSignal;
@@ -99,7 +100,7 @@ export class QqApprovalController {
 
     const outcome = new Promise<ApprovalOutcome>((resolve) => {
       const timer = setTimeout(() => this.settle(code, 'rejected'), timeoutMs);
-      const pending: PendingApproval = { record, resolve, timer, signal: req.signal };
+      const pending: PendingApproval = { record, toolName: String(req.toolName ?? req.callId ?? ''), resolve, timer, signal: req.signal };
       if (req.signal) {
         pending.onAbort = () => this.settle(code, 'cancelled');
         req.signal.addEventListener('abort', pending.onAbort, { once: true });
@@ -156,6 +157,14 @@ export class QqApprovalController {
     }
 
     this.settle(command.code, command.outcome);
+    // 留痕(不打扰): 记一条系统笔记, 等该会话下一条用户消息组包时带给 AI(见 inbound.ts)
+    const toolName = pending.toolName || '';
+    try {
+      setApprovalNote(rec.sessionKey,
+        command.outcome === 'allowed-once'
+          ? `[系统] 主人已在 QQ 批准一次工具权限申请${toolName ? `(工具: ${toolName})` : ''}。`
+          : `[系统] 主人已在 QQ 拒绝一次工具权限申请${toolName ? `(工具: ${toolName})` : ''}。`);
+    } catch { /* ignore */ }
     try {
       await this.sender.sendMarkdown(
         replyTarget,
@@ -211,4 +220,18 @@ export function makeApprovalListener(): (req: unknown, next: () => Promise<strin
     if (!dispatch) return next();
     return dispatch(req as never, next as never);
   }) as (req: unknown, next: () => Promise<string>) => Promise<string>;
+}
+
+// ── 审批留痕(不打扰): 裁决后记一条系统笔记, 等该会话下一条用户消息组包时带给 AI ──
+const approvalNotes = new Map<string, string>();
+
+function setApprovalNote(sessionKey: string, note: string): void {
+  approvalNotes.set(sessionKey, note);
+}
+
+/** 取出(并清除)该会话的待传达审批笔记; 无则 undefined */
+export function takeApprovalNote(sessionKey: string): string | undefined {
+  const note = approvalNotes.get(sessionKey);
+  if (note !== undefined) approvalNotes.delete(sessionKey);
+  return note;
 }
