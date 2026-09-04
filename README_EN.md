@@ -74,8 +74,10 @@ npx @deepseek-ai/dsh plugin --profile web add @zaofan/dsh-qqbot
 ```powershell
 git clone https://github.com/gcry13067381632-jpg/dsh-qqbot.git
 cd dsh-qqbot
-.\install.ps1          # packs -> adds the tarball -> prints restart steps
+.\install.ps1          # npm install/build -> pack -> add tarball -> prints restart steps
 ```
+
+> If script execution is blocked: `powershell -ExecutionPolicy Bypass -File .\install.ps1`
 
 **macOS / Linux (manual)**:
 

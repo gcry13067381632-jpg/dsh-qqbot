@@ -57,6 +57,22 @@ if ($Clean) {
   }
 }
 
+# ── build (repo has no dist committed; compile before pack) ──
+if (-not (Test-Path (Join-Path $src 'dist\index.js'))) {
+  Write-Host '[*] dist not found - running npm install && npm run build ...'
+  Push-Location $src
+  try {
+    npm install --no-audit --no-fund | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'npm install failed' }
+    npm run build | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'npm run build failed' }
+  } finally {
+    Pop-Location
+  }
+} else {
+  Write-Host '[*] dist found - skipping build'
+}
+
 # ── pack into a space-free dir ──
 $packDir = Join-Path $env:TEMP 'zaofan-dsh-qqbot-pack'
 New-Item -ItemType Directory -Path $packDir -Force | Out-Null

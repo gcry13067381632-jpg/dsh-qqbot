@@ -85,8 +85,10 @@ npx @deepseek-ai/dsh plugin --profile web add @zaofan/dsh-qqbot
 ```powershell
 git clone https://github.com/gcry13067381632-jpg/dsh-qqbot.git
 cd dsh-qqbot
-.\install.ps1          # 自动 pack → add tarball → 输出重启指引
+.\install.ps1          # 自动 install/build → pack → add tarball → 输出重启指引
 ```
+
+> 若系统禁止运行脚本，改用：`powershell -ExecutionPolicy Bypass -File .\install.ps1`
 
 **macOS / Linux（手动）**：
 
