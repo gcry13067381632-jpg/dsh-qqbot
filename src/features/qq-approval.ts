@@ -20,6 +20,7 @@
  *       只授权当前这一次操作; 群聊里其他成员看到 CODE 也无法批准(senderId 校验)。
  */
 import type { ReplyTarget } from '@tencent-connect/qqbot-nodejs';
+import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import type { QQBotSender } from '../transport/outbound-buffer.js';
 import type { SessionManager } from '../session/index.js';
 import type { SessionRecord } from '../session/types.js';
@@ -157,14 +158,26 @@ export class QqApprovalController {
     }
 
     this.settle(command.code, command.outcome);
-    // 留痕(不打扰): 记一条系统笔记, 等该会话下一条用户消息组包时带给 AI(见 inbound.ts)
+    // 留痕(不打扰, 正经注入): 用 agent.inject 注入 plugin/notice 消息 —— 不唤醒、排队下个 step
+    // 组包(claim 顺序 next-step 先于 next-turn → 排在用户消息前同批进请求); UI 呈现为 context 行,
+    // 不再冒充 kind:'user' 发言。宿主无 inject 能力时静默跳过(审计靠 QQ 端 ✅/❌ 回复)。
     const toolName = pending.toolName || '';
     try {
-      setApprovalNote(rec.sessionKey,
-        command.outcome === 'allowed-once'
-          ? `[系统] 主人已在 QQ 批准一次工具权限申请${toolName ? `(工具: ${toolName})` : ''}。`
-          : `[系统] 主人已在 QQ 拒绝一次工具权限申请${toolName ? `(工具: ${toolName})` : ''}。`);
-    } catch { /* ignore */ }
+      const agent = (pending.record.agent as { inject?: (m: unknown) => void } | undefined);
+      if (agent && typeof agent.inject === 'function') {
+        const allowed = command.outcome === 'allowed-once';
+        agent.inject(createUserMessage({
+          content: [{
+            type: 'text' as const,
+            text: `主人已在 QQ ${allowed ? '批准' : '拒绝'}一次工具权限申请${toolName ? `(工具: ${toolName})` : ''}。`,
+          }],
+          source: {
+            kind: 'plugin' as const, plugin: 'qqbot-approval', form: 'notice' as const,
+            summary: `主人${allowed ? '批准' : '拒绝'}了工具${toolName || ''}的权限申请`,
+          } as never,
+        }));
+      }
+    } catch { /* 注入失败不影响裁决 */ }
     try {
       await this.sender.sendMarkdown(
         replyTarget,
@@ -220,18 +233,4 @@ export function makeApprovalListener(): (req: unknown, next: () => Promise<strin
     if (!dispatch) return next();
     return dispatch(req as never, next as never);
   }) as (req: unknown, next: () => Promise<string>) => Promise<string>;
-}
-
-// ── 审批留痕(不打扰): 裁决后记一条系统笔记, 等该会话下一条用户消息组包时带给 AI ──
-const approvalNotes = new Map<string, string>();
-
-function setApprovalNote(sessionKey: string, note: string): void {
-  approvalNotes.set(sessionKey, note);
-}
-
-/** 取出(并清除)该会话的待传达审批笔记; 无则 undefined */
-export function takeApprovalNote(sessionKey: string): string | undefined {
-  const note = approvalNotes.get(sessionKey);
-  if (note !== undefined) approvalNotes.delete(sessionKey);
-  return note;
 }

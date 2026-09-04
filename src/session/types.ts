@@ -30,6 +30,8 @@ export interface DshAgent {
   };
   cancel(cause: { kind: string }): void;
   followup(message: unknown): void;
+  /** 宿主实例能力(可选探测): 注入消息不唤醒 agent, 排队到下个 step 组包(事件通知用) */
+  inject?(message: unknown): void;
   whenIdle(): Promise<void>;
 }
 

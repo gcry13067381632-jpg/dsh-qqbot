@@ -16,7 +16,6 @@ import type { ChatScope, Logger, RawAttachment, ReplyTarget } from '../types.js'
 import type { DownloadedFile } from './attachment.js';
 import { clearGroupHistory } from '../features/history-store.js';
 import { applyInjectRules } from './inject-rules.js';
-import { takeApprovalNote } from '../features/qq-approval.js';
 
 // ── 类型定义 ──
 
@@ -138,13 +137,7 @@ export async function handleInbound(
   }
 
   // ── 构建 UserMessage → followup ──
-  // 审批留痕: 该会话若有"主人刚批准/拒绝"的系统笔记, 附带在本次组包开头(不打扰、不触发回合)
-  let bodyText = agentBody;
-  try {
-    const note = takeApprovalNote(record.sessionKey);
-    if (note) bodyText = `${note}\n\n${bodyText}`;
-  } catch { /* 留痕失败不影响消息 */ }
-  const content: ContentBlock[] = [{ type: 'text' as const, text: bodyText }];
+  const content: ContentBlock[] = [{ type: 'text' as const, text: agentBody }];
 
   const message = createUserMessage({
     content,
