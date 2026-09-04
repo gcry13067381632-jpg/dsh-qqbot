@@ -104,6 +104,18 @@ terminal → scan it with the QQ mobile app → credentials are saved and surviv
 
 > **Note**: Use `0.4.0` or later for browser-link scanning, which avoids QR code misalignment in some terminals.
 
+### Don't have a QQ bot yet? Register one (get AppID / AppSecret)
+
+1. Open the [QQ Open Platform](https://q.qq.com) and sign in with your QQ account;
+2. Go to "Bot" → "Create Bot" and fill in name, avatar and description;
+3. After creation, copy the **AppID** and **AppSecret** from the bot detail page;
+4. Enter them in dsh Web → Settings → "QQ bot" → "Accounts & presets" and save
+   (or set env vars `QQBOT_APPID` / `QQBOT_SECRET`);
+5. Enable the needed **single-chat / group-chat** message permissions on the platform
+   (group chat usually requires a use-case review).
+
+> 💡 Easier: once the bot exists, just use the **QR scan bind** on first launch — no need to type credentials.
+
 ### For developers: --patch dev mode
 
 ```bash
