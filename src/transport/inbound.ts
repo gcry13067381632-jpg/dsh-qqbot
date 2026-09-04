@@ -139,6 +139,12 @@ export async function handleInbound(
   } catch (err) {
     logger.debug(`ensureChannelTools error: ${err instanceof Error ? err.message : String(err)}`);
   }
+  // ── 守则/身份 context 注册自愈(幂等; 重启恢复会话也覆盖, 保证 systemPrompt.context 注入生效) ──
+  try {
+    await manager.ensureGroupRules(record);
+  } catch (err) {
+    logger.debug(`ensureGroupRules error: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   // ── 构建 UserMessage → followup ──
   const content: ContentBlock[] = [{ type: 'text' as const, text: agentBody }];

@@ -322,24 +322,8 @@ export class SessionManager {
           };
     const channelSetup = (agentCtx: Context) => (async () => {
       provideChannel?.(agentCtx);
-      // 守则/身份常驻 → systemPrompt.context(审批 approval:policy 同款写法):
-      // 必须用 ctx.inject(['systemPrompt']) 声明式取服务再注册(服务不是 ctx 裸属性, 直接探测会静默失败!);
-      // text 每次渲染现读 live config —— 空串不贡献, 支持热更新。
-      try {
-        const injectFn = (agentCtx as { inject?: (svc: string[], cb: (scope: unknown) => void) => void }).inject;
-        if (typeof injectFn === 'function') {
-          injectFn(['systemPrompt'], (scope: unknown) => {
-            const sp = (scope as { systemPrompt?: { context?: (o: unknown) => unknown } })?.systemPrompt;
-            if (sp && typeof sp.context === 'function') {
-              sp.context({
-                name: 'qqbot:group-rules',
-                order: 116,
-                text: () => this.config.groupPrompt?.trim() || '',
-              });
-            }
-          });
-        }
-      } catch { /* 守则 context 注册失败不影响会话 */ }
+      // 守则/身份 context 注册已移至 ensureGroupRules(每次消息自愈钩子, 幂等)——
+      // setup 只在新建会话执行, 重启恢复的会话不跑, 注册放这里会漏。
       // 有 presets(standing 装配)时由 preset 插件行装载工具, 不再注册 agentCtx
       if (!presets) {
         diagSm('无 agent-presets → agentCtx 直接注册(devqq 路径)');
@@ -475,6 +459,51 @@ export class SessionManager {
       this.logger.warn?.(`im-qqbot: 工具自愈补注册失败: ${msg}`);
       diagSm(`ensureChannelTools: 失败 ${msg}`);
     }
+  }
+
+  /**
+   * 守则/身份 context 注册自愈(幂等): 每次消息处理路径都会调用。
+   * 用 record.agent.ctx(恒有, 不依赖 setup; 重启恢复会话也覆盖)。
+   * 注册方式照审批 approval:policy: ctx.inject(['systemPrompt']) → systemPrompt.context;
+   * text 每次渲染现读 live config(空串不贡献、热更新)。
+   */
+  async ensureGroupRules(record: SessionRecord): Promise<void> {
+    const agentId = record.agent?.id;
+    const mounted = (this as unknown as Record<string, unknown>).__rulesMounted as Set<string> | undefined;
+    if (!agentId || (mounted && mounted.has(agentId))) return;
+    if (!mounted) (this as unknown as Record<string, unknown>).__rulesMounted = new Set<string>();
+    const agentCtx = (record.agent as { ctx?: Context }).ctx ?? (record.agentCtx as Context | undefined);
+    if (!agentCtx) { console.log('[qqbot-rules] skip (no ctx)'); return; }
+    try {
+      const anyCtx = agentCtx as unknown as {
+        inject?: (svc: string[], cb: (scope: unknown) => void) => void;
+        systemPrompt?: { context?: (o: unknown) => unknown };
+        effect?: (fn: () => void, name?: string) => void;
+      };
+      console.log(`[qqbot-rules] ensure agent=${agentId} inject=${typeof anyCtx.inject} sp=${typeof anyCtx.systemPrompt} eff=${typeof anyCtx.effect}`);
+      const doReg = (sp?: { context?: (o: unknown) => unknown }): void => {
+        if (sp && typeof sp.context === 'function') {
+          sp.context({
+            name: 'qqbot:group-rules',
+            order: 116,
+            text: () => this.config.groupPrompt?.trim() || '',
+          });
+          (this as unknown as Record<string, unknown>).__rulesMounted = ((this as unknown as Record<string, unknown>).__rulesMounted as Set<string> || new Set<string>()).add(agentId);
+          console.log(`[qqbot-rules] context registered agent=${agentId}`);
+        } else {
+          console.log(`[qqbot-rules] context unavailable sp=${typeof sp}`);
+        }
+      };
+      if (typeof anyCtx.inject === 'function') {
+        anyCtx.inject(['systemPrompt'], (scope: unknown) => {
+          doReg((scope as { systemPrompt?: { context?: (o: unknown) => unknown } })?.systemPrompt);
+        });
+      } else if (typeof anyCtx.effect === 'function') {
+        anyCtx.effect(() => doReg(anyCtx.systemPrompt), 'qqbot-rules.register');
+      } else {
+        doReg(anyCtx.systemPrompt);
+      }
+    } catch (e) { console.log(`[qqbot-rules] error: ${e instanceof Error ? e.message : String(e)}`); }
   }
 
   findBySessionId(sessionId: string): SessionRecord | undefined {
