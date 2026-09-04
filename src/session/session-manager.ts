@@ -322,18 +322,24 @@ export class SessionManager {
           };
     const channelSetup = (agentCtx: Context) => (async () => {
       provideChannel?.(agentCtx);
-      // 群守则 → systemPrompt.section(常驻 system): text() 每次渲染现读 live config —— 审批策略
-      // context 同款"直读"写法, 不依赖 findByAgent/manager 状态(避免渲染期查不到会话返回空 → 守则丢失)。
+      // 守则/身份常驻 → systemPrompt.context(审批 approval:policy 同款写法):
+      // 必须用 ctx.inject(['systemPrompt']) 声明式取服务再注册(服务不是 ctx 裸属性, 直接探测会静默失败!);
+      // text 每次渲染现读 live config —— 空串不贡献, 支持热更新。
       try {
-        const sp = (agentCtx as { systemPrompt?: { section?: (o: unknown) => unknown } }).systemPrompt;
-        if (sp && typeof sp.section === 'function') {
-          sp.section({
-            name: 'qqbot:group-rules',
-            order: 50,
-            text: () => this.config.groupPrompt?.trim() || '',
+        const injectFn = (agentCtx as { inject?: (svc: string[], cb: (scope: unknown) => void) => void }).inject;
+        if (typeof injectFn === 'function') {
+          injectFn(['systemPrompt'], (scope: unknown) => {
+            const sp = (scope as { systemPrompt?: { context?: (o: unknown) => unknown } })?.systemPrompt;
+            if (sp && typeof sp.context === 'function') {
+              sp.context({
+                name: 'qqbot:group-rules',
+                order: 116,
+                text: () => this.config.groupPrompt?.trim() || '',
+              });
+            }
           });
         }
-      } catch { /* 守则 section 注册失败不影响会话 */ }
+      } catch { /* 守则 context 注册失败不影响会话 */ }
       // 有 presets(standing 装配)时由 preset 插件行装载工具, 不再注册 agentCtx
       if (!presets) {
         diagSm('无 agent-presets → agentCtx 直接注册(devqq 路径)');
