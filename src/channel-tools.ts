@@ -581,10 +581,33 @@ export function apply(ctx: Context): void {
     },
   });
 
+  // text_break: 专用"打断正文"工具(2026-09-05, 主人定) —— 零副作用、零查询、近零 token。
+  // 机制: 把回复正文拆成多个文本块、块间调用本工具, QQ 端就会把每块作为独立一条消息发出
+  // (工具调用 = 天然断点)。本工具不做事: 输入任意(留空即可), 返回空, 仅用于中断文本流。
+  // ⚠️ 单轮最多 5 条(约 4 次调用), 第 6 条起被 QQ 拦截; 想逐字卖萌请控制在 5 块内。
+  const textBreakTool = defineTool({
+    name: 'text_break',
+    description: '打断正文实现"逐条发送": 想逐字/逐句卖萌或把长话拆成多条连发时, 把内容拆成几个文本块, 每块之间调用一次本工具(参数随便填个占位值即可), 对方就会收到分割的多条消息。工具本身无任何副作用, 不会发东西。注意: 一轮最多拆 5 条, 再多会被 QQ 吞掉。',
+    parameters: {
+      next: { type: 'string', required: true, description: '占位参数: 随便填一个值(如 "." 或下一段内容), 工具不读它, 只用于打断文本流' },
+    },
+    output: {
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: { ok: { type: 'boolean', required: true } },
+      },
+      render: () => [{ type: 'text' as const, text: '' }],
+    },
+    async execute() {
+      return { ok: true }; // 纯打断, 无实质结果
+    },
+  });
+
   // 逐个注册并记录结果(便于线上定位是哪个工具失败)
   const toolDefs: Array<{ name: string; tool: unknown }> = [
     { name: 'send_media', tool: sendMediaTool },
     { name: 'recall_message', tool: recallTool },
+    { name: 'text_break', tool: textBreakTool },
     { name: 'list_stickers', tool: listStickersTool },
     { name: 'sticker_tag', tool: tagStickerTool },
     { name: 'sticker_delete', tool: deleteStickerTool },
