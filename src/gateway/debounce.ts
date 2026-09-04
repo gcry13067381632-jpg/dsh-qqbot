@@ -15,8 +15,8 @@
  *  - 私聊: 无冷却, 直接派发。
  *
  * 派发内容(防倒序): 以 store(mediaHistoryBuffer 记录的全量, 含被吞消息)为权威,
- * 与窗口合并去重后按服务器时间戳升序: current = 时间序最后一条; 更早的 @ 消息在 history 里补
- * " (@you)" 标注并置 mustReply(inbound 注入"这次要开口回复"提示, 避免"没@不吃瓜"误判);
+ * 与窗口合并去重后按服务器时间戳升序: current = 时间序最后一条; 窗口内更早的 @ 消息在 history 里补
+ * " (@you)" 标注(与 current 同款 @ 事实标注, 回不回由 AI 按守则判, 插件不注入回复指令);
  * 其余按序进 [Chat history]。私聊无 store → 窗口文本按序拼接+合并附件成合成消息直连。
  *
  * 斜杠命令(以 / 开头)不聚合直放行: 保 /approve /bot-stop 等命令的即时性。
@@ -201,17 +201,21 @@ export function debounceLayer(
         const cur = merged[merged.length - 1];
         if (!cur) return;
 
-        // 忠实还原 store 原文进 history(不额外注入 (@you) 标注/回复指令:
-        // 插件保持通用, "要不要回"由 AI 按自身守则判断; @ 事实保留在原文 <@openid> 前缀里)
+        // 忠实还原 store 原文进 history; 窗口内曾 @ 机器人的消息(时间上早于 current)
+        // 补 " (@you)" 标注 —— 与 current 的 (@you) 同款格式, 还原"这条@了bot"的事实,
+        // 由 AI 按自身守则决定是否开口(插件不注入回复指令, 保持通用)。
         const hist: HistoryEntry[] = merged
           .filter(m => m.messageId !== cur.messageId)
-          .map(m => ({
-            senderId: m.senderId ?? '',
-            senderName: m.senderName,
-            content: m.content ?? String(m.msg?.content ?? ''),
-            timestamp: m.ts,
-            messageId: m.messageId,
-          }));
+          .map(m => {
+            const baseContent = m.content ?? String(m.msg?.content ?? '');
+            return {
+              senderId: m.senderId ?? '',
+              senderName: m.senderName,
+              content: m.wasMentioned ? `${baseContent} (@you)` : baseContent,
+              timestamp: m.ts,
+              messageId: m.messageId,
+            };
+          });
 
         // current 消息: 窗口条目有完整 msg; store 来源的只有 HistoryEntry 字段,
         // 从群窗口消息继承 kind/groupOpenid/attachments 等再补齐本人字段。
