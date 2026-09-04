@@ -39,6 +39,19 @@ export function setupMiddlewares(
   // 1. 错误兜底（最外层洋葱皮）
   bot.use(errorHandler());
 
+  // 1.5 消息串行闸(本地手改, 2026-09-05)：
+  //     SDK 收帧处 `void Promise.resolve(onMessage(...))` 不等待 → 快速连发时多条消息的
+  //     中间件链并发执行、在各 await 处交错 → 到达下游(历史缓冲/debounce/派发)的顺序
+  //     ≠ 官方推送顺序(即真实发送序)。这里把每条消息的整条下游链排队串行:
+  //     前一条消息处理完才放行下一条, 恢复官方帧序。零 SDK 改动, 只作用于本 bot 实例。
+  //     ⚠️ 本地手改功能, 同步纪律同群冷却中间件。
+  let inboundTail: Promise<void> = Promise.resolve();
+  bot.use(async (_ctx: MiddlewareContext, next: () => Promise<void>) => {
+    const run = inboundTail.then(() => next());
+    inboundTail = run.catch(() => undefined) as Promise<void>;
+    await run;
+  });
+
   // 2. 消息过滤：bot 回声 + 消息去重
   bot.use(messageFilter({ skipSelfEcho: false }));
 
