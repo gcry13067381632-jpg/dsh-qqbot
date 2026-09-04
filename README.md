@@ -130,6 +130,31 @@ export QQBOT_APPID="你的AppID" QQBOT_SECRET="你的AppSecret"
 npx @deepseek-ai/dsh web --patch /path/to/dsh-qqbot/cordis.dev.yml
 ```
 
+## QQ 远程审批(可选)
+
+当 Agent 的工具要访问**工作区之外**的位置时,dsh 会触发权限审批。开启后,机器人把审批请求**发到 QQ**(任务发起者的会话),你直接在 QQ 里放行/拒绝:
+
+> ⚠️ **DSH 权限申请**
+> 工具：pwsh
+> 原因：需要访问工作区外路径
+>
+> 允许本次操作：`/approve A1B2C3`
+> 拒绝本次操作：`/deny A1B2C3`
+> 仅本次有效，120 秒后自动拒绝。
+
+**启用**(`cordis.patch.yml` 的实例 config 加两行,重启生效):
+
+```yaml
+- id: im-qqbot
+  config:
+    enableApprovals: true          # 默认 false
+    approvalTimeoutMs: 120000      # 等待时长, 超时自动拒绝
+```
+
+**安全边界**:验证码一次性;仅"任务发起者本人 + 同一会话"可批(群聊里其他人看到验证码也无效);只授权当前这一次操作;Agent 取消或 dsh 退出自动取消。
+
+> 思路来源: wang-22-code/dsh-qqbot-bridge 的 QQ 审批设计(宿主 dsh `approval/request` 标准事件,官方 dsh-acp / Web 审批弹窗同款机制)。
+
 ## 配置项
 
 | 配置 | 类型 | 默认值 | 说明 |

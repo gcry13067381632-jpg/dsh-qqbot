@@ -123,6 +123,36 @@ export QQBOT_APPID="yourAppID" QQBOT_SECRET="yourAppSecret"
 npx @deepseek-ai/dsh web --patch /path/to/dsh-qqbot/cordis.dev.yml
 ```
 
+## Remote approval over QQ (optional)
+
+When an Agent tool needs access **outside the workspace**, dsh raises a permission request. With this
+feature on, the bot forwards the request to the **QQ conversation of the task's initiator**, and you
+allow/deny right from QQ:
+
+> ⚠️ **DSH permission request**
+> Tool: pwsh
+> Reason: needs access outside the workspace
+>
+> Allow this operation: `/approve A1B2C3`
+> Deny this operation: `/deny A1B2C3`
+> One-time only; auto-denied after 120 s.
+
+**Enable** (add two lines to the instance `config` in `cordis.patch.yml`, then restart):
+
+```yaml
+- id: im-qqbot
+  config:
+    enableApprovals: true          # default false
+    approvalTimeoutMs: 120000      # wait window; auto-deny on timeout
+```
+
+**Security boundaries**: one-time code; only the **initiator in the same conversation** may decide
+(others in a group chat cannot approve even if they see the code); grants only the current operation;
+auto-cancelled when the agent is cancelled or dsh exits.
+
+> Idea source: QQ-approval design of wang-22-code/dsh-qqbot-bridge (host dsh `approval/request`
+> standard event — the same wiring used by official dsh-acp and the Web approval dialog).
+
 ## Configuration
 
 | Config | Type | Default | Description |

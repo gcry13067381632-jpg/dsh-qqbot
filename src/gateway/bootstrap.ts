@@ -21,6 +21,7 @@ import { initStickerGate, bindStickerGates, flushStickerGate, getStickerGate, St
 import { startScheduler } from '../features/scheduler.js';
 import { configureScheduleStore, getScheduleStore } from '../features/schedule-store.js';
 import { setChannelBridge } from '../channel-tools.js';
+import { QqApprovalController } from '../features/qq-approval.js';
 
 export async function bootstrapGateway(
   ctx: Context,
@@ -29,6 +30,8 @@ export async function bootstrapGateway(
   logger: Logger,
 ): Promise<void> {
   const manager = new SessionManager(ctx, agents, config, logger);
+  // QQ 远程审批控制器(enableApprovals 时创建; 定义在 sender 就绪后, 此处先声明供入站回调引用)
+  let approvalController: QqApprovalController | undefined;
 
   // ── 表情包图库单例预初始化(防目录分裂) ──
   // ⚠️ 单例时序坑：谁先 getStickerStore 谁定路径。必须在启动早期按 config.cwd
@@ -74,6 +77,19 @@ export async function bootstrapGateway(
   // ── 入站：经过中间件链后的消息交给 dsh agent ──
   bot.on('message', async (mCtx: MiddlewareContext) => {
     const msg = mCtx.message;
+    // QQ 远程审批: /approve|/deny CODE 最先拦截(消费后不再进 agent/普通聊天)
+    if (approvalController) {
+      const scope: 'c2c' | 'group' = msg.kind === 'group' ? 'group' : 'c2c';
+      const peerId = scope === 'group' ? (msg.groupOpenid ?? msg.senderId) : msg.senderId;
+      try {
+        const consumed = await approvalController.handleInbound(msg as never, {
+          scope, targetId: peerId, msgId: msg.messageId,
+        });
+        if (consumed) return;
+      } catch (err) {
+        logger.warn(`approval inbound error: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     if (config.debug) {
       logger.debug(`← message (post-middleware): ${JSON.stringify(msg, null, 2).slice(0, 500)}`);
     }
@@ -206,6 +222,20 @@ export async function bootstrapGateway(
   // 全局桥: 通道工具 execute 的兜底解析(不依赖 setup/provide, 防重启后 setup 未跑)
   setChannelBridge({ manager, sender });
 
+  // ── QQ 远程审批: 订阅宿主 approval/request, 把权限申请发到发起者所在 QQ 会话 ──
+  // 宿主标准事件(官方 dsh-acp / Web 审批弹窗同款); 默认关闭, 需 config.enableApprovals=true。
+  if (config.enableApprovals) {
+    approvalController = new QqApprovalController(manager, sender, logger, config.approvalTimeoutMs);
+    (ctx as unknown as {
+      on(
+        event: 'approval/request',
+        handler: (request: unknown, next: () => Promise<string>) => Promise<string>,
+      ): void;
+    }).on('approval/request', ((request: unknown, next: () => Promise<string>) =>
+      approvalController!.request(request as never, next as never)) as never);
+    logger.info(`[im-qqbot] QQ 远程审批已启用(timeout=${config.approvalTimeoutMs}ms)`);
+  }
+
   const outboundHandler = createOutboundHandler(manager, sender, config, logger, toolsRegistry);
   (ctx as unknown as { on(event: string, handler: (...args: unknown[]) => void): void })
     .on('session/event', outboundHandler as (...args: unknown[]) => void);
@@ -286,6 +316,7 @@ export async function bootstrapGateway(
 
       return async () => {
         logger.info('Shutting down');
+        approvalController?.dispose();
         stopScheduler?.();
         if (scheduleTicker) { clearInterval(scheduleTicker); scheduleTicker = undefined; }
         flushStickerGate();

@@ -267,6 +267,10 @@ export interface ImQQBotConfig {
   showToolResults: boolean;
   /** 调试模式 */
   debug: boolean;
+  /** 通过 QQ 接收并处理 dsh 的一次性权限申请(远程审批; 思路来源见 features/qq-approval.ts 头注) */
+  enableApprovals: boolean;
+  /** QQ 权限申请等待时长(ms), 超时自动拒绝 */
+  approvalTimeoutMs: number;
 }
 
 export const ConfigSchema: Schema<ImQQBotConfig> = Schema.object({
@@ -326,4 +330,6 @@ export const ConfigSchema: Schema<ImQQBotConfig> = Schema.object({
   schedule: scheduleSchema,
   showToolResults: Schema.boolean().default(false).description('是否展示工具调用成功结果（工具错误始终展示）'),
   debug: Schema.boolean().default(false),
+  enableApprovals: Schema.boolean().default(false).description('通过 QQ 接收并处理 dsh 一次性权限申请(远程审批: 发起者用 /approve CODE 放行)'),
+  approvalTimeoutMs: Schema.number().default(120000).description('QQ 权限申请超时(ms), 超时自动拒绝'),
 });
