@@ -39,11 +39,20 @@ const DEFAULTS: Required<DebounceCfg> = { enabled: true, silenceSec: 3, maxMsgs:
 interface DebounceEntry {
   msg: Record<string, unknown>;
   wasMentioned: boolean;
+  /** QQ 服务器下发时间戳(ms)。QQ 官方事件推送可能乱序, 窗口排序/计时一律以此为准 */
+  ts: number;
 }
 
 interface DebounceWindow {
   entries: DebounceEntry[];
   timer: NodeJS.Timeout | null;
+}
+
+/** 解析消息服务器时间戳(ISO 字符串或 ms 数字; 解析失败回落"到达时刻"兜底) */
+function msgTs(msg: Record<string, unknown>): number {
+  const raw = msg.timestamp;
+  const n = typeof raw === 'number' ? raw : Date.parse(String(raw ?? ''));
+  return Number.isFinite(n) ? n : Date.now();
 }
 
 function num(v: unknown, d: number): number {
@@ -81,6 +90,9 @@ export function debounceLayer(
     const entries = w.entries;
     if (entries.length === 0) return;
 
+    // QQ 官方推送可能乱序: 派发前统一按服务器时间戳升序排(旧→新)
+    entries.sort((a, b) => a.ts - b.ts);
+
     // 当前触发消息: 窗口含被@的消息时用"最后一条被@的"(它才是请求回复的; 之后的补充在历史里),
     // 否则用窗口最后一条真实消息。
     let triggerIdx = entries.length - 1;
@@ -108,7 +120,10 @@ export function debounceLayer(
           logger.warn?.(`[debounce] 拉群历史失败: ${err instanceof Error ? err.message : String(err)}`);
         }
         const curId = trigger.msg.messageId;
-        const hist = history.filter(h => h.messageId !== curId);
+        // store 按到达序 append 也可能乱序 → 派发前按时间戳升序排
+        const hist = history
+          .filter(h => h.messageId !== curId)
+          .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
         const state: Record<string, unknown> = { history: hist };
         if (trigger.wasMentioned) {
           state.mention = { wasMentioned: true };
@@ -174,11 +189,22 @@ export function debounceLayer(
       w = { entries: [], timer: null };
       windows.set(key, w);
     }
-    w.entries.push({ msg: { ...msg }, wasMentioned });
-    // 以最近一条消息为基准重置静默计时(等"最近说话者"停口)
-    clearTimer(w);
-    w.timer = setTimeout(() => void flush(key, w as DebounceWindow), silenceMs);
-    w.timer.unref?.();
+    const ts = msgTs(msg);
+    // 只有"比窗口现有消息更新"的消息才算最近说话者继续开口 → 重置静默计时;
+    // 乱序补到的旧消息(服务器时间更早)只入窗口, 不延长等待。
+    let maxTs = 0;
+    for (let i = 0; i < w.entries.length; i++) {
+      const e = w.entries[i];
+      if (e && e.ts > maxTs) maxTs = e.ts;
+    }
+    const isNewer = ts >= maxTs;
+    w.entries.push({ msg: { ...msg }, wasMentioned, ts });
+    if (isNewer) {
+      // 最近说话者(按服务器时间)刚又开口 → 重新等 ta 停口 silenceMs
+      clearTimer(w);
+      w.timer = setTimeout(() => void flush(key, w as DebounceWindow), silenceMs);
+      w.timer.unref?.();
+    }
 
     // 攒满上限立即发, 不等对方停
     if (w.entries.length >= maxMsgs) {
