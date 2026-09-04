@@ -197,25 +197,21 @@ export function debounceLayer(
         }
         merged.sort((a, b) => a.ts - b.ts);
 
-        // C 方案: current 恒取时间序最后一条(纯时间序, 上下文永不倒置)。
-        // 窗口内含更早的 @ 消息时, 把它在 history 里补 " (@you)" 标注,
-        // 并置 mustReply 让 inbound 注入"这次要开口回复"的系统提示。
+        // current 恒取时间序最后一条(纯时间序, 上下文永不倒置)。
         const cur = merged[merged.length - 1];
         if (!cur) return;
 
+        // 忠实还原 store 原文进 history(不额外注入 (@you) 标注/回复指令:
+        // 插件保持通用, "要不要回"由 AI 按自身守则判断; @ 事实保留在原文 <@openid> 前缀里)
         const hist: HistoryEntry[] = merged
           .filter(m => m.messageId !== cur.messageId)
-          .map(m => {
-            const baseContent = m.content ?? String(m.msg?.content ?? '');
-            return {
-              senderId: m.senderId ?? '',
-              senderName: m.senderName,
-              // 窗口内曾 @ 机器人、但时间上早于 current 的消息: 在历史里补 (@you) 标注, AI 不会漏掉这次点名
-              content: m.wasMentioned ? `${baseContent} (@you)` : baseContent,
-              timestamp: m.ts,
-              messageId: m.messageId,
-            };
-          });
+          .map(m => ({
+            senderId: m.senderId ?? '',
+            senderName: m.senderName,
+            content: m.content ?? String(m.msg?.content ?? ''),
+            timestamp: m.ts,
+            messageId: m.messageId,
+          }));
 
         // current 消息: 窗口条目有完整 msg; store 来源的只有 HistoryEntry 字段,
         // 从群窗口消息继承 kind/groupOpenid/attachments 等再补齐本人字段。
@@ -233,7 +229,6 @@ export function debounceLayer(
           state.mention = { wasMentioned: true };
         } else {
           state.batchDispatch = true;
-          if (hasMention) state.mustReply = true; // @ 在 history 里 → 强制开口
         }
         dbg(`  merged-order=[${merged.map(m => JSON.stringify(String(m.content ?? m.msg?.content ?? '').slice(0, 16))).join(',')}] cur=${JSON.stringify(String(cur.content ?? cur.msg?.content ?? '').slice(0, 16))} hasMention=${hasMention}`);
         // 群普通(无@)批派发 → 记冷却(与群冷却中间件共享 lastDispatchAt, 防刷屏语义保留)
