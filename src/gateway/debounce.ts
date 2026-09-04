@@ -24,6 +24,8 @@ import type { SessionManager } from '../session/index.js';
 import type { Logger } from '../types.js';
 import { handleInbound } from '../transport/inbound.js';
 import { getHistoryStore, historyGroupKey } from '../features/history-store.js';
+import { appendFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 /** 运行时可配字段(全部可缺省, 缺省回落默认值) */
 interface DebounceCfg {
@@ -71,6 +73,14 @@ export function debounceLayer(
 ): Middleware {
   const windows = new Map<string, DebounceWindow>();
 
+  /** 调序调试日志(临时, 定位官方帧序用; 排查完删除): {cwd}/.qqbot/debounce-dbg.log */
+  const dbgFile = join(config.cwd || process.cwd(), '.qqbot', 'debounce-dbg.log');
+  function dbg(line: string): void {
+    try {
+      appendFileSync(dbgFile, `${new Date().toISOString()} ${line}\n`, 'utf8');
+    } catch { /* ignore */ }
+  }
+
   const cfg = (): DebounceCfg => {
     const d = (config.behavior as { debounce?: DebounceCfg })?.debounce;
     return d ?? DEFAULTS;
@@ -106,32 +116,92 @@ export function debounceLayer(
     const trigger = entries[triggerIdx];
     if (!trigger) return;
     const kind = String(trigger.msg.kind ?? '');
+    dbg(`flush key=${key} n=${entries.length} sorted-order=[${entries.map(e => JSON.stringify(String(e.msg.content ?? '').slice(0, 24))).join(',')}] trigger=${JSON.stringify(String(trigger.msg.content ?? '').slice(0, 24))}`);
 
     try {
       if (kind === 'group') {
         const gid = String(trigger.msg.groupOpenid ?? trigger.msg.senderId ?? '');
         if (!gid) return;
-        // 窗口期消息已被 mediaHistoryBuffer 记录进共享 store; 现拉历史并剔除"当前消息",
-        // 交给 handleInbound 的 includeHistory 打包(与真实 @ 走链时拿到的一致)。
-        let history: HistoryEntry[] = [];
+        // 群冷却吞掉的消息也已被 mediaHistoryBuffer(链第4步, 冷却/debounce 之前)记录进 store。
+        // 因此以 store 为权威全量: 与窗口合并去重、按服务器时间序排列后,
+        // current 取"时间上真正最后一条"(窗口含@时取最后一条被@的), 其余按序进 history ——
+        // 避免 current 取成"群冷却放行的第一条"导致上下文整体倒序。
+        let storeHist: HistoryEntry[] = [];
         try {
-          history = await getHistoryStore().list(historyGroupKey(config.appId, gid), num(config.historyLimit, 10));
+          storeHist = await getHistoryStore().list(historyGroupKey(config.appId, gid), num(config.historyLimit, 20));
         } catch (err) {
           logger.warn?.(`[debounce] 拉群历史失败: ${err instanceof Error ? err.message : String(err)}`);
         }
-        const curId = trigger.msg.messageId;
-        // store 按到达序 append 也可能乱序 → 派发前按时间戳升序排
-        const hist = history
-          .filter(h => h.messageId !== curId)
-          .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+        dbg(`  store-raw=[${storeHist.map(h => JSON.stringify(String(h.content).slice(0, 24))).join(',')}]`);
+
+        interface MergedItem {
+          messageId: string;
+          ts: number;
+          msg?: Record<string, unknown>;
+          content?: string;
+          senderId?: string;
+          senderName?: string;
+          wasMentioned?: boolean;
+        }
+        const merged: MergedItem[] = storeHist.map(h => ({
+          messageId: h.messageId,
+          ts: h.timestamp || 0,
+          content: h.content,
+          senderId: h.senderId,
+          senderName: h.senderName,
+        }));
+        for (const e of entries) {
+          const id = String(e.msg.messageId ?? '');
+          const hit = merged.find(m => m.messageId === id);
+          if (hit) {
+            if (e.wasMentioned) hit.wasMentioned = true;
+          } else {
+            merged.push({ messageId: id, ts: e.ts, msg: e.msg, wasMentioned: e.wasMentioned });
+          }
+        }
+        merged.sort((a, b) => a.ts - b.ts);
+
+        // current = 窗口内最后一条被@的消息(它才是请求回复的); 否则 = 时间序最后一条
+        let cur: MergedItem | undefined;
+        for (let i = merged.length - 1; i >= 0; i--) {
+          const m = merged[i];
+          if (m && m.wasMentioned) {
+            cur = m;
+            break;
+          }
+        }
+        if (!cur) cur = merged[merged.length - 1];
+        if (!cur) return;
+
+        const hist: HistoryEntry[] = merged
+          .filter(m => m.messageId !== cur.messageId)
+          .map(m => ({
+            senderId: m.senderId ?? '',
+            senderName: m.senderName,
+            content: m.content ?? String(m.msg?.content ?? ''),
+            timestamp: m.ts,
+            messageId: m.messageId,
+          }));
+
+        // current 消息: 窗口条目有完整 msg; store 来源的只有 HistoryEntry 字段,
+        // 从群窗口消息继承 kind/groupOpenid/attachments 等再补齐本人字段。
+        const curMsg: Record<string, unknown> = cur.msg ?? {
+          ...(entries[entries.length - 1] ?? trigger).msg,
+          messageId: cur.messageId,
+          content: cur.content ?? '',
+          senderId: cur.senderId,
+          senderName: cur.senderName,
+          timestamp: new Date(cur.ts).toISOString(),
+        };
         const state: Record<string, unknown> = { history: hist };
-        if (trigger.wasMentioned) {
+        if (cur.wasMentioned) {
           state.mention = { wasMentioned: true };
         } else {
           state.batchDispatch = true;
         }
-        logger.info(`[debounce] flush(group ${gid}) ${entries.length}条 → handleInbound`);
-        await handleInbound(trigger.msg, manager, config, logger, state);
+        dbg(`  merged-order=[${merged.map(m => JSON.stringify(String(m.content ?? m.msg?.content ?? '').slice(0, 16))).join(',')}] cur=${JSON.stringify(String(cur.content ?? cur.msg?.content ?? '').slice(0, 16))}`);
+        logger.info(`[debounce] flush(group ${gid}) 窗口${entries.length}条/store${storeHist.length}条 → handleInbound`);
+        await handleInbound(curMsg, manager, config, logger, state);
       } else {
         // 私聊: 无群历史缓冲, 窗口自缓冲 → 文本按序拼接 + 合并附件成一条合成消息
         const textLines = entries
@@ -190,6 +260,9 @@ export function debounceLayer(
       windows.set(key, w);
     }
     const ts = msgTs(msg);
+    const arrivedAt = Date.now();
+    // 到达日志: 记录"到达本中间件的时刻"+"服务器时间戳", 用于对比官方帧序与真实发送序
+    dbg(`arrive key=${key} at=${arrivedAt} ts=${String(msg.timestamp ?? '')} parsedTs=${ts} id=${String(msg.messageId ?? '').slice(0, 14)} mention=${wasMentioned} content=${JSON.stringify(content.slice(0, 30))}`);
     // 只有"比窗口现有消息更新"的消息才算最近说话者继续开口 → 重置静默计时;
     // 乱序补到的旧消息(服务器时间更早)只入窗口, 不延长等待。
     let maxTs = 0;
@@ -199,6 +272,7 @@ export function debounceLayer(
     }
     const isNewer = ts >= maxTs;
     w.entries.push({ msg: { ...msg }, wasMentioned, ts });
+    dbg(`  win=${w.entries.length} new=${isNewer} order=[${w.entries.map(e => JSON.stringify(String(e.msg.content ?? '').slice(0, 16))).join(',')}]`);
     if (isNewer) {
       // 最近说话者(按服务器时间)刚又开口 → 重新等 ta 停口 silenceMs
       clearTimer(w);
