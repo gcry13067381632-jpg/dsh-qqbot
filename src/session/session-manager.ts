@@ -322,6 +322,24 @@ export class SessionManager {
           };
     const channelSetup = (agentCtx: Context) => (async () => {
       provideChannel?.(agentCtx);
+      // 群守则 → systemPrompt.section(常驻 system, 每请求必见, 不再每轮塞 user 历史省 token):
+      // text() 每次渲染现读 live config(面板热改即对新回合生效); 仅群会话返回守则(私聊返回空)。
+      try {
+        const sp = (agentCtx as { systemPrompt?: { section?: (o: unknown) => unknown } }).systemPrompt;
+        if (sp && typeof sp.section === 'function') {
+          sp.section({
+            name: 'qqbot:group-rules',
+            order: 50,
+            text: (context: { agent?: unknown }) => {
+              try {
+                const rec = this.findByAgent(context?.agent as never);
+                if (!rec || rec.scope !== 'group') return '';
+                return this.config.groupPrompt?.trim() || '';
+              } catch { return ''; }
+            },
+          });
+        }
+      } catch { /* 守则 section 注册失败不影响会话 */ }
       // 有 presets(standing 装配)时由 preset 插件行装载工具, 不再注册 agentCtx
       if (!presets) {
         diagSm('无 agent-presets → agentCtx 直接注册(devqq 路径)');

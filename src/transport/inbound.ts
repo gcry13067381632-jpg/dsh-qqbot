@@ -113,9 +113,13 @@ export async function handleInbound(
   // ⚠️ 本地手改功能（曾被重编译冲掉），改完务必保持 src 与部署 dist 同步。
   agentBody = applyInjectRules(agentBody, msg, config.injectRules, logger);
 
-  // 群聊常驻守则(通道级注入, 默认=表情包礼仪; 跨 preset 不碰 persona; 空=关闭)
-  if (scope === 'group' && config.groupPrompt && config.groupPrompt.trim()) {
-    agentBody = `[群聊守则]\n${config.groupPrompt.trim()}\n\n${agentBody}`;
+  // 群聊时间戳(原"群守则"拼接位): 守则已迁 systemPrompt.section(session-manager 装配期注册,
+  // 每请求进 system, 不再每轮塞 user 历史); 此处改为注入当前系统时间, 让 AI 每轮知道日期/星期/时刻。
+  if (scope === 'group') {
+    const _now = new Date();
+    const _p = (n: number): string => String(n).padStart(2, '0');
+    const _wd = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][_now.getDay()];
+    agentBody = `[当前时间 ${_now.getFullYear()}-${_p(_now.getMonth() + 1)}-${_p(_now.getDate())} ${_wd} ${_p(_now.getHours())}:${_p(_now.getMinutes())}]\n\n${agentBody}`;
   }
 
   logger.info(`Processing: scope=${scope} peerId=${peerId} body="${agentBody.slice(0, 200)}"`);
