@@ -83,17 +83,23 @@ export function startScheduler(
     logger.info(`[scheduler] fire task=${task.id} (${target.name || target.id}) → ${key} @ ${task.time}`);
     try {
       // 伪造入站消息(与 SDK 消息同形; 无 messageId → 出站自动走主动推送)
-      // - group: peerId 取 groupOpenid(=target.targetId), sender 用固定显示名
+      // - 本质仍是"伪造一条消息唤醒 AI 回合"(定时任务必须触发回合), 但内容自报家门:
+      //   前缀带 [定时任务 + 系统日期时间], senderName 用中性名, 不打假 (@you) —— AI 干活照干,
+      //   但不会把定时触发记成"主人真人发言/被真人点名"(防污染主人交互记忆)。
+      // - group: peerId 取 groupOpenid(=target.targetId)
       // - c2c:   peerId 取 senderId —— 必须等于 target.targetId(该用户 openid), 才能命中原会话
-      // mention.wasMentioned=true → agentBody 带 (@you) 语义, 与真人 @ 等效
-      const trigger = task.prompt?.trim() || '在吗~ 出来说说话吧';
+      const now = new Date();
+      const pad = (n: number): string => String(n).padStart(2, '0');
+      const ts = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+      const rawPrompt = task.prompt?.trim() || '在吗~ 出来说说话吧';
+      const trigger = `[定时任务 ${ts}] ${rawPrompt}`;
       const fakeMsg = {
         kind: scope,
         senderId: scope === 'c2c' ? target.targetId : 'master',
-        senderName: '主人',
+        senderName: '定时任务',
         content: trigger,
         messageId: '',
-        timestamp: new Date().toISOString(),
+        timestamp: now.toISOString(),
         groupOpenid: scope === 'group' ? target.targetId : undefined,
         msgType: 0,
         attachments: undefined,
@@ -103,7 +109,7 @@ export function startScheduler(
         manager,
         config,
         logger,
-        { mention: { wasMentioned: true } },
+        undefined, // 不打假 (@you): 定时触发不是真人点名
       );
       logger.info(`[scheduler] injected inbound → handleInbound: task=${task.id} key=${key}`);
     } catch (err) {
