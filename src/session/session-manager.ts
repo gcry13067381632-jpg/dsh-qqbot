@@ -322,21 +322,15 @@ export class SessionManager {
           };
     const channelSetup = (agentCtx: Context) => (async () => {
       provideChannel?.(agentCtx);
-      // 群守则 → systemPrompt.section(常驻 system, 每请求必见, 不再每轮塞 user 历史省 token):
-      // text() 每次渲染现读 live config(面板热改即对新回合生效); 仅群会话返回守则(私聊返回空)。
+      // 群守则 → systemPrompt.section(常驻 system): text() 每次渲染现读 live config —— 审批策略
+      // context 同款"直读"写法, 不依赖 findByAgent/manager 状态(避免渲染期查不到会话返回空 → 守则丢失)。
       try {
         const sp = (agentCtx as { systemPrompt?: { section?: (o: unknown) => unknown } }).systemPrompt;
         if (sp && typeof sp.section === 'function') {
           sp.section({
             name: 'qqbot:group-rules',
             order: 50,
-            text: (context: { agent?: unknown }) => {
-              try {
-                const rec = this.findByAgent(context?.agent as never);
-                if (!rec || rec.scope !== 'group') return '';
-                return this.config.groupPrompt?.trim() || '';
-              } catch { return ''; }
-            },
+            text: () => this.config.groupPrompt?.trim() || '',
           });
         }
       } catch { /* 守则 section 注册失败不影响会话 */ }
