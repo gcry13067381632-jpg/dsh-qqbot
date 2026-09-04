@@ -27,6 +27,7 @@ import { stickerCapture } from '../middleware/sticker-capture.js';
 import { getHistoryStore, historyGroupKey } from '../features/history-store.js';
 import { stickerActivityRecorder } from '../features/sticker-gate.js';
 import { chatLedgerRecorder } from '../features/chat-ledger.js';
+import { debounceLayer } from './debounce.js';
 import { join } from 'node:path';
 
 export function setupMiddlewares(
@@ -126,6 +127,13 @@ export function setupMiddlewares(
     ctx.state.batchDispatch = true;
     return next();
   });
+
+  // 7.5 延迟聚合(debounce, 独立于群冷却的另一套机制)：
+  //     已通过冷却判定"可派发"的消息(@ / 私聊 / 冷却外群普通)先进 per-peer 窗口,
+  //     最近说话者停口 X 秒 或 攒满 Y 条 → flush 直连 handleInbound, 窗口期历史一次打包综合回。
+  //     配置 config.behavior.debounce(live 热更); 斜杠命令自动跳过。详见 src/gateway/debounce.ts。
+  //     ⚠️ 本地手改功能, 同步纪律同上方群冷却中间件。
+  bot.use(debounceLayer(config, manager, logger));
 
   // 8. 斜杠命令（在 concurrencyGuard 之前，命令匹配后不排队直接响应）
   const slash = slashCommand({

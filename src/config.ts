@@ -19,6 +19,18 @@ export interface AccessControlConfig {
   groupAllow: string[];
 }
 
+/** 延迟聚合(debounce)配置 — 独立于群冷却的另一套机制 */
+export interface DebounceConfig {
+  /** 总开关。true=消息先进"待派发窗口", 静默/攒够才一次派发; false=关(走原逻辑) */
+  enabled: boolean;
+  /** 最近说话者停止发言多少秒后触发一次派发(默认3)。0=不停顿(立即派发, 等效关掉静默等待) */
+  silenceSec: number;
+  /** 窗口内消息攒满多少条立即触发(默认10), 不等人停 */
+  maxMsgs: number;
+  /** @bot 消息是否也走延迟(默认true)。false=@到秒回(不聚合) */
+  mentionDelayed: boolean;
+}
+
 /** 回复调度(冷却)配置 */
 export interface BehaviorConfig {
   /** 群普通(未@)消息回复最小间隔(秒)。0=不限制; 默认60 */
@@ -27,6 +39,8 @@ export interface BehaviorConfig {
   mentionIntervalSec: number;
   /** 私聊(C2C)回复最小间隔(秒)。0=不限制 */
   directIntervalSec: number;
+  /** 延迟聚合(防连发只回第一句; 与上面三项冷却互不干扰) */
+  debounce: DebounceConfig;
 }
 
 /** 表情包主动发送闸门(默认不限制; 总开关 enabled=false 一票关闭) */
@@ -131,14 +145,33 @@ export const DEFAULT_GROUP_PROMPT = [
 
 // ── 共享字段子 schema(主 ConfigSchema 与 EditableConfigSchema 复用) ──
 
+const debounceSchema = Schema.object({
+  enabled: Schema.boolean().default(true).description('延迟聚合总开关(防"连发N句只回第一句": 消息先攒窗口, 人停口或攒够条数才一次综合回)'),
+  silenceSec: Schema.number().min(0).default(3).description('最近说话者停止发言几秒后开口(默认3; 0=不停顿)'),
+  maxMsgs: Schema.number().min(1).default(10).description('窗口攒满几条立即开口(默认10), 不等对方停'),
+  mentionDelayed: Schema.boolean().default(true).description('@bot 消息是否也走延迟(默认是; 不勾=@到秒回)'),
+}).default({
+  enabled: true,
+  silenceSec: 3,
+  maxMsgs: 10,
+  mentionDelayed: true,
+}).description('延迟聚合(独立于冷却的另一套机制)');
+
 const behaviorSchema = Schema.object({
   freeIntervalSec: Schema.number().min(0).default(60).description('群普通消息回复间隔(秒),0=不限制'),
   mentionIntervalSec: Schema.number().min(0).default(0).description('@bot回复间隔(秒),0=立即回'),
   directIntervalSec: Schema.number().min(0).default(0).description('私聊回复间隔(秒),0=不限制'),
+  debounce: debounceSchema,
 }).default({
   freeIntervalSec: 60,
   mentionIntervalSec: 0,
   directIntervalSec: 0,
+  debounce: {
+    enabled: true,
+    silenceSec: 3,
+    maxMsgs: 10,
+    mentionDelayed: true,
+  },
 }).description('回复调度');
 
 const stickerGatesSchema = Schema.object({

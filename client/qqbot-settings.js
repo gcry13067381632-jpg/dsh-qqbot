@@ -126,6 +126,7 @@ window.__ModuleLoader__.load({
       if (!cfg) return h('div', null, h('p', null, msg || '加载中…'))
 
       var gates = cfg.sticker.gates || {}
+      var dbc = cfg.behavior.debounce || {} // 延迟聚合(后端未设置时缺省回落默认值)
       function setBehavior(p) { setCfg(function (c) { return { ...c, behavior: { ...c.behavior, ...p } } }) }
       function setGates(p) { setCfg(function (c) { return { ...c, sticker: { ...c.sticker, gates: { ...(c.sticker.gates || {}), ...p } } } }) }
       function setSticker(p) { setCfg(function (c) { return { ...c, sticker: { ...(c.sticker || {}), ...p } } }) }
@@ -206,7 +207,12 @@ window.__ModuleLoader__.load({
         h('div', { style: boxStyle },
           NumRow({ label: '群里没人 @ 她时,隔几秒才回一次(0=每条都回)', value: cfg.behavior.freeIntervalSec, onChange: function (v) { setBehavior({ freeIntervalSec: v }) } }),
           NumRow({ label: '有人 @ 她时,两次回复至少隔几秒(0=随叫随到)', value: cfg.behavior.mentionIntervalSec, onChange: function (v) { setBehavior({ mentionIntervalSec: v }) } }),
-          NumRow({ label: '私聊里隔几秒回一次(0=不限制)', value: cfg.behavior.directIntervalSec, onChange: function (v) { setBehavior({ directIntervalSec: v }) } })),
+          NumRow({ label: '私聊里隔几秒回一次(0=不限制)', value: cfg.behavior.directIntervalSec, onChange: function (v) { setBehavior({ directIntervalSec: v }) } }),
+          h('div', { style: { fontSize: 12, color: '#666', margin: '10px 0 2px' } }, '延迟聚合(另一套机制,和上面冷却不冲突): 她收到消息先等一小会儿, 把连发的话攒一起综合回, 免得只回第一句。'),
+          BoolRow({ label: '开启延迟聚合(不勾=回到来一条回一条)', value: dbc.enabled !== false, onChange: function (v) { setBehavior({ debounce: { ...dbc, enabled: v } }) } }),
+          NumRow({ label: '对方停口几秒后她才开口(默认3;0=不停顿)', value: dbc.silenceSec != null ? dbc.silenceSec : 3, onChange: function (v) { setBehavior({ debounce: { ...dbc, silenceSec: v } }) } }),
+          NumRow({ label: '攒满几条立即开口,不等对方停(默认10)', value: dbc.maxMsgs != null ? dbc.maxMsgs : 10, onChange: function (v) { setBehavior({ debounce: { ...dbc, maxMsgs: v } }) } }),
+          BoolRow({ label: '有人 @ 她时也走延迟(不勾=@到秒回)', value: dbc.mentionDelayed !== false, onChange: function (v) { setBehavior({ debounce: { ...dbc, mentionDelayed: v } }) } })),
 
         h('div', { style: sectionTitle }, '② 发表情包的限制(全默认不限制)'),
         h('p', { style: { fontSize: 12, color: '#888' } }, '防止她聊天时表情包刷屏;下面两项是"她主动发图"时才用——群里很热闹才发,冷清就憋着。不想管就保持全 0,也别勾总开关。'),
