@@ -467,6 +467,29 @@ export class SessionManager {
    * 说明: 新增工具即时生效; 与已有工具同名的注册会被 channel-tools 内部 try/catch 跳过(保留旧实现),
    *       想更新已有工具逻辑仍需正式重启(或临时换新工具名)。
    */
+  /**
+   * qqChannel 上下文自愈(2026-09-05): 重启后"恢复"的会话不跑 setup → agent.ctx 上没有
+   * qqChannel → 通道工具路由不到本实例(channelOf 失败 → 图库/定时落到别的实例或 C 盘幽灵库)。
+   * 每次消息补一次 provide(幂等: 已是本实例就跳过)。用 record.agent.ctx(恒有)。
+   */
+  async ensureChannelContext(record: SessionRecord): Promise<void> {
+    try {
+      const agentCtx = (record.agent as { ctx?: Context } | undefined)?.ctx ?? record.agentCtx;
+      if (!agentCtx || !this.channelSender) return;
+      const anyCtx = agentCtx as unknown as {
+        get?: (n: string) => unknown;
+        provide?: (n: string, v: unknown) => unknown;
+      };
+      const existing = anyCtx.get?.('qqChannel') as { manager?: unknown } | undefined;
+      if (existing && existing.manager === this) return; // 已是本实例
+      anyCtx.provide?.('qqChannel', { manager: this, sender: this.channelSender });
+      this.logger.info('im-qqbot: qqChannel 上下文自愈 provide(本实例)');
+      diagSm('ensureChannelContext: provide qqChannel(本实例)');
+    } catch (err) {
+      diagSm(`ensureChannelContext: 失败 ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   async hotReloadChannelTools(agentCtx: Context): Promise<void> {
     const url = new URL('../channel-tools.js', import.meta.url);
     url.searchParams.set('hot', String(Date.now())); // 绕 ESM 模块缓存

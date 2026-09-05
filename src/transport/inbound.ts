@@ -139,6 +139,12 @@ export async function handleInbound(
   } catch (err) {
     logger.debug(`ensureChannelTools error: ${err instanceof Error ? err.message : String(err)}`);
   }
+  // ── qqChannel 上下文自愈: 恢复会话可能没 provide, 工具按本实例路由图库/定时需要它(幂等) ──
+  try {
+    await manager.ensureChannelContext(record);
+  } catch (err) {
+    logger.debug(`ensureChannelContext error: ${err instanceof Error ? err.message : String(err)}`);
+  }
   // ── 守则/身份 context 注册自愈(幂等; 重启恢复会话也覆盖, 保证 systemPrompt.context 注入生效) ──
   try {
     await manager.ensureGroupRules(record);
