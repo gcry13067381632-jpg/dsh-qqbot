@@ -32,6 +32,9 @@ type ToolResultView =
 
 const RESULT_PREVIEW_LIMIT = 1500;
 
+/** 静默工具集: 这些工具"失败"(尤其被主动 abort)是**有意行为**, 不展示失败提示(如 reply_gate 判定不吃瓜→self-cancel, 应静默无痕) */
+const SILENT_TOOLS = new Set(['reply_gate']);
+
 /**
  * 将工具调用结果格式化为 Markdown 文本
  *
@@ -44,8 +47,9 @@ export function formatToolResult(
   toolsRegistry: ToolsRegistryLike | undefined,
   agent: unknown,
 ): string | null {
-  // 1. 错误优先：始终展示
+  // 1. 错误优先：始终展示（静默工具除外——其中止=有意静默，如 reply_gate 吃瓜 self-cancel）
   if (data.error) {
+    if (SILENT_TOOLS.has(name)) return null;
     return `❌ 工具 \`${name}\` 执行失败\n\`${data.error.name}: ${data.error.code}\``;
   }
 
