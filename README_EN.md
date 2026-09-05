@@ -20,6 +20,15 @@ This repo is an enhanced fork of [@tencent-connect/dsh-qqbot](https://github.com
 - **🧹 Messy library? Let the AI tidy it** — ask *"which stickers still lack tags or descriptions"* and it lists them, then tags and describes them itself.
 - **🖥️ No config-file surgery** — reply pacing, sticker gates, scheduled wake-ups, and per-bot personas are all editable in the settings panel; saving applies live (only adding/removing bots needs a restart).
 
+### 📸 Showcase
+
+Left: the dsh runtime backend — reasoning, tool calls and token usage are fully visible (paired with the `reply_gate` gate tool, the bot decides on its own whether to speak or stay silently idle);
+Right: real QQ group conversation — hide-and-seek role-play, replying when it should and staying quiet when it shouldn't.
+
+![Runtime backend log (reasoning & tool calls visible)](docs/showcase-1-log.png)
+
+![QQ group conversation (role-play / self-decided silence)](docs/showcase-2-chat.png)
+
 ### For developers
 - Standard tools available inside QQ sessions: `send_media` / `recall_message` / `list_stickers` / `sticker_tag` / `sticker_untagged` / `schedule_timer` / `schedule_cancel` …, routed per bot account.
 - **Plain text can send media or recall messages**: writing `[MEDIA:image|path-or-url]` in a reply turns it into a real image message (`voice`/`video`/`file` work the same); a lone `[RECALL]` line recalls the bot's own last message.
