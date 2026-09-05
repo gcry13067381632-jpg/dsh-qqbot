@@ -678,7 +678,13 @@ export function apply(ctx: Context): void {
     name: 'group_join_requests',
     description: '群管理(读): 查看当前群待审批的入群申请列表(申请人/验证消息/来源/风险提示)。仅主人要求时调用。需在设置开启"QQ群管理"且机器人为群管理员。',
     parameters: {},
-    output: { schema: { type: 'object', additionalProperties: true }, render: () => [] },
+    output: {
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: { ok: { type: 'boolean', required: true }, msg: { type: 'string', required: true } },
+      },
+      render: (_a, v: { ok: boolean; msg: string }) => [{ type: 'text' as const, text: v.ok ? v.msg : `失败: ${v.msg}` }],
+    },
     async execute(_args, exec) {
       const ga = groupAdminOf(exec);
       if (!ga) return { ok: false, msg: '群管理未开启(设置→QQ群管理)或非群会话' };
@@ -725,7 +731,13 @@ export function apply(ctx: Context): void {
     name: 'group_mute_state',
     description: '群管理(读): 查看当前群禁言状态(全员模式 + 正在禁言中的成员及到期时间)。仅主人要求时调用。',
     parameters: {},
-    output: { schema: { type: 'object', additionalProperties: true }, render: () => [] },
+    output: {
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: { ok: { type: 'boolean', required: true }, msg: { type: 'string', required: true } },
+      },
+      render: (_a, v: { ok: boolean; msg: string }) => [{ type: 'text' as const, text: v.ok ? v.msg : `失败: ${v.msg}` }],
+    },
     async execute(_args, exec) {
       const ga = groupAdminOf(exec);
       if (!ga) return { ok: false, msg: '群管理未开启或非群会话' };
