@@ -645,4 +645,227 @@ export function apply(ctx) {
     try { store.flush(); } catch { /* ignore */ } // 导入完立即落盘
     writeJson(res, 200, { results });
   });
+
+  // ── ⑥QQ 群管理面板(P3, 2026-09-05): 多群管理 host 路由(读/写走 GroupAdminClient; 面板=主人直发免 QQ 审批) ──
+  // 数据: {cwd}/.qqbot/{groups.json 群注册表, join-pending.json 待审, group-audit.jsonl 审计日志}
+  // 鉴权: 与全路由一致走 route() 同源 loopback fence; 面板主人级鉴权(P4 加强)。
+  function nsBot(ns) {
+    const { bots } = parsePatch();
+    const id = ns && ns !== 'im-qqbot' ? String(ns) : 'im-qqbot';
+    const b = bots.find((x) => x.id === id);
+    if (!b) return null;
+    const appId = b.cfg?.appId || '';
+    const appSecret = b.cfg?.appSecret || '';
+    const cwd = b.cfg?.cwd || '';
+    if (!appId || !appSecret) return null;
+    return { id, appId, appSecret, cwd, ns: id };
+  }
+  async function groupClientOf(ns) {
+    const bot = nsBot(ns);
+    if (!bot) return null;
+    const mod = await import('./dist/api/group-admin.js');
+    return { bot, client: mod.createGroupAdmin({ appId: bot.appId, appSecret: bot.appSecret }) };
+  }
+  function audit(cwd, entry) {
+    try {
+      mkdirSync(join(cwd, '.qqbot'), { recursive: true });
+      const af = join(cwd, '.qqbot', 'group-audit.jsonl');
+      writeFileSync(af, JSON.stringify({ ts: new Date().toISOString(), ...entry }) + '\n', { flag: 'a' });
+    } catch { /* ignore */ }
+  }
+  function readGroupsJson(cwd) {
+    try { return JSON.parse(readFileSync(join(cwd, '.qqbot', 'groups.json'), 'utf8') || '{}'); } catch { return {}; }
+  }
+  function writeGroupsJson(cwd, g) {
+    try { mkdirSync(join(cwd, '.qqbot'), { recursive: true }); writeFileSync(join(cwd, '.qqbot', 'groups.json'), JSON.stringify(g, null, 1), 'utf8'); } catch { /* ignore */ }
+  }
+  function readPendingJson(cwd) {
+    try { return JSON.parse(readFileSync(join(cwd, '.qqbot', 'join-pending.json'), 'utf8') || '{}'); } catch { return {}; }
+  }
+  const NSQ = (u) => (u.searchParams.get('ns') || '').trim() || undefined;
+  const GQ = (u) => (u.searchParams.get('gid') || '').trim();
+
+  // 群列表(注册表 + pending 出现过的群 + 台账群; 逐个调官方 info 校验有效性+补群名, 11255=群已注销/不存在则标记失效并过滤)
+  route(ctx, 'GET', '/api/qqbot-settings/group/accounts', async (req, res) => {
+    try {
+      const u = new URL(req.url ?? '/', 'http://x');
+      const bot = nsBot(NSQ(u));
+      if (!bot) return writeJson(res, 400, { error: '找不到该账号实例(请先在账号页配置 appId/appSecret)' });
+      const reg = readGroupsJson(bot.cwd);
+      const pend = readPendingJson(bot.cwd);
+      const map = new Map();
+      for (const [gid, meta] of Object.entries(reg)) {
+        if (!gid) continue;
+        map.set(gid, { gid, name: (meta && meta.name) || '', from: 'registry', lastAt: (meta && meta.lastAt) || 0 });
+      }
+      for (const gid of Object.keys(pend)) {
+        if (!gid) continue;
+        if (map.has(gid)) { const m = map.get(gid); m.from = 'registry+pending'; }
+        else map.set(gid, { gid, name: '', from: 'pending', lastAt: 0 });
+      }
+      try {
+        const store = getStickerStore(bot.cwd ? join(bot.cwd, '表情包') : undefined);
+        const raw = readFileSync(join(store.dataDir, 'known-chats.jsonl'), 'utf8');
+        for (const l of raw.split('\n')) {
+          const t = l.trim(); if (!t) continue;
+          try {
+            const o = JSON.parse(t);
+            if (o && o.scope === 'group' && typeof o.id === 'string' && o.id) {
+              if (map.has(o.id)) { if (!map.get(o.id).name && o.name) map.get(o.id).name = o.name; }
+              else map.set(o.id, { gid: o.id, name: o.name || '', from: 'ledger', lastAt: typeof o.ts === 'number' ? o.ts : 0 });
+            }
+          } catch { /* 坏行跳过 */ }
+        }
+      } catch { /* 无台账 */ }
+      // 逐个校验有效性 + 用官方群名补全显示名(注册表里的群也顺手回写官方名)
+      const gc = await groupClientOf(NSQ(u));
+      const out = [];
+      const aliveReg = {};
+      if (gc) {
+        for (const g of [...map.values()].sort((a, b) => (b.lastAt || 0) - (a.lastAt || 0))) {
+          try {
+            const info = await gc.client.getGroupInfo(g.gid);
+            if (info.ok && info.data) {
+              const official = info.data.group_name || '';
+              if (official) g.name = official;
+              out.push(g);
+              aliveReg[g.gid] = { name: official || (reg[g.gid] && reg[g.gid].name) || '', lastAt: (reg[g.gid] && reg[g.gid].lastAt) || Date.now() };
+            } else {
+              // 11255 等 = 群已注销/不存在 → 不返回给 UI(避免选中后调用报错), 仅保留审计
+              audit(bot.cwd, { ev: 'group.dead', ns: bot.id, gid: g.gid, code: info.err && info.err.code, human: info.err && info.err.human });
+            }
+          } catch (e2) {
+            audit(bot.cwd, { ev: 'group.check-error', ns: bot.id, gid: g.gid, error: String((e2 && e2.message) || e2) });
+            out.push(g); // 网络类错误不判死, 保守保留
+          }
+        }
+        // 回写有效群注册表(自动剔除已注销群)
+        if (Object.keys(aliveReg).length >= 0) writeGroupsJson(bot.cwd, aliveReg);
+      } else {
+        out.push(...map.values());
+      }
+      writeJson(res, 200, { groups: out });
+    } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
+  });
+
+  // 待审入群申请(官方列表 + 本地 pending 已处理标记)
+  route(ctx, 'GET', '/api/qqbot-settings/group/join_requests', async (req, res) => {
+    try {
+      const u = new URL(req.url ?? '/', 'http://x');
+      const gid = GQ(u);
+      if (!gid) return writeJson(res, 400, { error: 'gid 必填' });
+      const gc = await groupClientOf(NSQ(u));
+      if (!gc) return writeJson(res, 400, { error: '找不到该账号实例(请先在账号页配置 appId/appSecret)' });
+      const r = await gc.client.listJoinRequests(gid);
+      if (!r.ok) return writeJson(res, 200, { ok: false, err: r.err });
+      const pend = readPendingJson(gc.bot.cwd);
+      const local = (pend[gid] || []).map((x) => ({ member_openid: x.member_openid, join_request_id: x.join_request_id, notified: !!x.notified, seen_at: x.seen_at }));
+      writeJson(res, 200, { ok: true, list: r.data.list, local });
+    } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
+  });
+
+  // 本地成员清单(官方成员列表未开放 → 用机器人见过的发言者兜底; 供禁言"选人"与成员 Tab 展示)
+  route(ctx, 'GET', '/api/qqbot-settings/group/members_local', async (req, res) => {
+    try {
+      const u = new URL(req.url ?? '/', 'http://x');
+      const gid = GQ(u);
+      const bot = nsBot(NSQ(u));
+      if (!bot) return writeJson(res, 400, { error: '找不到该账号实例(请先在账号页配置 appId/appSecret)' });
+      const store = getStickerStore(bot.cwd ? join(bot.cwd, '表情包') : undefined);
+      // 与台账同 dataDir 的 group-members.jsonl
+      const mod = await import('./dist/features/chat-ledger.js');
+      const members = mod.readGroupMembers(store.dataDir, gid || undefined);
+      writeJson(res, 200, { ok: true, members });
+    } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
+  });
+
+  // 手动审批入群 {ns?, gid, member_openid, op:approve|decline, reason?}
+  route(ctx, 'POST', '/api/qqbot-settings/group/approve', async (req, res) => {
+    const body = await readJsonBody(req);
+    if (!body || typeof body !== 'object') return writeJson(res, 400, { error: 'bad body' });
+    const gid = String(body.gid || '');
+    const mid = String(body.member_openid || '');
+    const op = String(body.op || '');
+    if (!gid || !mid || (op !== 'approve' && op !== 'decline')) return writeJson(res, 400, { error: 'gid/member_openid/op(approve|decline) 必填' });
+    try {
+      const gc = await groupClientOf(String(body.ns || ''));
+      if (!gc) return writeJson(res, 400, { error: '找不到该账号实例(请先在账号页配置 appId/appSecret)' });
+      const listR = await gc.client.listJoinRequests(gid);
+      const found = listR.ok ? (listR.data.list || []).find((x) => x.member_openid === mid) : undefined;
+      const r = await gc.client.approveJoinRequest(gid, mid, op, {
+        ...(found ? { join_request_id: found.join_request_id } : {}),
+        ...(op === 'decline' && String(body.reason || '') ? { reject_reason: String(body.reason) } : {}),
+      });
+      audit(gc.bot.cwd, { ev: 'group.approve', ns: gc.bot.id, gid, member_openid: mid, op, reason: String(body.reason || ''), ok: r.ok, code: r.ok ? undefined : (r.err && r.err.code) });
+      writeJson(res, r.ok ? 200 : 200, r.ok ? { ok: true, msg: op === 'approve' ? '已放行' : '已拒绝' } : { ok: false, err: r.err });
+    } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
+  });
+
+  // 禁言状态 {ns?, gid}
+  route(ctx, 'GET', '/api/qqbot-settings/group/mute_state', async (req, res) => {
+    try {
+      const u = new URL(req.url ?? '/', 'http://x');
+      const gid = GQ(u);
+      if (!gid) return writeJson(res, 400, { error: 'gid 必填' });
+      const gc = await groupClientOf(NSQ(u));
+      if (!gc) return writeJson(res, 400, { error: '找不到该账号实例(请先在账号页配置 appId/appSecret)' });
+      const r = await gc.client.getMuteState(gid);
+      writeJson(res, 200, r.ok ? { ok: true, data: r.data } : { ok: false, err: r.err });
+    } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
+  });
+
+  // 手动禁言/解禁 {ns?, gid, member_openid, action:mute|unmute, seconds?}
+  route(ctx, 'POST', '/api/qqbot-settings/group/mute', async (req, res) => {
+    const body = await readJsonBody(req);
+    if (!body || typeof body !== 'object') return writeJson(res, 400, { error: 'bad body' });
+    const gid = String(body.gid || '');
+    const mid = String(body.member_openid || '');
+    const action = String(body.action || '');
+    if (!gid || !mid || (action !== 'mute' && action !== 'unmute')) return writeJson(res, 400, { error: 'gid/member_openid/action(mute|unmute) 必填' });
+    try {
+      const gc = await groupClientOf(String(body.ns || ''));
+      if (!gc) return writeJson(res, 400, { error: '找不到该账号实例(请先在账号页配置 appId/appSecret)' });
+      const secs = action === 'mute' ? Math.max(1, Math.min(30 * 86400, Math.round(Number(body.seconds || 600)))) : 0;
+      const p2 = (n) => String(n).padStart(2, '0');
+      const expire = action === 'mute' ? new Date(Date.now() + secs * 1000) : null;
+      const rfc = expire ? expire.getFullYear() + '-' + p2(expire.getMonth() + 1) + '-' + p2(expire.getDate()) + 'T' + p2(expire.getHours()) + ':' + p2(expire.getMinutes()) + ':' + p2(expire.getSeconds()) + '+08:00' : null;
+      const r = await gc.client.setMemberMute(gid, mid, rfc);
+      audit(gc.bot.cwd, { ev: 'group.mute', ns: gc.bot.id, gid, member_openid: mid, action, seconds: secs, ok: r.ok, code: r.ok ? undefined : (r.err && r.err.code) });
+      // ⚠️ 官方对"禁言已退群成员"静默返回成功但不生效(实测 HTTP 200 空体, 状态列表无此人)
+      // → 禁言后回读 restrict_chat_setting 验证: 目标不在成员列表 = 已不在群/无法禁言 → 人话提示 + 自动剔除本地名单
+      if (r.ok && action === 'mute') {
+        try {
+          const st = await gc.client.getMuteState(gid);
+          const stMembers = (st.ok && st.data && Array.isArray(st.data.members) ? st.data.members : []) || [];
+          const present = stMembers.some((m) => m.member_openid === mid);
+          if (!present) {
+            const store = getStickerStore(gc.bot.cwd ? join(gc.bot.cwd, '表情包') : undefined);
+            const ledgerMod = await import('./dist/features/chat-ledger.js');
+            ledgerMod.removeGroupMember(store.dataDir, gid, mid);
+            audit(gc.bot.cwd, { ev: 'group.member-auto-remove', ns: gc.bot.id, gid, member_openid: mid, reason: '禁言无效(成员已不在群)' });
+            return writeJson(res, 200, { ok: false, err: { code: 'MEMBER_NOT_IN_GROUP', human: '该成员已不在群(可能已退群)——已自动从本地成员清单剔除' } });
+          }
+        } catch (e2) { /* 回读失败不阻断, 按成功返回 */ }
+      }
+      writeJson(res, r.ok ? 200 : 200, r.ok ? { ok: true, msg: action === 'mute' ? '已禁言 ' + Math.round(secs / 60) + ' 分钟' : '已解除禁言' } : { ok: false, err: r.err });
+    } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
+  });
+
+  // 绑定/登记群 {ns?, gid, name?}
+  route(ctx, 'POST', '/api/qqbot-settings/group/bind', async (req, res) => {
+    const body = await readJsonBody(req);
+    if (!body || typeof body !== 'object') return writeJson(res, 400, { error: 'bad body' });
+    const gid = String(body.gid || '').trim();
+    if (!gid) return writeJson(res, 400, { error: 'gid 必填' });
+    try {
+      const bot = nsBot(String(body.ns || ''));
+      if (!bot) return writeJson(res, 400, { error: '找不到该账号实例(请先在账号页配置 appId/appSecret)' });
+      const reg = readGroupsJson(bot.cwd);
+      reg[gid] = { name: String(body.name || '').trim(), lastAt: Date.now() };
+      writeGroupsJson(bot.cwd, reg);
+      audit(bot.cwd, { ev: 'group.bind', ns: bot.id, gid });
+      writeJson(res, 200, { ok: true });
+    } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
+  });
+
 }

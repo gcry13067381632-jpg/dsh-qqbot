@@ -19,8 +19,111 @@ window.__ModuleLoader__.load({
     var inputStyle = { marginLeft: 8, padding: '2px 6px', border: '1px solid #8884', borderRadius: 4, background: 'transparent', color: 'inherit', width: 110 }
     var wideStyle = { ...inputStyle, width: 260 }
     var fullStyle = { ...inputStyle, width: '92%', display: 'block', margin: '4px 0 8px' }
-    var boxStyle = { border: '1px solid #8883', borderRadius: 8, padding: '6px 10px 8px', margin: '8px 0' }
-    var sectionTitle = { fontWeight: 600, margin: '10px 0 2px' }
+    var boxStyle = { border: '1px solid #e5e6eb', borderRadius: 8, padding: '10px 14px 12px', margin: '8px 0', background: '#fff' }
+    var sectionTitle = { fontWeight: 600, margin: '10px 0 4px', fontSize: 14, color: '#1f2329' }
+
+    // ── 迷你设计系统(2026-09-05 专家团定稿; 深色柔和适配宿主, 不刺眼) ──
+    // 宿主 dsh web 为深色主题 → 卡片用半透明深色、文字浅色、主色用低饱和紫(贴合 #9775fa 系)
+    var T = {
+      bg: 'transparent', card: '#ffffff', cardHi: '#fafafa', cardSolid: '#f4f5f8', border: '#e2e5ea', borderLight: '#eef0f3',
+      text: '#1f2329', text2: '#4e5560', text3: '#8a919c',
+      primary: '#7c6cf0', primary2: '#6b5ae6', primaryBg: '#7c6cf01a', primaryBorder: '#7c6cf04d',
+      danger: '#e5484d', dangerBg: '#e5484d14',
+      success: '#1f9e4f', successBg: '#1f9e4f14',
+      warn: '#d97706', warnBg: '#d9770614',
+      radius: 6, radiusLg: 10,
+      shadow: 'none',
+      fs: 13, fsSm: 12, fsTitle: 14,
+    }
+    var pageBg = { background: T.bg, borderRadius: T.radiusLg, padding: '12px 16px', minHeight: 300 }
+    var card = { background: T.card, border: '1px solid ' + T.border, borderRadius: T.radius }
+    function btnStyle(variant, size) {
+      var base = {
+        border: '1px solid ' + T.border, borderRadius: T.radius, cursor: 'pointer', font: 'inherit',
+        padding: size === 'sm' ? '2px 10px' : '4px 14px', fontSize: size === 'sm' ? 12 : 13, lineHeight: '20px', whiteSpace: 'nowrap',
+        transition: 'background .15s, border-color .15s, color .15s',
+      }
+      if (variant === 'primary') return { ...base, background: T.primaryBg, color: T.primary, borderColor: T.primaryBorder, fontWeight: 600 }
+      if (variant === 'danger') return { ...base, background: T.dangerBg, color: T.danger, borderColor: '#f7656044', fontWeight: 600 }
+      if (variant === 'ghost') return { ...base, background: 'transparent', color: T.text2 }
+      return { ...base, background: T.card, color: T.text }
+    }
+    function SButton(props) {
+      return h('button', { className: 'qqs-btn', style: btnStyle(props.variant, props.size), disabled: props.disabled, onClick: props.onClick }, props.children)
+    }
+    // 状态条: tone=info/danger/success/warn; 深色柔底 + 左圆标; action=可选右侧行动按钮
+    function StatusBar(props) {
+      var m = { info: [T.primaryBg, T.primary], danger: [T.dangerBg, T.danger], success: [T.successBg, T.success], warn: [T.warnBg, T.warn] }[props.tone || 'info'] || [T.primaryBg, T.primary]
+      var icon = props.tone === 'danger' ? '!' : props.tone === 'success' ? '✓' : props.tone === 'warn' ? '⚠' : 'i'
+      return h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, background: m[0], border: '1px solid ' + m[1] + '44', borderRadius: T.radius, padding: '6px 12px', margin: '8px 0', fontSize: T.fsSm } },
+        h('span', { style: { flexShrink: 0, width: 18, height: 18, borderRadius: '50%', background: m[1], color: '#fff', textAlign: 'center', lineHeight: '18px', fontSize: 11, fontWeight: 700 } }, icon),
+        h('span', { style: { flex: 1, color: m[1] } }, props.children),
+        props.action ? h(SButton, { variant: props.tone === 'danger' ? 'danger' : 'primary', size: 'sm', onClick: props.action.onClick }, props.action.label) : null)
+    }
+    // 空状态
+    function Empty(props) {
+      return h('div', { style: { padding: '36px 0', textAlign: 'center', color: T.text3 } },
+        h('div', { style: { fontSize: 34, marginBottom: 8, opacity: .5 } }, props.icon || '🕳'),
+        h('div', { style: { fontSize: T.fsSm } }, props.text || '暂无数据'))
+    }
+    // 简易表格: cols=[{key,title,width?,render?}], rows=[]; 空态走 Empty (深色适配)
+    function DataTable(props) {
+      var cols = props.cols || []
+      var rows = props.rows || []
+      if (rows.length === 0) return h(Empty, { text: props.emptyText || '暂无数据' })
+      return h('div', { style: { border: '1px solid #dde1e7', borderRadius: T.radius, overflow: 'hidden', background: T.card } },
+        h('table', { style: { width: '100%', borderCollapse: 'collapse', fontSize: T.fsSm } },
+          h('thead', null, h('tr', { style: { background: T.cardHi } },
+            cols.map(function (c) { return h('th', { key: c.key, style: { padding: '8px 10px', textAlign: 'left', fontWeight: 600, color: T.text2, borderBottom: '1px solid #dde1e7', width: c.width || undefined } }, c.title) }))),
+          h('tbody', null, rows.map(function (r, i) {
+            return h('tr', { key: i, style: { background: i % 2 ? T.card : T.cardHi } },
+              cols.map(function (c) {
+                var v = r[c.key]
+                var cell = c.render ? c.render(v, r) : (v === null || v === undefined ? '' : String(v))
+                return h('td', { key: c.key, style: { padding: '8px 10px', borderBottom: '1px solid #eef0f3', color: T.text } }, cell)
+              }))
+          }))))
+    }
+    // 横排 TabBar: items=[{key,label,badge?}]
+    function TabBar(props) {
+      return h('div', { style: { display: 'flex', gap: 2, borderBottom: '1px solid ' + T.border, marginBottom: 4 } },
+        (props.items || []).map(function (it) {
+          var on = it.key === props.value
+          return h('div', { key: it.key, onClick: function () { props.onChange && props.onChange(it.key) }, style: { cursor: 'pointer', padding: '8px 14px', fontSize: T.fsSm, color: on ? T.primary : T.text2, fontWeight: on ? 600 : 400, borderBottom: on ? '2px solid ' + T.primary : '2px solid transparent', marginBottom: -1, display: 'flex', alignItems: 'center', gap: 6 } },
+            it.label,
+            it.badge > 0 ? h('span', { style: { background: T.danger, color: '#fff', borderRadius: 9, padding: '0 6px', fontSize: 11, lineHeight: '16px', fontWeight: 700 } }, it.badge) : null)
+        }))
+    }
+
+    // 可搜索选择器(选聊天对象用): 点击弹出候选浮层, 输入即过滤; 选中回调 onPick({scope,id,name})
+    function TargetPicker(props) {
+      var [open, setOpen] = useState(false)
+      var [q, setQ] = useState('')
+      var val = props.value || {}
+      function cands() {
+        var all = props.options || []
+        var t = q.trim().toLowerCase()
+        if (!t) return all
+        return all.filter(function (c) { return (c.name || '').toLowerCase().indexOf(t) >= 0 || String(c.id).toLowerCase().indexOf(t) >= 0 })
+      }
+      var gs = cands().filter(function (c) { return c.scope === 'group' })
+      var cs = cands().filter(function (c) { return c.scope === 'c2c' })
+      var label = val.name || (val.targetId ? String(val.targetId).slice(0, 8) : '')
+      var sec = { fontSize: 10, color: T.text3, padding: '3px 6px 1px', fontWeight: 600 }
+      var item = { cursor: 'pointer', padding: '4px 8px', borderRadius: 4, fontSize: T.fsSm, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }
+      function pick(c) { setOpen(false); setQ(''); props.onPick && props.onPick({ scope: c.scope, id: c.id, name: c.name || '' }) }
+      return h('div', { style: { position: 'relative', flex: 1, minWidth: 0 } },
+        h('div', { onClick: function () { setOpen(!open); setQ('') }, style: { cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5, padding: '2px 8px', minHeight: 22, border: '1px solid ' + T.border, borderRadius: T.radius, background: T.card, fontSize: T.fsSm, color: label ? T.text : T.text3, userSelect: 'none' } },
+          h('span', { style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, label ? '『' + label + '』' : '(未选,点此搜索)'),
+          h('span', { style: { fontSize: 10, color: T.text3 } }, '▾')),
+        open ? h('div', { style: { position: 'absolute', top: '100%', left: 0, zIndex: 60, minWidth: 250, marginTop: 2, background: T.card, border: '1px solid ' + T.border, borderRadius: T.radius, boxShadow: '0 6px 18px rgba(0,0,0,.12)', padding: 6 } },
+          h('input', { className: 'qqs-inp', style: { width: '100%', boxSizing: 'border-box', padding: '3px 8px', marginBottom: 4, fontSize: T.fsSm }, autoFocus: true, placeholder: '搜群名 / 昵称 / ID…', value: q, onChange: function (e) { setQ(e.target.value) } }),
+          gs.length + cs.length === 0 ? h('div', { style: { padding: '8px 6px', color: T.text3, fontSize: T.fsSm, textAlign: 'center' } }, '没有匹配的聊天') : null,
+          gs.length ? h('div', { style: sec }, '群') : null,
+          gs.map(function (c) { return h('div', { key: 'g:' + c.id, style: item, onMouseDown: function (ev) { ev.preventDefault(); pick(c) }, onMouseEnter: function (e) { e.currentTarget.style.background = T.cardHi }, onMouseLeave: function (e) { e.currentTarget.style.background = 'transparent' } }, '👥 ' + (c.name || c.id)) }),
+          cs.length ? h('div', { style: sec }, '私聊') : null,
+          cs.map(function (c) { return h('div', { key: 'c:' + c.id, style: item, onMouseDown: function (ev) { ev.preventDefault(); pick(c) }, onMouseEnter: function (e) { e.currentTarget.style.background = T.cardHi }, onMouseLeave: function (e) { e.currentTarget.style.background = 'transparent' } }, '💬 ' + (c.name || c.id)) })) : null)
+    }
 
     // 群聊守则"恢复默认"用: 与主包 dsh-qqbot config.ts 的 DEFAULT_GROUP_PROMPT 保持一致。
     // ⚠️ 若改主包默认文本, 必须同步改这里(唯一同步点)。
@@ -116,7 +219,7 @@ window.__ModuleLoader__.load({
               groupPrompt: typeof v.groupPrompt === 'string' ? v.groupPrompt : DEFAULT_GROUP_PROMPT,
               enableApprovals: v.enableApprovals === true,
               approvalTimeoutMs: typeof v.approvalTimeoutMs === 'number' ? v.approvalTimeoutMs : 120000,
-              groupAdmin: { enabled: v.groupAdmin && v.groupAdmin.enabled === true, owners: Array.isArray(v.groupAdmin && v.groupAdmin.owners) ? v.groupAdmin.owners : [] },
+              groupAdmin: { enabled: v.groupAdmin && v.groupAdmin.enabled === true, owners: Array.isArray(v.groupAdmin && v.groupAdmin.owners) ? v.groupAdmin.owners : [], manageGroup: v.groupAdmin && typeof v.groupAdmin.manageGroup === 'string' ? v.groupAdmin.manageGroup : '', watchJoinRequests: !!(v.groupAdmin && v.groupAdmin.watchJoinRequests), notifyInGroup: v.groupAdmin && v.groupAdmin.notifyInGroup !== false },
             }
             setCfg(base); setRev(d.revision); setMsg('')
           } else { setMsg('读取失败: ' + JSON.stringify(d)) }
@@ -164,7 +267,7 @@ window.__ModuleLoader__.load({
           groupPrompt: typeof gpOverride === 'string' ? gpOverride : (typeof cfg.groupPrompt === 'string' ? cfg.groupPrompt : ''),
           enableApprovals: cfg.enableApprovals === true,
           approvalTimeoutMs: typeof cfg.approvalTimeoutMs === 'number' ? cfg.approvalTimeoutMs : 120000,
-          groupAdmin: { enabled: cfg.groupAdmin && cfg.groupAdmin.enabled === true, owners: Array.isArray(cfg.groupAdmin && cfg.groupAdmin.owners) ? cfg.groupAdmin.owners : [] },
+          groupAdmin: { enabled: cfg.groupAdmin && cfg.groupAdmin.enabled === true, owners: Array.isArray(cfg.groupAdmin && cfg.groupAdmin.owners) ? cfg.groupAdmin.owners : [], manageGroup: cfg.groupAdmin && typeof cfg.groupAdmin.manageGroup === 'string' ? cfg.groupAdmin.manageGroup : '', watchJoinRequests: !!(cfg.groupAdmin && cfg.groupAdmin.watchJoinRequests), notifyInGroup: cfg.groupAdmin && cfg.groupAdmin.notifyInGroup !== false },
         }
         fetch(UPDATE, {
           method: 'POST', headers: { 'content-type': 'application/json' },
@@ -179,7 +282,7 @@ window.__ModuleLoader__.load({
               groupPrompt: typeof v2.groupPrompt === 'string' ? v2.groupPrompt : (typeof cfg.groupPrompt === 'string' ? cfg.groupPrompt : DEFAULT_GROUP_PROMPT),
               enableApprovals: v2.enableApprovals === true,
               approvalTimeoutMs: typeof v2.approvalTimeoutMs === 'number' ? v2.approvalTimeoutMs : 120000,
-              groupAdmin: { enabled: v2.groupAdmin && v2.groupAdmin.enabled === true, owners: Array.isArray(v2.groupAdmin && v2.groupAdmin.owners) ? v2.groupAdmin.owners : [] },
+              groupAdmin: { enabled: v2.groupAdmin && v2.groupAdmin.enabled === true, owners: Array.isArray(v2.groupAdmin && v2.groupAdmin.owners) ? v2.groupAdmin.owners : [], manageGroup: v2.groupAdmin && typeof v2.groupAdmin.manageGroup === 'string' ? v2.groupAdmin.manageGroup : '', watchJoinRequests: !!(v2.groupAdmin && v2.groupAdmin.watchJoinRequests), notifyInGroup: v2.groupAdmin && v2.groupAdmin.notifyInGroup !== false },
             })
             setRev(d.revision); setMsg('已保存 ✓(live 生效)')
           }
@@ -250,17 +353,221 @@ window.__ModuleLoader__.load({
           BoolRow({ label: '开启 QQ 远程审批(不勾=保持默认审批方式)', value: cfg.enableApprovals === true, onChange: function (v) { setCfg(function (c) { return { ...c, enableApprovals: v } }) } }),
           NumRow({ label: '审批等待秒数(超时自动拒绝;默认120)', value: Math.round((cfg.approvalTimeoutMs || 120000) / 1000), onChange: function (v) { setCfg(function (c) { return { ...c, approvalTimeoutMs: v * 1000 } }) } })),
 
-        h('div', { style: sectionTitle }, '⑥ QQ 群管理(入群审批/禁言;需机器人=群管理员)'),
-        h('p', { style: { fontSize: 12, color: '#888' } }, '开启后,QQ 会话里可用群管理工具(查入群申请/审批放行、查禁言/禁言成员);踢人/成员列表等官方未开放能力会在工具里提示等待公测。开启请勾下面开关,白名单可留空(建议填你的 openid,逗号分隔多个)。'),
-        h('div', { style: boxStyle },
+        h('div', { style: { ...card, margin: '10px 0', padding: '12px 16px' } },
+          h('div', { style: { fontWeight: 700, fontSize: 13, marginBottom: 2 } }, '⚙ 群管理基础设置'),
+          h('p', { style: { fontSize: 12, color: T.text3, margin: '0 0 6px' } }, '开启后 QQ 会话里可用群管理工具; 踢人/成员列表等官方未开放能力会在下方 Tab 里提示等待公测。'),
           BoolRow({ label: '开启 QQ 群管理(不勾=群管理工具不可用)', value: cfg.groupAdmin && cfg.groupAdmin.enabled === true, onChange: function (v) { setGroupAdmin({ enabled: v }) } }),
-          StrRow({ label: '允许操作的主人 openid(逗号分隔,可留空=不校验)', value: (cfg.groupAdmin && Array.isArray(cfg.groupAdmin.owners) ? cfg.groupAdmin.owners : []).join(','), wide: true, onChange: function (v) { setGroupAdmin({ owners: v.split(/[,，]/).map(function (s) { return s.trim() }).filter(Boolean) }) } })),
+          StrRow({ label: '允许操作的主人 openid(逗号分隔,可留空=不校验)', value: (cfg.groupAdmin && Array.isArray(cfg.groupAdmin.owners) ? cfg.groupAdmin.owners : []).join(','), wide: true, onChange: function (v) { setGroupAdmin({ owners: v.split(/[,，]/).map(function (s) { return s.trim() }).filter(Boolean) }) } }),
+          StrRow({ label: '对话内默认管理群 group_openid(web 对话时群工具用它; QQ 群会话自动用当前群)', value: (cfg.groupAdmin && typeof cfg.groupAdmin.manageGroup === 'string' ? cfg.groupAdmin.manageGroup : ''), wide: true, onChange: function (v) { setGroupAdmin({ manageGroup: v.trim() }) } }),
+          BoolRow({ label: '实时接收"入群申请"事件并自动提醒(勾选后需重启才生效)', value: !!(cfg.groupAdmin && cfg.groupAdmin.watchJoinRequests), onChange: function (v) { setGroupAdmin({ watchJoinRequests: v }) } }),
+          BoolRow({ label: '收到入群申请时在该群内发提醒消息', value: !(cfg.groupAdmin && cfg.groupAdmin.notifyInGroup === false), onChange: function (v) { setGroupAdmin({ notifyInGroup: v }) } })),
+        h(GroupAdminPanel, { key: 'ga-' + (_acctNs || 'main'), ns: _acctNs || undefined }),
 
         h('div', { style: { margin: '12px 0' } },
           h('button', { className: 'qqs-btn', style: { marginRight: 8 }, onClick: save }, '保存'),
           h('button', { className: 'qqs-btn', onClick: load }, '放弃修改(重新读取)')),
         msg ? h('p', { style: { fontSize: 13, color: '#2f9e44' } }, msg) : null,
         close ? h('button', { className: 'qqs-btn', onClick: close, style: { float: 'right' } }, '完成') : null)
+    }
+
+        // ── ⑥ QQ 群管理(单开大卡片; P3+ 设计系统版: 横排 Tab + 状态条 + 表格 + 空状态 + 预留接口位) ──
+    // 能力就绪度: 官方未开放位保留(红条+行动), 不置灰糊弄; 业务名词做 Tab 骨架。
+    var GROUP_TABS = [
+      { key: 'join', label: '入群审批', open: true },
+      { key: 'mute', label: '禁言', open: true },
+      { key: 'members', label: '成员信息', open: false, gateHuman: '获取群成员列表: 官方尚未开放(内邀中), 等待公测后自动可用' },
+      { key: 'blacklist', label: '黑名单', open: false, gateHuman: '群黑名单: 官方接口尚未开放, 等待公测后自动可用' },
+    ]
+    function GroupAdminPanel(props) {
+      var nsq = props && props.ns ? '?ns=' + encodeURIComponent(props.ns) : ''
+      var [accts, setAccts] = useState(null)
+      var [gid, setGid] = useState('')
+      var [tab, setTab] = useState('join')
+      var [joins, setJoins] = useState(null)
+      var [mute, setMute] = useState(null)
+      var [msg, setMsg] = useState('')
+      var [busy, setBusy] = useState('')
+      var [bindGid, setBindGid] = useState('')
+      var [bindName, setBindName] = useState('')
+      var [members, setMembers] = useState(null)
+      var [muteSecs, setMuteSecs] = useState('60')
+      var [muteTarget, setMuteTarget] = useState('')
+
+      function loadMembers() {
+        if (!gid) return
+        fetch('/api/qqbot-settings/group/members_local' + nsq + (nsq ? '&' : '?') + 'gid=' + encodeURIComponent(gid)).then(function (r) { return r.json() }).then(function (d) {
+          setMembers(d && d.ok ? (d.members || []) : [])
+        }).catch(function () { setMembers([]) })
+      }
+
+      function loadAccounts() {
+        fetch('/api/qqbot-settings/group/accounts' + nsq).then(function (r) { return r.json() }).then(function (d) {
+          if (d && d.error) { setMsg('群面板: ' + d.error); setAccts([]); return }
+          var list = (d && Array.isArray(d.groups) ? d.groups : []).map(function (g) { return { gid: g.gid, name: g.name || '', from: g.from || '' } })
+          setAccts(list)
+          if (list.length && !gid) setGid(list[0].gid)
+          else if (list.length === 0) { setJoins(null); setMute(null) }
+        }).catch(function (e) { setMsg('群列表加载失败: ' + e.message) })
+      }
+      function refresh() {
+        if (!gid) return
+        if (tab === 'join') {
+          fetch('/api/qqbot-settings/group/join_requests' + nsq + (nsq ? '&' : '?') + 'gid=' + encodeURIComponent(gid)).then(function (r) { return r.json() }).then(function (d) {
+            if (d && d.ok) setJoins(d); else setMsg((d && d.err && d.err.human) || '申请列表加载失败')
+          }).catch(function (e) { setMsg('申请列表加载异常: ' + e.message) })
+        } else if (tab === 'mute') {
+          fetch('/api/qqbot-settings/group/mute_state' + nsq + (nsq ? '&' : '?') + 'gid=' + encodeURIComponent(gid)).then(function (r) { return r.json() }).then(function (d) {
+            if (d && d.ok) setMute(d); else setMsg((d && d.err && d.err.human) || '禁言状态加载失败')
+          }).catch(function (e) { setMsg('禁言状态加载异常: ' + e.message) })
+        }
+      }
+      useEffect(function () { loadAccounts() }, [])
+      useEffect(function () { refresh(); loadMembers() }, [gid, tab])
+
+      function doApprove(mid, op) {
+        var reason = op === 'decline' ? window.prompt('拒绝理由(可留空)') : '-'
+        if (op === 'decline' && reason === null) return
+        setBusy('approve-' + mid)
+        fetch('/api/qqbot-settings/group/approve', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(Object.assign({ gid: gid, member_openid: mid, op: op, reason: reason || '' }, props.ns ? { ns: props.ns } : {})),
+        }).then(function (r) { return r.json() }).then(function (d) {
+          setBusy('')
+          setMsg((d && d.msg) || (d && d.err && d.err.human) || '审批失败')
+          refresh()
+        }).catch(function (e) { setBusy(''); setMsg('审批异常: ' + e.message) })
+      }
+      function doMute(mid, action, seconds) {
+        var secs = action === 'mute' ? Math.round(Number(seconds || 600)) : 0
+        setBusy('mute-' + mid)
+        fetch('/api/qqbot-settings/group/mute', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(Object.assign({ gid: gid, member_openid: mid, action: action, seconds: secs }, props.ns ? { ns: props.ns } : {})),
+        }).then(function (r) { return r.json() }).then(function (d) {
+          setBusy('')
+          setMsg((d && d.msg) || (d && d.err && d.err.human) || '操作失败')
+          refresh()
+        }).catch(function (e) { setBusy(''); setMsg('禁言异常: ' + e.message) })
+      }
+      function doBind() {
+        var g = bindGid.trim()
+        if (!g) { setMsg('先粘贴 group_openid'); return }
+        fetch('/api/qqbot-settings/group/bind', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(Object.assign({ gid: g, name: bindName.trim() }, props.ns ? { ns: props.ns } : {})),
+        }).then(function (r) { return r.json() }).then(function (d) {
+          if (d && d.ok) { setMsg('已登记群 ✓'); setBindGid(''); setBindName(''); loadAccounts() }
+          else setMsg((d && d.error) || '绑定失败')
+        }).catch(function (e) { setMsg('绑定异常: ' + e.message) })
+      }
+
+      var curTabMeta = null
+      GROUP_TABS.forEach(function (t) { if (t.key === tab) curTabMeta = t })
+      var groupSel = accts === null ? h('span', { style: { fontSize: T.fsSm, color: T.text3 } }, '群列表加载中…')
+        : accts.length === 0 ? h('span', { style: { fontSize: T.fsSm, color: T.warn } }, '暂无群(事件累积/下方登记后出现)')
+          : h('select', { className: 'qqs-inp', style: { padding: '3px 8px', maxWidth: 320, border: '1px solid ' + T.border, borderRadius: T.radius }, value: gid, onChange: function (e) { setGid(e.target.value); setMsg('') } },
+            accts.map(function (a) {
+              return h('option', { key: a.gid, value: a.gid }, (a.name ? a.name + ' · ' : '') + a.gid.slice(0, 12) + '…' + (a.from ? ' [' + a.from + ']' : ''))
+            }))
+
+      var joinCols = [
+        { key: 'username', title: '昵称', width: '18%', render: function (v, r) { return h('span', { style: { fontWeight: 600 } }, v || '(未知)') } },
+        { key: 'source', title: '来源', width: '10%', render: function (v, r) { return h('span', { style: { color: T.text2 } }, v || '-') } },
+        { key: 'verify', title: '验证消息', render: function (v, r) { return h('span', { style: { color: T.text2 } }, v || '-') } },
+        { key: 'risk', title: '风险', width: '18%', render: function (v, r) { return v ? h('span', { style: { color: T.danger } }, '⚠ ' + v) : h('span', { style: { color: T.text3 } }, '-') } },
+        { key: 'op', title: '操作', width: '20%', render: function (v, r) {
+          var busying = busy === 'approve-' + r.member_openid
+          return h('span', { style: { display: 'inline-flex', gap: 6 } },
+            h(SButton, { variant: 'primary', size: 'sm', disabled: !!busy, onClick: function () { doApprove(r.member_openid, 'approve') } }, busying ? '处理中…' : '通过'),
+            h(SButton, { variant: 'danger', size: 'sm', disabled: !!busy, onClick: function () { doApprove(r.member_openid, 'decline') } }, '拒绝'))
+        } },
+      ]
+      var joinRows = ((joins && joins.ok && joins.list) || []).map(function (j) {
+        return {
+          username: j.username || '(未知昵称)',
+          source: j.apply_source === 'invited' ? '被邀请' : '主动申请',
+          verify: (j.verify_info && j.verify_info.verify_message) || (j.verify_info && j.verify_info.method) || '',
+          risk: j.risk_tips || '',
+          member_openid: j.member_openid,
+        }
+      })
+
+      var muteMode = (mute && mute.data && mute.data.global_rule && mute.data.global_rule.mode) || 'none'
+      var muteCols = [
+        { key: 'username', title: '成员', width: '30%', render: function (v, r) { return h('span', { style: { fontWeight: 600 } }, v || String(r.member_openid).slice(0, 12)) } },
+        { key: 'expire', title: '禁言至', render: function (v) { return h('span', { style: { color: T.text2 } }, v || '?') } },
+        { key: 'op', title: '操作', width: '18%', render: function (v, r) {
+          var busying = busy === 'mute-' + r.member_openid
+          return h(SButton, { variant: 'ghost', size: 'sm', disabled: !!busy, onClick: function () { doMute(r.member_openid, 'unmute') } }, busying ? '处理中…' : '解除')
+        } },
+      ]
+      var muteRows = (((mute && mute.data && mute.data.members) || [])).map(function (m) { return { username: m.username || '', member_openid: m.member_openid, expire: m.mute_expire_at || '' } })
+
+      var body = null
+      if (curTabMeta && curTabMeta.open === false) {
+        body = h('div', null,
+          h(StatusBar, { tone: 'danger', action: { label: '去开放平台申请', onClick: function () { window.open('https://q.qq.com', '_blank') } } }, curTabMeta.gateHuman || '该能力官方尚未开放'),
+          h('div', { style: { border: '1px dashed ' + T.border, borderRadius: T.radius, padding: '24px', textAlign: 'center', color: T.text3, fontSize: T.fsSm } },
+            '此功能位已预留 —— 官方开放接口后此处自动点亮, 无需等待插件更新'))
+      } else if (!gid) {
+        body = h(Empty, { icon: '👥', text: '先选择或登记一个群, 再查看/操作' })
+      } else if (tab === 'join') {
+        body = joins === null ? h(Empty, { icon: '⏳', text: '加载中…' })
+          : h('div', null,
+            h(StatusBar, { tone: 'info' }, '数据来自 QQ 官方接口; 机器人需为群管理员。通过/拒绝将直接生效并写入审计日志。'),
+            h(DataTable, { cols: joinCols, rows: joinRows, emptyText: '当前没有待审批的入群申请' }))
+      } else if (tab === 'mute') {
+        // 禁言页: ①选人禁言(本地成员清单) ②正在禁言中的成员(官方状态)
+        var pickList = members === null ? h(Empty, { icon: '⏳', text: '加载成员中…' })
+          : members.length === 0 ? h('div', { style: { border: '1px dashed ' + T.border, borderRadius: T.radius, padding: '12px', textAlign: 'center', color: T.text3, fontSize: T.fsSm } },
+              '本地暂无成员记录 —— 让群友在群里说句话, 机器人就能记住他们, 之后这里可直接选人禁言(官方成员列表未开放)')
+          : h('div', { style: { maxHeight: 260, overflowY: 'auto', border: '1px solid ' + T.border, borderRadius: T.radius } },
+              members.map(function (m) {
+                var busying = busy === 'mute-' + m.mid
+                return h('div', { key: m.mid, style: { display: 'flex', alignItems: 'center', gap: 8, padding: '5px 10px', borderBottom: '1px solid ' + T.borderLight, fontSize: T.fsSm } },
+                  h('span', { style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, (m.name || '(未知名)') + ' · ' + m.mid.slice(0, 10) + '…'),
+                  h('input', { className: 'qqs-inp', style: { width: 70, padding: '1px 6px', border: '1px solid ' + T.border, borderRadius: T.radius }, type: 'number', min: 1, defaultValue: muteSecs, onChange: function (e) { setMuteSecs(e.target.value) } }),
+                  h('span', { style: { color: T.text3 } }, '分钟'),
+                  h(SButton, { variant: 'danger', size: 'sm', disabled: !!busy, onClick: function () { doMute(m.mid, 'mute', Number(muteSecs || 60) * 60) } }, busying ? '处理中…' : '禁言'))
+              }))
+        body = mute === null ? h(Empty, { icon: '⏳', text: '加载中…' })
+          : h('div', null,
+            h('div', { style: { fontWeight: 700, fontSize: 13, margin: '10px 0 4px' } }, '① 选择成员禁言'),
+            pickList,
+            h('div', { style: { fontWeight: 700, fontSize: 13, margin: '14px 0 4px' } }, '② 正在禁言中(官方状态)'),
+            h(StatusBar, { tone: 'info' }, '全员禁言: ' + (muteMode === 'always' ? '常开' : muteMode === 'schedule' ? '定时' : '关闭') + ' —— 只能操作普通成员, 群主/管理员不可禁。'),
+            h(DataTable, { cols: muteCols, rows: muteRows, emptyText: '没有正在禁言的成员' }))
+      } else if (tab === 'members') {
+        // 成员信息: 红条(官方未开放)+ 本地兜底名单(见到的发言者)
+        var memRows = (members || []).map(function (m) { return { name: m.name || '(未知名)', mid: m.mid, seen: new Date(m.lastSeen).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) } })
+        var memCols = [
+          { key: 'name', title: '昵称', width: '24%' },
+          { key: 'mid', title: '成员 ID', render: function (v) { return h('span', { style: { color: T.text2, wordBreak: 'break-all' } }, v) } },
+          { key: 'seen', title: '最近发言', width: '22%', render: function (v) { return h('span', { style: { color: T.text3 } }, v) } },
+        ]
+        body = h('div', null,
+          h(StatusBar, { tone: 'danger', action: { label: '去开放平台申请', onClick: function () { window.open('https://q.qq.com', '_blank') } } }, '官方"群成员列表"接口尚未开放 —— 下方为本地兜底名单(机器人见过的发言者), 仅用于帮你认人。'),
+          h('div', { style: { fontWeight: 700, fontSize: 13, margin: '10px 0 4px' } }, '本地成员清单(机器人见过的)'),
+          h(DataTable, { cols: memCols, rows: memRows, emptyText: '暂无记录 —— 群友发言后自动出现' }))
+      }
+
+      return h('div', { style: { ...card, padding: '4px 0 12px', margin: '12px 0', overflow: 'hidden' } },
+        h('div', { style: { padding: '12px 16px', borderBottom: '1px solid ' + T.border, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' } },
+          h('span', { style: { fontSize: T.fsTitle, fontWeight: 700 } }, '🛡 群管理'),
+          h('span', { style: { fontSize: T.fsSm, color: T.text3 } }, '直连 QQ 官方, 面板操作 = 主人直发'),
+          h('span', { style: { flex: 1 } }),
+          h('span', { style: { fontSize: T.fsSm, color: T.text2 } }, '目标群'),
+          groupSel,
+          h(SButton, { variant: 'ghost', size: 'sm', onClick: refresh }, '刷新')),
+        h('div', { style: { padding: '0 16px' } },
+          h(TabBar, { items: GROUP_TABS.map(function (t) { return { key: t.key, label: t.label + (t.open ? '' : '(待开放)'), badge: t.key === 'join' ? joinRows.length : 0 } }), value: tab, onChange: function (k) { setTab(k); setMsg('') } })),
+        h('div', { style: { padding: '0 16px' } }, body),
+        h('div', { style: { margin: '12px 16px 0', borderTop: '1px solid ' + T.borderLight, paddingTop: 10, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+          h('span', { style: { fontSize: T.fsSm, color: T.text2 } }, '登记群(官方无"我的群列表", 手动粘贴):'),
+          h('input', { className: 'qqs-inp', style: { width: 200, padding: '3px 8px', border: '1px solid ' + T.border, borderRadius: T.radius }, placeholder: 'group_openid', value: bindGid, onChange: function (e) { setBindGid(e.target.value) } }),
+          h('input', { className: 'qqs-inp', style: { width: 100, padding: '3px 8px', border: '1px solid ' + T.border, borderRadius: T.radius }, placeholder: '备注(可选)', value: bindName, onChange: function (e) { setBindName(e.target.value) } }),
+          h(SButton, { variant: 'primary', size: 'sm', onClick: doBind }, '绑定'),
+          msg ? h('span', { style: { fontSize: T.fsSm, color: T.success } }, msg) : null))
     }
 
     var API_LIST = '/api/qqbot-settings/stickers'
@@ -481,14 +788,58 @@ window.__ModuleLoader__.load({
     }
     // ── 定时唤醒编辑(原设置页④区, 并入定时任务页): config.schedule.targets 分组 ──
     // 保存走 im-qqbot settings ns 全量 patch(与设置页同构, 防覆盖掉其它字段), live 热更新。
+    // 聊天对象数据源(2026-09-05 统一): 群只列"活的"(host 已用官方 info 剔除注销群, 显示真群名);
+    //   私聊用台账昵称, 缺名时用本地成员表(同 openid 在群里出现过的昵称)补 —— 不再露裸 id。
+    function fetchChatTargets(acct) {
+      var ns = acct && acct.ns && acct.ns !== 'im-qqbot' ? String(acct.ns) : ''
+      var dd = acct && acct.dataDir ? String(acct.dataDir) : ''
+      var qNs = ns ? '?ns=' + encodeURIComponent(ns) : ''
+      var qDD = dd ? '?dataDir=' + encodeURIComponent(dd) : ''
+      var qM = ns ? ('?ns=' + encodeURIComponent(ns)) : '' // members_local 不带 gid = 全部成员
+      return Promise.all([
+        fetch('/api/qqbot-settings/group/accounts' + qNs).then(function (r) { return r.json() }).catch(function () { return {} }),
+        fetch('/api/qqbot-settings/known-chats' + qDD).then(function (r) { return r.json() }).catch(function () { return {} }),
+        fetch('/api/qqbot-settings/group/members_local' + qM).then(function (r) { return r.json() }).catch(function () { return {} }),
+      ]).then(function (rs) {
+        var groups = ((rs[0] && rs[0].groups) || []).map(function (g) {
+          return { scope: 'group', id: g.gid, name: g.name || '', lastSeen: g.lastAt || 0, count: 0 }
+        })
+        var known = ((rs[1] && rs[1].chats) || [])
+        // 成员表: mid -> 最近昵称(给私聊/无台账名时补名)
+        var nameByMid = {}
+        ;((rs[2] && rs[2].members) || []).forEach(function (m) {
+          if (m.mid && m.name) {
+            var old = nameByMid[m.mid]
+            if (!old || m.lastSeen > old.ts) nameByMid[m.mid] = { name: m.name, ts: m.lastSeen || 0 }
+          }
+        })
+        var c2c = []
+        var seen = {}
+        known.forEach(function (c) {
+          if (c.scope !== 'c2c' || !c.id || seen[c.id]) return
+          seen[c.id] = 1
+          var nm = c.name || (nameByMid[c.id] && nameByMid[c.id].name) || ''
+          c2c.push({ scope: 'c2c', id: c.id, name: nm, lastSeen: c.lastSeen || 0, count: c.count || 0 })
+        })
+        // 台账里没有但成员表有名字的 openid 也补上(私聊候选)
+        Object.keys(nameByMid).forEach(function (mid) {
+          if (!seen[mid]) { seen[mid] = 1; c2c.push({ scope: 'c2c', id: mid, name: nameByMid[mid].name, lastSeen: nameByMid[mid].ts, count: 0 }) }
+        })
+        c2c.sort(function (a, b) { return (b.lastSeen || 0) - (a.lastSeen || 0) })
+        return { group: groups, c2c: c2c }
+      })
+    }
     function WakeEditor(props) {
-      // 多账号: 定时唤醒按当前账号 ns 读写
+      // 多账号: 定时唤醒按当前账号 ns 读写; 表格=拍平行视图(行=对象×时刻), 存储仍是 targets 分组
       var _wkNs = props && props.acct && props.acct.ns && props.acct.ns !== 'im-qqbot' ? String(props.acct.ns) : ''
       var [cfg, setCfg] = useState(null)
       var [rev, setRev] = useState(undefined)
-      var [expanded, setExpanded] = useState({})
       var [knownChats, setKnownChats] = useState(null)
       var [msg, setMsg] = useState('')
+      // 视图态: 筛选 tab + 对象搜索词(纯视图过滤)
+      var [filter, setFilter] = useState('all') // all|group|c2c
+      var [search, setSearch] = useState('')
+
       function load() {
         fetch(READ + (_wkNs ? '?ns=' + encodeURIComponent(_wkNs) : '')).then(function (r) { return r.json() }).then(function (d) {
           if (d && d.value) { setCfg(d.value); setRev(d.revision); setMsg('') }
@@ -496,10 +847,10 @@ window.__ModuleLoader__.load({
         }).catch(function (e) { setMsg('读取异常: ' + e.message) })
       }
       useEffect(function () { load() }, [])
-      var _wkDD = props && props.acct && props.acct.dataDir ? String(props.acct.dataDir) : ''
       useEffect(function () {
-        fetch('/api/qqbot-settings/known-chats' + (_wkDD ? '?dataDir=' + encodeURIComponent(_wkDD) : '')).then(function (r) { return r.json() }).then(function (d) {
-          if (d && Array.isArray(d.chats)) setKnownChats(d.chats)
+        fetchChatTargets(props.acct).then(function (t) {
+          var list = (t.group || []).concat(t.c2c || [])
+          setKnownChats(list)
         }).catch(function () {})
       }, [])
       function targets() { return (cfg && cfg.schedule && Array.isArray(cfg.schedule.targets)) ? cfg.schedule.targets : [] }
@@ -510,34 +861,65 @@ window.__ModuleLoader__.load({
           return { ...base, schedule: Object.assign({}, s, { targets: list }) }
         })
       }
-      function chatOptions(scope) { var all = knownChats || []; return all.filter(function (x) { return x.scope === scope }) }
-      function toggleTarget(tid) { setExpanded(function (e) { var n = { ...e }; if (n[tid]) delete n[tid]; else n[tid] = true; return n }) }
-      function addTarget() {
+
+      // ── 拍平行行模型: [{tgIndex, tg, task}] ──
+      function rows() {
+        var out = []
+        targets().forEach(function (tg, ti) {
+          ;(tg.tasks || []).forEach(function (tt) {
+            out.push({ ti: ti, tg: tg, task: tt })
+          })
+        })
+        return out
+      }
+      function chatLabelOf(scope, id) {
+        var hit = null
+        ;(knownChats || []).forEach(function (c) { if (c.scope === scope && c.id === id) hit = c })
+        if (hit && hit.name) return hit.name
+        return id ? (id.length > 14 ? id.slice(0, 6) + '…' + id.slice(-4) : id) : ''
+      }
+      // 行操作 → 直接改 targets 分组(保持存储模型)
+      function patchTask(ti, taskId, patch) {
         var list = targets().slice()
-        var tid = 'tg-' + Date.now().toString(36)
-        list.push({ id: tid, name: '', scope: 'group', targetId: '', tasks: [{ id: 't-' + Date.now().toString(36), time: '09:00', enabled: true, prompt: '' }] })
+        var tg = { ...list[ti], tasks: (list[ti].tasks || []).map(function (t) { return t.id === taskId ? { ...t, ...patch } : t }) }
+        list[ti] = tg
         setTargets(list)
-        setExpanded(function (e) { return { ...e, [tid]: true } })
       }
-      function updTarget(i, patch) { var list = targets().slice(); list[i] = { ...list[i], ...patch }; setTargets(list) }
-      function rmTarget(id) { setTargets(targets().filter(function (t) { return t.id !== id })) }
-      function addTaskOf(ti) {
+      // 行内改对象: 若该行所在组还挂着其它行(旧数据同组多时刻), 先拆成独立组再改, 保证只影响本行
+      function pickObject(r, c) {
         var list = targets().slice()
-        var tg = { ...list[ti], tasks: (list[ti].tasks || []).slice() }
-        tg.tasks.push({ id: 't-' + Date.now().toString(36), time: '09:00', enabled: true, prompt: '' })
-        list[ti] = tg; setTargets(list)
+        var tg = list[r.ti]
+        if (!tg) return
+        var tasks = (tg.tasks || []).slice()
+        var patch = { scope: c.scope, targetId: c.id, name: c.name || '' }
+        if (tasks.length <= 1) {
+          list[r.ti] = { ...tg, ...patch }
+        } else {
+          var keep = tasks.filter(function (t) { return t.id !== r.task.id })
+          var lone = tasks.filter(function (t) { return t.id === r.task.id })
+          var ntg = { ...tg, ...patch, id: 'tg-' + Date.now().toString(36), tasks: lone }
+          list.splice(r.ti, 1, { ...tg, tasks: keep }, ntg)
+          list = list.filter(function (g) { return (g.tasks || []).length > 0 })
+        }
+        setTargets(list)
       }
-      function updTaskOf(ti, ji, patch) {
+      function rmRow(ti, taskId) {
         var list = targets().slice()
-        var tg = { ...list[ti], tasks: (list[ti].tasks || []).slice() }
-        tg.tasks[ji] = { ...tg.tasks[ji], ...patch }
-        list[ti] = tg; setTargets(list)
+        var tg = { ...list[ti], tasks: (list[ti].tasks || []).filter(function (t) { return t.id !== taskId }) }
+        if (tg.tasks.length === 0) list = list.filter(function (_, i) { return i !== ti }) // 空目标组一并删
+        else list[ti] = tg
+        setTargets(list)
       }
-      function rmTaskOf(ti, tid) {
+      function addRow() {
         var list = targets().slice()
-        var tg = { ...list[ti], tasks: (list[ti].tasks || []).filter(function (t) { return t.id !== tid }) }
-        list[ti] = tg; setTargets(list)
+        // 每行 = 独立目标组(对象列改起来互不牵连); 默认挂"全部"视图, scope 跟随当前筛选类型
+        var nt = { id: 't-' + Date.now().toString(36), time: '09:00', enabled: true, prompt: '' }
+        var scope = filter === 'c2c' ? 'c2c' : filter === 'group' ? 'group' : 'group'
+        var ntg = { id: 'tg-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6), name: '', scope: scope, targetId: '', tasks: [nt] }
+        list.push(ntg)
+        setTargets(list)
       }
+      // 保存: 整表(行→分组已实时同步)全量 patch
       function save() {
         setMsg('保存中…')
         var v = cfg || {}
@@ -562,60 +944,68 @@ window.__ModuleLoader__.load({
         }).catch(function (e) { setMsg('保存异常: ' + e.message) })
       }
       if (!cfg) return h('p', null, msg || '加载中…')
+
+      // 筛选行
+      var allRows = rows()
+      var shown = allRows.filter(function (r) {
+        if (filter !== 'all' && r.tg.scope !== filter) return false
+        if (search) {
+          var q = search.toLowerCase()
+          var nm = (chatLabelOf(r.tg.scope, r.tg.targetId) || '').toLowerCase()
+          if (nm.indexOf(q) < 0 && String(r.task.prompt || '').toLowerCase().indexOf(q) < 0 && String(r.task.time).indexOf(q) < 0) return false
+        }
+        return true
+      })
+
+      // 渲染: 表格
       return h('div', null,
-        h('p', { style: { fontSize: 12, color: '#ffa94d' } }, '⚠️ QQ 平台限制:主动发私聊需要对方 48 小时内跟机器人说过话,超时会拒收(会自动降级试别的通道);群一般没问题。想验证:时刻设成 1~2 分钟后,保存后等着看。'),
-        targets().map(function (tg, ti) {
-          var open = !!expanded[tg.id]
-          var taskN = (tg.tasks || []).length
-          var scopeTag = tg.scope === 'c2c' ? '私聊' : '群'
-          var curChat = null
-          if (knownChats) {
-            curChat = knownChats.filter(function (c) { return c.scope === tg.scope && c.id === tg.targetId })[0] || null
-          }
-          var curLabel = curChat
-            ? (curChat.name ? curChat.name : curChat.id.slice(0, 10))
-            : (tg.targetId ? (tg.targetId.length > 14 ? tg.targetId.slice(0, 6) + '…' + tg.targetId.slice(-4) : tg.targetId) : '')
-          return h('div', { key: tg.id, style: boxStyle },
-            h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', cursor: 'pointer' }, onClick: function () { toggleTarget(tg.id) } },
-              h('span', { style: { width: 18, display: 'inline-block', color: '#8ab4ff' } }, open ? '▾' : '▸'),
-              h('select', { className: 'qqs-inp', style: { ...inputStyle, width: 92 }, value: tg.scope === 'c2c' ? 'c2c' : 'group', onClick: function (e) { e.stopPropagation() }, onChange: function (e) { updTarget(ti, { scope: e.target.value, targetId: '' }) } },
-                h('option', { value: 'group' }, '发给群'),
-                h('option', { value: 'c2c' }, '发给私聊')),
-              h('span', { style: { fontSize: 12, color: '#888' } }, scopeTag + ' · ' + taskN + ' 个时刻'),
-              curLabel ? h('span', { style: { fontSize: 12, color: '#8ab4ff', fontWeight: 600 } }, '『' + curLabel + '』') : h('span', { style: { fontSize: 12, color: '#ffa94d' } }, '(未选聊天)'),
-              h('button', { className: 'qqs-btn', style: { marginLeft: 'auto', padding: '2px 8px', fontSize: 12 }, onClick: function (e) { e.stopPropagation(); rmTarget(tg.id) } }, '删除')),
-            open ? h('div', { style: { marginTop: 6 } },
-              h('label', { style: labelStyle }, '选聊天对象(她见过的,显示昵称;不用抄任何号码): ',
-                h('select', { className: 'qqs-inp', style: { ...inputStyle, width: '100%', maxWidth: 420 }, value: '', onChange: function (e) { if (e.target.value) { var pick = JSON.parse(e.target.value); updTarget(ti, { targetId: pick.id, scope: pick.scope, name: pick.name || tg.name || '' }) } } },
-                  h('option', { value: '' }, '— 从最近聊天里选 —'),
-                  chatOptions(tg.scope).map(function (c) {
-                    var nm = c.name || c.id.slice(0, 10)
-                    var tip = c.scope === 'c2c' ? (c.name ? c.name + ' (私聊)' : '私聊 ' + c.id.slice(0, 8)) : ('群 · 最近发言: ' + (c.name || '?') + ' (' + c.count + ' 条)')
-                    return h('option', { key: c.scope + ':' + c.id, value: JSON.stringify({ id: c.id, scope: c.scope, name: c.name || '' }) }, tip)
-                  }))),
-              h('label', { style: labelStyle }, '备注名(可选,帮你认这个群/人): ',
-                h('input', { className: 'qqs-inp', style: wideStyle, value: sv(tg.name), placeholder: '例:老家的群 / 老板', onChange: function (e) { updTarget(ti, { name: e.target.value }) } })),
-              h('div', { style: { fontSize: 11, color: '#777', margin: '2px 0 6px' } }, '已选 ID: ' + (tg.targetId || '(未选)') + ' (平台内部编号,不用管它)'),
-              (tg.tasks || []).map(function (tt, ji) {
-                return h('div', { key: tt.id, style: { borderTop: '1px solid #8882', marginTop: 6, paddingTop: 6 } },
-                  h('label', { style: labelStyle },
-                    h('input', { className: 'qqs-inp', type: 'checkbox', checked: !!tt.enabled, onChange: function (e) { updTaskOf(ti, ji, { enabled: e.target.checked }) } }),
-                    ' 每天 ',
-                    h('input', { className: 'qqs-inp', style: { ...inputStyle, width: 58 }, value: sv(tt.time), placeholder: '09:00', onChange: function (e) { updTaskOf(ti, ji, { time: e.target.value }) } }),
-                    ' 点 主动说一句'),
-                  h('label', { style: labelStyle }, ' 方向(可留空=自由发挥): ',
-                    h('input', { className: 'qqs-inp', style: wideStyle, value: sv(tt.prompt), placeholder: '例:早上好,提醒大家吃早饭', onChange: function (e) { updTaskOf(ti, ji, { prompt: e.target.value }) } }),
-                    ' ',
-                    h('button', { className: 'qqs-btn', style: { padding: '2px 8px', fontSize: 12 }, onClick: function () { rmTaskOf(ti, tt.id) } }, '删除')))
-              }),
-              h('button', { className: 'qqs-btn', style: { marginTop: 6, padding: '2px 10px', fontSize: 12 }, onClick: function () { addTaskOf(ti) } }, '+ 这个目标再加一个时刻'))
-            : null)
-        }),
-        h('button', { className: 'qqs-btn', onClick: addTarget }, '+ 添加一个目标(群/私聊)'),
-        h('div', { style: { margin: '8px 0' } },
-          h('button', { className: 'qqs-btn', style: { marginRight: 8 }, onClick: save }, '保存定时唤醒'),
-          h('button', { className: 'qqs-btn', onClick: load }, '放弃修改')),
-        msg ? h('p', { style: { fontSize: 13, color: '#2f9e44' } }, msg) : null)
+        h('p', { style: { fontSize: T.fsSm, color: T.warn, margin: '4px 0 6px' } }, '⚠️ QQ 平台: 主动发私聊需对方 48h 内跟机器人说过话, 超时会拒收(自动降级); 群一般没问题。想验证: 时间设成 1~2 分钟后保存等着看。'),
+        // 工具条: 筛选 + 搜索 + 添加行
+        h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', margin: '6px 0' } },
+          h(TabBar, {
+            items: [
+              { key: 'all', label: '全部(' + allRows.length + ')' },
+              { key: 'group', label: '群' },
+              { key: 'c2c', label: '私聊' },
+            ], value: filter, onChange: function (k) { setFilter(k); setMsg('') },
+          }),
+          h('input', { className: 'qqs-inp', style: { flex: 1, minWidth: 120, padding: '3px 8px', border: '1px solid ' + T.border, borderRadius: T.radius }, placeholder: '搜对象 / 描述 / 时间…', value: search, onChange: function (e) { setSearch(e.target.value) } }),
+          h(SButton, { variant: 'primary', size: 'sm', onClick: addRow }, '+ 添加一行')),
+        // 表格头
+        h('div', { style: { display: 'flex', alignItems: 'center', background: T.cardHi, border: '1px solid #dde1e7', borderRadius: T.radius + ' ' + T.radius + ' 0 0', fontWeight: 700, fontSize: T.fsSm, color: T.text2 } },
+          h('div', { style: { width: 90, padding: '8px 10px' } }, '时间'),
+          h('div', { style: { flex: '1 1 26%', minWidth: 140, padding: '8px 10px' } }, '对象'),
+          h('div', { style: { flex: '2 1 38%', minWidth: 160, padding: '8px 10px' } }, '任务描述'),
+          h('div', { style: { width: 80, padding: '8px 10px', textAlign: 'center' } }, '每天'),
+          h('div', { style: { width: 56, padding: '8px 10px', textAlign: 'center' } }, '')),
+        // 行
+        shown.length === 0 ? h('div', { style: { border: '1px solid ' + T.border, borderTop: 'none', borderRadius: '0 0 ' + T.radius + ' ' + T.radius, padding: 22, textAlign: 'center', color: T.text3, fontSize: T.fsSm } }, '还没有任务行 —— 点「+ 添加一行」开始配置')
+          : shown.map(function (r, idx) {
+            var tg = r.tg, tt = r.task
+            var nm = chatLabelOf(tg.scope, tg.targetId)
+            return h('div', { key: tg.id + ':' + tt.id, style: { display: 'flex', alignItems: 'center', background: idx % 2 ? T.cardHi : '#ffffff', borderBottom: '1px solid #dde1e7', borderLeft: '1px solid #dde1e7', borderRight: '1px solid #dde1e7', fontSize: T.fsSm } },
+              // 时间
+              h('div', { style: { width: 90, padding: '6px 8px' } },
+                h('input', { className: 'qqs-inp', style: { width: 62, padding: '2px 6px', border: '1px solid ' + T.border, borderRadius: T.radius }, value: sv(tt.time), placeholder: '09:00', onChange: function (e) { patchTask(r.ti, tt.id, { time: e.target.value }) } })),
+              // 对象: 类型小标 + 可搜索选择器(点击弹出, 输入过滤; 每行独立, 互不牵连)
+              h('div', { style: { flex: '1 1 26%', minWidth: 150, padding: '6px 8px', display: 'flex', gap: 4, alignItems: 'center' } },
+                h('span', { style: { flexShrink: 0, fontSize: 10, padding: '0 5px', borderRadius: 4, color: '#fff', background: tg.scope === 'c2c' ? T.primary : T.primary2 } }, tg.scope === 'c2c' ? '私' : '群'),
+                h(TargetPicker, { value: { scope: tg.scope, targetId: tg.targetId, name: nm }, options: knownChats || [], onPick: function (c) { pickObject(r, c) } })),
+              // 描述
+              h('div', { style: { flex: '2 1 38%', minWidth: 160, padding: '6px 8px' } },
+                h('input', { className: 'qqs-inp', style: { width: '100%', padding: '2px 6px', border: '1px solid ' + T.border, borderRadius: T.radius, fontSize: T.fsSm }, value: sv(tt.prompt), placeholder: '例: 早上好, 提醒大家吃早饭(留空=自由发挥)', onChange: function (e) { patchTask(r.ti, tt.id, { prompt: e.target.value }) } })),
+              // 每天 toggle = 启停
+              h('div', { style: { width: 80, padding: '6px 8px', textAlign: 'center' } },
+                h('input', { type: 'checkbox', checked: !!tt.enabled, onChange: function (e) { patchTask(r.ti, tt.id, { enabled: e.target.checked }) } })),
+              // 删除
+              h('div', { style: { width: 56, padding: '6px 8px', textAlign: 'center' } },
+                h('button', { className: 'qqs-btn', style: { padding: '1px 8px', fontSize: 11, color: T.danger, background: 'transparent', border: 'none', cursor: 'pointer' }, onClick: function () { if (window.confirm('删除这一行?')) rmRow(r.ti, tt.id) } }, '✕')),
+            )
+          }),
+        h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', margin: '10px 0 2px' } },
+          h(SButton, { variant: 'primary', size: 'sm', onClick: save }, '保存定时唤醒'),
+          h(SButton, { variant: 'ghost', size: 'sm', onClick: load }, '放弃修改'),
+          msg ? h('span', { style: { fontSize: T.fsSm, color: T.success } }, msg) : null))
     }
 
     function TimersPage(props) {
@@ -625,13 +1015,26 @@ window.__ModuleLoader__.load({
       var [jobs, setJobs] = useState(null)
       var [msg, setMsg] = useState('')
       var [busyId, setBusyId] = useState('')
+      // 名称解析(2026-09-05): 群=活群真名(accounts 已剔除注销群), 私聊=台账昵称+成员表补名
+      var [chatTg, setChatTg] = useState({ group: [], c2c: [] })
       function load() {
         fetch(API_TIMERS + _tmQ).then(function (r) { return r.json() }).then(function (d) {
           if (d && Array.isArray(d.jobs)) setJobs(d.jobs.slice().reverse())
           else setMsg('读取失败: ' + JSON.stringify(d))
         }).catch(function (e) { setMsg('读取异常: ' + e.message) })
       }
-      useEffect(function () { load() }, [])
+      useEffect(function () {
+        load()
+        fetchChatTargets(props.acct).then(function (t) { setChatTg(t) }).catch(function () {})
+      }, [])
+      function nameOf(scope, id) {
+        var nm = ''
+        ;(chatTg[scope] || []).forEach(function (x) { if (x.id === id) nm = x.name || nm })
+        return nm
+      }
+      function isGroupAlive(gid) {
+        return (chatTg.group || []).some(function (g) { return g.id === gid })
+      }
       function act(job, body, okMsg) {
         if (busyId) return
         setBusyId(job.id)
@@ -644,35 +1047,46 @@ window.__ModuleLoader__.load({
           .catch(function (e) { setMsg('操作失败: ' + e.message) })
           .then(function () { setBusyId('') })
       }
-      function who(job) { return (job.scope === 'c2c' ? '私聊' : '群聊') + ' · ' + String(job.peerId || '').slice(0, 8) }
+      function who(job) {
+        var scope = job.scope === 'c2c' ? 'c2c' : 'group'
+        var nm = nameOf(scope, job.peerId)
+        if (!nm) return (scope === 'c2c' ? '私聊' : '群聊') + ' · ' + String(job.peerId || '').slice(0, 8)
+        return (scope === 'c2c' ? '私聊 · ' : '群聊 · ') + nm
+      }
       function chip(kind) {
         return h('span', { style: { fontSize: 11, padding: '1px 8px', borderRadius: 999, color: '#fff', background: kind === 'daily' ? '#2f9e44' : '#4d7cfe', whiteSpace: 'nowrap' } },
           kind === 'daily' ? '每天' : '一次性')
       }
-      return h('div', { style: { maxWidth: 760 } },
-        h('h2', null, '定时任务'),
-        h('div', { style: { ...sectionTitle, marginTop: 4 } }, '① 定时唤醒(每天到点,让她主动去群/私聊开口)'),
-        h('p', { style: { fontSize: 12, color: '#888' } }, '每个群/人一组,下面可加多个时刻。到点她以自己身份主动说 1~3 句(不@人、不带图);不用记号码——机器人会自动记住聊过的群和人,点「选聊天对象」挑一个即可(填 QQ 号没用,平台只认她视角的编号)。改完记得点「保存定时唤醒」。'),
-        h(WakeEditor, { acct: props.acct }),
-        h('div', { style: { ...sectionTitle, marginTop: 18, paddingTop: 10, borderTop: '1px solid #8882' } }, '② 她答应你的定时提醒(一次性/每天,在 QQ 里说一声就能建)'),
-        h('p', { style: { fontSize: 12, color: '#888' } }, '这些是机器人在 QQ 里应你要求安排的提醒(比如"30秒后提醒我""每天早上9点提醒我")。新建直接去 QQ 里跟它说,这里只管看和开关/删除。一次性任务到点触发后自动消失;连续几次找不到会话的任务会自动停用,在这里重新打开即可。'),
-        jobs === null ? h('p', null, '加载中…') : null,
-        jobs !== null && jobs.length === 0 ? h('p', { style: { color: '#888', padding: 14, textAlign: 'center' } }, '还没有这类提醒。去 QQ 群/私聊里让机器人安排一个,它就会出现在这里。') : null,
-        (jobs || []).map(function (j) {
-          var disabled = busyId === j.id
-          return h('div', { key: j.id, style: { border: '1px solid ' + (j.enabled ? '#8883' : '#ffa94d66'), borderRadius: 10, padding: '8px 12px', margin: '8px 0', opacity: j.enabled ? 1 : 0.72 } },
-            h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-              chip(j.kind),
-              h('span', { style: { fontWeight: 600 } }, fmtWhen(j)),
-              h('span', { style: { fontSize: 12, color: '#888', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 150 } }, who(j)),
-              h('span', { style: { flex: 1 } }),
-              h('label', { style: { fontSize: 13, whiteSpace: 'nowrap', color: j.enabled ? '#8ab4ff' : '#ffa94d' } },
-                h('input', { className: 'qqs-cb', type: 'checkbox', checked: !!j.enabled, disabled: disabled, onChange: function (e) { act(j, { enabled: e.target.checked }, e.target.checked ? '已启用' : '已停用') } }),
-                ' ' + (j.enabled ? '启用中' : '已停用')),
-              h('button', { className: 'qqs-btn', disabled: disabled, style: { padding: '2px 10px', fontSize: 12 }, onClick: function () { if (window.confirm('删除这条定时任务?')) act(j, {}, '已删除') } }, '删除')),
-            j.prompt ? h('div', { style: { fontSize: 13, color: '#cfd3dc', background: '#ffffff0a', border: '1px solid #ffffff14', borderRadius: 8, padding: '4px 8px', marginTop: 6, whiteSpace: 'pre-wrap', wordBreak: 'break-all' } }, j.prompt) : null)
-        }),
-        msg ? h('p', { style: { fontSize: 13, color: '#2f9e44' } }, msg) : null,
+      // 左右分栏: 左=定时唤醒(编辑), 右=已安排的定时提醒(开关/删除)——有效利用横向空间
+      var leftCol = h('div', { style: { flex: '1 1 44%', minWidth: 280, maxWidth: 560 } },
+        h('div', { style: { ...card, padding: '10px 14px' } },
+          h('div', { style: { fontWeight: 700, fontSize: 13 } }, '① 定时唤醒(每天到点,让她主动去群/私聊开口)'),
+          h('p', { style: { fontSize: T.fsSm, color: T.text3 } }, '每个群/人一组,下面可加多个时刻。不用记号码——点「选聊天对象」挑见过的就行(群显示真名/人显示昵称)。改完点「保存」。'),
+          h(WakeEditor, { acct: props.acct })))
+      var rightCol = h('div', { style: { flex: '1 1 44%', minWidth: 280 } },
+        h('div', { style: { ...card, padding: '10px 14px' } },
+          h('div', { style: { fontWeight: 700, fontSize: 13 } }, '② 她答应你的定时提醒(在 QQ 里说一声就能建)'),
+          h('p', { style: { fontSize: T.fsSm, color: T.text3 } }, '这些是她在 QQ 里应你要求安排的提醒。这里只管看/开关/删除;一次性到点自动消失。'),
+          jobs === null ? h('p', { style: { fontSize: T.fsSm, color: T.text3 }, padding: 10 }, '加载中…') : null,
+          jobs !== null && jobs.length === 0 ? h('p', { style: { color: '#888', padding: 14, textAlign: 'center', fontSize: T.fsSm } }, '还没有这类提醒。去 QQ 里让她安排一个,就会出现在这里。') : null,
+          (jobs || []).map(function (j) {
+            var disabled = busyId === j.id
+            var deadGroup = j.scope === 'group' && !isGroupAlive(j.peerId)
+            return h('div', { key: j.id, style: { border: '1px solid ' + (deadGroup ? T.danger + '88' : (j.enabled ? T.border : '#ffa94d66')), borderRadius: T.radius, padding: '8px 10px', margin: '6px 0', background: '#fff', opacity: j.enabled ? 1 : 0.72 } },
+              h('div', { style: { display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' } },
+                chip(j.kind),
+                h('span', { style: { fontWeight: 600, fontSize: T.fsSm } }, fmtWhen(j)),
+                h('span', { style: { fontSize: T.fsSm, color: deadGroup ? T.danger : T.text2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 150 } }, deadGroup ? (who(j) + '(群已失效)') : who(j)),
+                h('span', { style: { flex: 1 } }),
+                h('label', { style: { fontSize: T.fsSm, whiteSpace: 'nowrap', color: j.enabled ? T.primary : '#ffa94d' } },
+                  h('input', { className: 'qqs-cb', type: 'checkbox', checked: !!j.enabled, disabled: disabled, onChange: function (e) { act(j, { enabled: e.target.checked }, e.target.checked ? '已启用' : '已停用') } }),
+                  ' ' + (j.enabled ? '启用中' : '已停用')),
+                h('button', { className: 'qqs-btn', disabled: disabled, style: { padding: '2px 8px', fontSize: T.fsSm }, onClick: function () { if (window.confirm('删除这条定时任务?')) act(j, {}, '已删除') } }, '删除')),
+              j.prompt ? h('div', { style: { fontSize: T.fsSm, color: '#cfd3dc', background: '#ffffff0a', border: '1px solid #ffffff14', borderRadius: T.radius, padding: '4px 8px', marginTop: 4, whiteSpace: 'pre-wrap', wordBreak: 'break-all' } }, j.prompt) : null)
+          }),
+          msg ? h('p', { style: { fontSize: T.fsSm, color: T.success } }, msg) : null))
+      return h('div', { style: { width: '100%' } },
+        h('div', { style: { display: 'flex', gap: 14, alignItems: 'flex-start', flexWrap: 'wrap' } }, leftCol, rightCol),
         props && props.close ? h('button', { className: 'qqs-btn', onClick: props.close, style: { float: 'right', marginTop: 6 } }, '完成') : null)
     }
 
@@ -1011,7 +1425,7 @@ window.__ModuleLoader__.load({
         props && props.close ? h('button', { className: 'qqs-btn', onClick: props.close, style: { float: 'right', marginTop: 6 } }, '完成') : null)
     }
 
-var QQS_CSS = ".qqs-btn{font:inherit;color:inherit;background:linear-gradient(180deg,#ffffff22,#ffffff0f);border:1px solid #ffffff30;border-radius:9px;padding:5px 13px;cursor:pointer;transition:all .15s}.qqs-btn:hover{background:#ffffff32;border-color:#ffffff55}.qqs-btn:active{transform:translateY(1px)}.qqs-inp,.qqs-area{font:inherit;color:#f0f0f0;background:#00000088;border:1px solid #ffffff2e;border-radius:9px;padding:5px 10px;outline:none;transition:border-color .15s}.qqs-inp::placeholder,.qqs-area::placeholder{color:#ffffff66}.qqs-inp:focus,.qqs-area:focus{border-color:#5b9dff;box-shadow:0 0 0 2px #5b9dff44}.qqs-cb{accent-color:#5b9dff;width:15px;height:15px}.qqs-card{transition:box-shadow .15s,border-color .15s}.qqs-card:hover{box-shadow:0 2px 10px #0008}.qqs-panel{background:linear-gradient(180deg,#ffffff0a,#ffffff03);border:1px solid #ffffff22;border-radius:16px;padding:16px;box-shadow:0 10px 34px #0004}.qqs-toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;background:#ffffff0a;border:1px solid #ffffff16;border-radius:12px;padding:8px 10px;margin-bottom:10px}.qqs-modal{background:#22252e;color:#e8e8e8}"
+var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180deg,#ffffff,#f5f6f8);border:1px solid #d0d5dd;border-radius:9px;padding:5px 13px;cursor:pointer;transition:all .15s}.qqs-btn:hover{background:#ffffff;border-color:#7c6cf0;color:#7c6cf0}.qqs-btn:active{transform:translateY(1px)}.qqs-inp,.qqs-area{font:inherit;color:#1f2329;background:#ffffff;border:1px solid #d0d5dd;border-radius:9px;padding:5px 10px;outline:none;transition:border-color .15s}.qqs-inp::placeholder,.qqs-area::placeholder{color:#9aa1ab}.qqs-inp:focus,.qqs-area:focus{border-color:#7c6cf0;box-shadow:0 0 0 2px #7c6cf033}.qqs-cb{accent-color:#7c6cf0;width:15px;height:15px}.qqs-card{transition:box-shadow .15s,border-color .15s}.qqs-card:hover{box-shadow:0 2px 10px #0002}.qqs-panel{background:linear-gradient(180deg,#ffffff,#f7f8fa);border:1px solid #e2e5ea;border-radius:16px;padding:16px;box-shadow:0 10px 34px #0002}.qqs-toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;background:#f7f8fa;border:1px solid #e2e5ea;border-radius:12px;padding:8px 10px;margin-bottom:10px}.qqs-modal{background:#ffffff;color:#1f2329}"
     function ensureCss() { try { if (!document.getElementById('qqs-css')) { var st = document.createElement('style'); st.id = 'qqs-css'; st.textContent = QQS_CSS; document.head.appendChild(st) } } catch (e) {} }
 
     function apply(ctx) {

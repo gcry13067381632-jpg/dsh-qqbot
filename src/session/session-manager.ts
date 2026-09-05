@@ -84,6 +84,11 @@ export class SessionManager {
   }
   private _groupAdmin?: ReturnType<typeof createGroupAdmin>;
 
+  /** 对话内默认管理群(web/非群会话时群工具用它; 空=未配置) */
+  public get manageGroup(): string {
+    return this.config.groupAdmin?.manageGroup ?? '';
+  }
+
   constructor(
     private readonly ctx: Context,
     private readonly agents: DshAgentRegistry,
@@ -603,6 +608,11 @@ export class SessionManager {
       }
     }
     return undefined;
+  }
+
+  /** 按会话键找活跃会话(group/c2c); 无则 undefined(会话被回收/未建立) */
+  findByPeer(scope: ChatScope, peerId: string): SessionRecord | undefined {
+    return this.sessions.get(this.sessionKey(scope, peerId));
   }
 
   /**

@@ -7,6 +7,7 @@
 import type { Context } from '@deepseek-ai/cordis';
 import { join } from 'node:path';
 import { QQBot, type ReplyTarget } from '@tencent-connect/qqbot-nodejs';
+import { FULL_INTENTS } from '@tencent-connect/qqbot-nodejs/protocol';
 import type { MiddlewareContext } from '@tencent-connect/qqbot-nodejs';
 import { SessionManager, type DshAgentRegistry } from '../session/index.js';
 import { handleInbound, createOutboundHandler } from '../transport/index.js';
@@ -22,6 +23,7 @@ import { startScheduler } from '../features/scheduler.js';
 import { configureScheduleStore, getScheduleStore } from '../features/schedule-store.js';
 import { setChannelBridge } from '../channel-tools.js';
 import { QqApprovalController, setApprovalDispatch, makeApprovalListener } from '../features/qq-approval.js';
+import { handleGroupJoinRequestEvent } from '../features/group-join-request.js';
 
 export async function bootstrapGateway(
   ctx: Context,
@@ -59,6 +61,10 @@ export async function bootstrapGateway(
 
   // ── 初始化 QQ Bot SDK ──
   const userAgent = buildUserAgent();
+  // 入群申请事件(GROUP_JOIN_REQUEST)订阅: intent GROUP_MEMBER_EVENT = 1<<24, SDK 默认 FULL_INTENTS 不含它。
+  // ⚠️ 只在"群管理开启 + watchJoinRequests"时扩展 intents(Identify 携带未授权 intent 可能被拒连 4914/4915);
+  //    该值在 gateway 连接建立时确定 → 修改 config 后需重启才生效(非 live)。
+  const watchJoinRequests = !!config.groupAdmin?.enabled && !!config.groupAdmin?.watchJoinRequests;
   const bot = new QQBot({
     appId: config.appId,
     appSecret: config.appSecret,
@@ -66,10 +72,11 @@ export async function bootstrapGateway(
     baseUrl: process.env.QQBOT_BASE_URL?.replace(/\/+$/, '') || 'https://api.bot.qq.com',
     tokenBaseUrl: process.env.QQBOT_TOKEN_BASE_URL?.replace(/\/+$/, '') || 'https://api.bot.qq.com',
     userAgent,
+    ...(watchJoinRequests ? { intents: FULL_INTENTS | (1 << 24) } : {}),
     // 调试隔离时可用 QQBOT_DEBUG_CONSOLE=1 让 QQBot 日志直出 stdout，便于定位
     logger: process.env.QQBOT_DEBUG_CONSOLE ? (console as typeof logger) : logger,
   } as ConstructorParameters<typeof QQBot>[0]);
-  logger.info(`QQBot SDK initialized (UA: ${userAgent})`);
+  logger.info(`QQBot SDK initialized (UA: ${userAgent})${watchJoinRequests ? ' [watchJoinRequests: GROUP_MEMBER_EVENT 已订阅]' : ''}`);
 
   // ── 中间件链 ──
   setupMiddlewares(bot, config, manager, logger);
@@ -221,6 +228,17 @@ export async function bootstrapGateway(
   manager.installChannelSender(sender);
   // 全局桥: 通道工具 execute 的兜底解析(不依赖 setup/provide, 防重启后 setup 未跑)
   setChannelBridge({ manager, sender });
+
+  // ── 入群申请事件(P2.5): 实时 GROUP_JOIN_REQUEST → 提醒 + pending 待办 ──
+  // SDK 未知事件走 rawEvent 透传; 需 watchJoinRequests(构造时已扩 intents)才收得到。
+  // 同一 bot 仅一个群管理实例; 事件带 group_openid, 天然按群路由。
+  bot.on('rawEvent', (rawCtx: { eventType?: string; data?: unknown }) => {
+    if (rawCtx.eventType !== 'GROUP_JOIN_REQUEST') return;
+    logger.info(`[group-join] rawEvent GROUP_JOIN_REQUEST 到达`);
+    void handleGroupJoinRequestEvent(rawCtx.data, { sender, config, logger, manager }).catch((err: unknown) => {
+      logger.error(`[group-join] 事件处理异常: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  });
 
   // ── QQ 远程审批: ACP 模式接入(专家考古实证, 见 qq-approval.ts 头注) ──
   // ①dispatch: ownership(只处理本 bot 的 agent)+ enableApprovals 闸门;

@@ -660,15 +660,33 @@ export function apply(ctx: Context): void {
   // ── QQ 群管理工具组(2026-09-05, P2; 依赖 config.groupAdmin.enabled + 机器人=群管理员) ──
   // 危险写操作(审批/禁言)仅按主人指示执行(工具描述写死约束); owners 白名单接入留待后续,
   // 官方未开放能力(踢人/成员列表)由 client FEATURE_GATES 返回人话, 不在本层重复。
+  // 目标群解析(2026-09-05 主人定): QQ 群会话 → 当前群; web/非群会话 → config.groupAdmin.manageGroup
+  // ("对话里管一个群"不依赖会话形态; 多群管理走设置 UI⑥ P3)。
+  // ⚠️ 升级 0.1.2-rc.1 后补强(2026-09-05): web 直连 agent 可能不在 SessionManager 会话表里,
+  //    findSessionRec 失败 → 旧逻辑直接 return undefined, manageGroup 兜底形同虚设。
+  //    改为: 找不到会话也回退到全局桥 manager(groupAdmin.enabled 且 manageGroup 非空即可用)。
   function groupAdminOf(exec: unknown): { client: NonNullable<SessionManager['groupAdmin']>; gid?: string } | undefined {
     try {
       const s = findSessionRec(channelOf(exec as never), exec as never);
-      if (!s) return undefined;
-      const client = s.ch.manager.groupAdmin;
-      if (!client) return undefined;
-      const t = s.rec.replyTarget;
-      const gid = t && t.scope === 'group' ? t.targetId : undefined;
-      return { client, gid };
+      if (s) {
+        const client = s.ch.manager.groupAdmin;
+        if (!client) return undefined;
+        const t = s.rec.replyTarget;
+        const gid = t && t.scope === 'group'
+          ? t.targetId
+          : s.ch.manager.manageGroup || undefined;
+        return { client, gid };
+      }
+      // 会话表无此 agent(web 直连等): 遍历全局桥, 找第一个"群管理开启 + 配了 manageGroup"的实例
+      for (const b of channelBridges) {
+        try {
+          const client = b.manager.groupAdmin;
+          if (!client) continue;
+          const mg = b.manager.manageGroup;
+          if (mg) return { client, gid: mg };
+        } catch { /* 跳过坏桥 */ }
+      }
+      return undefined;
     } catch {
       return undefined;
     }
@@ -717,7 +735,12 @@ export function apply(ctx: Context): void {
       const ga = groupAdminOf(exec);
       if (!ga) return { ok: false, msg: '群管理未开启或非群会话' };
       if (!ga.gid) return { ok: false, msg: '当前不是群会话' };
+      // join_request_id 官方审批必填(缺省报 40103007): 先拉列表按 member_openid 匹配自动补上
+      const listR = await ga.client.listJoinRequests(ga.gid);
+      if (!listR.ok) return { ok: false, msg: listR.err.human };
+      const found = (listR.data.list ?? []).find((j) => j.member_openid === args.member_openid);
       const r = await ga.client.approveJoinRequest(ga.gid, args.member_openid, args.op as 'approve' | 'decline', {
+        ...(found ? { join_request_id: found.join_request_id } : {}),
         ...(args.op === 'decline' && String(args.reason ?? '') && String(args.reason) !== '-'
           ? { reject_reason: String(args.reason) }
           : {}),

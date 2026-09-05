@@ -201,6 +201,14 @@ export class GroupAdminClient {
     return this.call('GET', `/v2/groups/${encodeURIComponent(gid)}/restrict_chat_setting`);
   }
 
+  /** 获取群基本信息(群名/人数等; 11255=群不存在或已注销, 用于注册表有效性校验与显示群名) */
+  async getGroupInfo(gid: string): Promise<ApiResult<{
+    group_openid?: string; group_name?: string; group_finger_memo?: string;
+    group_class_text?: string; group_tags?: string[]; group_member_num?: number;
+  }>> {
+    return this.call('GET', `/v2/groups/${encodeURIComponent(gid)}/info`);
+  }
+
   /**
    * 设置群成员禁言(🟡 群管理员; 单次≤20 人; 只能操作普通成员, 不能禁群主/管理员/机器人; 最长 30 天)
    * @param memberOpenid 目标成员

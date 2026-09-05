@@ -17,6 +17,7 @@ This repo is an enhanced fork of [@tencent-connect/dsh-qqbot](https://github.com
 - **🤳 Group images become its sticker library automatically** — saved locally with dedup, organized into "to-sort / favorite / trash". Just say *"send something happy"* and it searches, picks and sends on its own — with optional guardrails (no posting into a cold chat, rate limits, no repeat stickers).
 - **⏰ It speaks up on time** — schedule a daily greeting at 9:00, or tell it *"remind me to drink water in 30 seconds"* and it actually will.
 - **🧑‍🤝‍🧑 Multiple bots, multiple personalities, one machine** — each bot has its own AppID, persona preset and working directory (sticker library / timers / gates fully isolated). Adding a bot is a phone-QR scan away from the Web panel — credentials are filled in automatically.
+- **🛡️ Group admin helper: join-request approval + mute management** — when the bot is a group admin, enable it in the panel (⑥ QQ Group Admin): join requests arrive as real-time events with an in-group reminder (reply "approve/reject" to handle them), and you can inspect mute state or mute/unmute members — all through official APIs with human-readable errors (not an admin / cannot mute the owner, etc.).
 - **🧹 Messy library? Let the AI tidy it** — ask *"which stickers still lack tags or descriptions"* and it lists them, then tags and describes them itself.
 - **🖥️ No config-file surgery** — reply pacing, sticker gates, scheduled wake-ups, and per-bot personas are all editable in the settings panel; saving applies live (only adding/removing bots needs a restart).
 
@@ -34,6 +35,7 @@ Right: sticker-battle in action — the bot answers with stickers from its own l
 
 ### For developers
 - Standard tools available inside QQ sessions: `send_media` / `recall_message` / `list_stickers` / `sticker_tag` / `sticker_untagged` / `schedule_timer` / `schedule_cancel` …, routed per bot account.
+- **Group admin tools** (`group_join_requests` / `group_approve_join` / `group_mute_state` / `group_mute_member` …): join-request approval and mute management — requires the bot to be a group admin; inside a group session the current group is used, elsewhere the configured `manageGroup` applies.
 - **Plain text can send media or recall messages**: writing `[MEDIA:image|path-or-url]` in a reply turns it into a real image message (`voice`/`video`/`file` work the same); a lone `[RECALL]` line recalls the bot's own last message.
 - Host-level fixes (workspace session attachment, upstream PR #21) are included — idempotent and fully fail-soft.
 

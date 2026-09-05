@@ -25,6 +25,9 @@
 **🧑‍🤝‍🧑 一个电脑，多个人格同时在线**
 傲娇系、元气系、高冷系……想开几个开几个：每个号独立 AppID、独立人格、独立工作目录（图库/定时/闸门全分开，互不串号）。新号不用翻教程——Web 页点「扫码绑定」，手机 QQ 扫一下，凭据自动填好。
 
+**🛡️ 群主/群管理员的帮手：入群审批 + 禁言**
+机器人为群管理员时，可在设置面板「⑥ QQ 群管理」开总开关：有人申请进群，机器人收实时事件并在群里提醒你，回一句"通过/拒绝"就审批；也能查禁言状态、把人禁言或解禁（全部走官方接口，出错给"人话"提示：不是管理员/不能禁群主等）。
+
 **🧹 图库乱？让 AI 自己整理**
 一句话"看看收藏里哪些图还没写介绍"，它列出清单、自己补标签补描述，越用越懂你。
 
@@ -45,6 +48,7 @@
 
 ### 给开发者的话
 - QQ 会话内可直接调用的标准工具：发图/撤图/查库/打标/查未整理/定时（`send_media`/`recall_message`/`list_stickers`/`sticker_tag`/`sticker_untagged`/`schedule_timer`/`schedule_cancel`…），会话按账号精确路由
+- **群管理工具**（`group_join_requests`/`group_approve_join`/`group_mute_state`/`group_mute_member`…）：入群审批与禁言，需机器人为该群管理员；对话内管当前群，web/非群会话用配置的 `manageGroup`
 - **纯文本也能发图撤消息**：让ai再回复里写 `[MEDIA:image|图片路径或网址]` 就自动变成真图发出去（`voice`/`video`/`file` 同理）；写 `[RECALL]` 撤回自己刚发的那条
 - 会话归属、工作区挂载等宿主问题已按官方机制修好（移植上游 PR #21，幂等、全 fail-soft）
 
@@ -169,6 +173,32 @@ npx @deepseek-ai/dsh web --patch /path/to/dsh-qqbot/cordis.dev.yml
 
 > 思路来源: wang-22-code/dsh-qqbot-bridge 的 QQ 审批设计(宿主 dsh `approval/request` 标准事件,官方 dsh-acp / Web 审批弹窗同款机制)。
 
+## QQ 群管理(可选)
+
+机器人**为群管理员**时,可开启群管理能力:实时接收「入群申请」并自动提醒主人、按申请审批入群、查询/设置群成员禁言。所有操作走腾讯官方 GroupOpenMsg 接口,错误信息已做"人话"映射(如 11703=机器人不是该群管理员、40103004=不能禁言群主/管理员、11255=群已注销)。
+
+**能力总开关**:
+
+- **Web 设置面板**: 设置 →「QQ 机器人」→ ⑥ QQ 群管理 → 勾选开启,并填/选「默认管理群」;
+- 或 `cordis.patch.yml` 的实例 config 加配置后重启:
+
+```yaml
+- id: im-qqbot
+  config:
+    groupAdmin:
+      enabled: true
+      owners: []                       # 主人 openid 白名单(空=不校验)
+      manageGroup: "群openid"           # 对话内默认管理群(web/非群会话用; 群会话自动取当前群)
+      watchJoinRequests: true          # 订阅入群申请事件(改后需重启: 涉及连接期 intents)
+      notifyInGroup: true              # 收到申请时在群内发提醒
+```
+
+> ⚠️ `watchJoinRequests` 需要连接期注册 intents(GROUP_MEMBER_EVENT, 1<<24)——**改它必须重启**,不是 live 热改;且需官方对该机器人开放对应能力,否则连接可能被拒(4914/4915)。
+
+**入群审批怎么用**: 事件到达 → bot 在群里发一条提醒(含申请人昵称/验证语)→ 你在对话里说"通过/拒绝"(AI 调 `group_approve_join`)→ 官方落库审批。也可以在设置面板「⑥ QQ 群管理 → 入群审批」页看待审批清单手动批。
+
+**配置项**(Web 面板 ⑥ 可改, 见下表 `groupAdmin.*`)
+
 ## 配置项
 
 | 配置 | 类型 | 默认值 | 说明 |
@@ -185,6 +215,13 @@ npx @deepseek-ai/dsh web --patch /path/to/dsh-qqbot/cordis.dev.yml
 | `textChunkLimit` | number | `4500` | 单条消息最大字符数 |
 | `sessionIdleTimeout` | number | `1800000` | 会话闲置超时(ms)，默认 30 分钟 |
 | `debug` | boolean | `false` | 调试模式 |
+| `groupAdmin.enabled` | boolean | `false` | 群管理总开关(需机器人为群管理员) |
+| `groupAdmin.owners` | string[] | `[]` | 可操作群管理的主人 openid 白名单(空=不校验) |
+| `groupAdmin.manageGroup` | string | `''` | 对话内默认管理群 openid(web/非群会话时用) |
+| `groupAdmin.watchJoinRequests` | boolean | `false` | 订阅入群申请事件(改后需重启) |
+| `groupAdmin.notifyInGroup` | boolean | `true` | 收到申请时在群内发提醒 |
+
+> 🔧 新版 Web 面板把群管理单开成「⑥ QQ 群管理」卡片(入群审批/禁言/成员信息/黑名单), 与上方 `groupAdmin.*` 配置同一份数据。
 
 ## 内置命令
 

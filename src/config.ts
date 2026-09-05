@@ -114,6 +114,20 @@ export interface ScheduleConfig {
 export interface GroupAdminConfig {
   enabled: boolean;
   owners: string[];
+  /**
+   * 对话内"默认管理群"(group_openid): QQ 群会话里工具取当前群;
+   * web/非群会话时工具回退用它 —— "对话里管一个群"不依赖会话形态(2026-09-05 主人定)。
+   * 多群管理走设置 UI ⑥(P3 选群), 此字段只承载对话内单群。
+   */
+  manageGroup: string;
+  /**
+   * 订阅入群申请事件(GROUP_JOIN_REQUEST, intent GROUP_MEMBER_EVENT 1<<24)。
+   * ⚠️ 涉及 gateway intents(连接建立时确定)→ **改后必须重启才生效**, 不是 live 热改。
+   * 需要机器人为该群管理员才会推送; 若官方未授权该 intent, 连接可能被拒(4914/4915)。
+   */
+  watchJoinRequests: boolean;
+  /** 收到新入群申请事件时是否在该群内发一条 bot 提醒消息(默认开; 需机器人=该群管理员) */
+  notifyInGroup: boolean;
 }
 
 /** Web 设置可编辑子集(不含 appId/appSecret 等敏感/底层字段) */
@@ -254,9 +268,15 @@ const scheduleSchema = Schema.object({
 const groupAdminSchema = Schema.object({
   enabled: Schema.boolean().default(false).description('QQ 群管理总开关(入群审批/禁言等; 需机器人为群管理员)'),
   owners: Schema.array(Schema.string()).default([]).description('允许操作的主人 openid 白名单(空=不校验; 群管理操作仅建议主人使用)'),
+  manageGroup: Schema.string().default('').description('对话内默认管理群 group_openid(web/非群会话时群工具用它; QQ 群会话自动用当前群)'),
+  watchJoinRequests: Schema.boolean().default(false).description('订阅"入群申请"实时事件(GROUP_JOIN_REQUEST)并自动提醒(改后需重启生效)'),
+  notifyInGroup: Schema.boolean().default(true).description('收到入群申请事件时, 在该群内发一条 bot 提醒(需机器人=群管理员)'),
 }).default({
   enabled: false,
   owners: [],
+  manageGroup: '',
+  watchJoinRequests: false,
+  notifyInGroup: true,
 }).description('QQ 群管理');
 
 /** Web 设置页可编辑项的 schema(behavior/sticker.gates/injectRules/groupPrompt/schedule) */
