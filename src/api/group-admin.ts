@@ -201,12 +201,19 @@ export class GroupAdminClient {
   }
 
   /**
-   * 设置禁言(🟡 群管理员; body 待探针确认后启用)。
-   * ⚠️ 状态型操作: 调用前务必先 getMuteState 回读, 写后回读校验。
-   * TODO(探针): 确认官方 POST restrict_chat_setting 的请求体(成员级 mute_seconds / 全员 mode 等), 实现后移除 NOT_IMPLEMENTED。
+   * 设置群成员禁言(🟡 群管理员; 单次≤20 人; 只能操作普通成员, 不能禁群主/管理员/机器人; 最长 30 天)
+   * @param memberOpenid 目标成员
+   * @param muteExpireAt RFC3339 到期时间(如 '2026-08-05T11:23:05+08:00'); 传 null = 立即解除禁言(del)
    */
-  async setMute(_gid: string, _payload: Record<string, unknown>): Promise<ApiResult<Record<string, never>>> {
-    return { ok: false, err: { code: 'NOT_IMPLEMENTED', human: '设置禁言接口的请求体待官方文档/探针确认后启用' } };
+  async setMemberMute(
+    gid: string,
+    memberOpenid: string,
+    muteExpireAt: string | null,
+  ): Promise<ApiResult<Record<string, never>>> {
+    const members = muteExpireAt
+      ? [{ op: 'add', member_openid: memberOpenid, mute_expire_at: muteExpireAt }]
+      : [{ op: 'del', member_openid: memberOpenid, mute_expire_at: '' }];
+    return this.call('POST', `/v2/groups/${encodeURIComponent(gid)}/restrict_chat_setting`, { members });
   }
 }
 
