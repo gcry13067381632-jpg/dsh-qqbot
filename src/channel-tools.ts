@@ -605,12 +605,12 @@ export function apply(ctx: Context): void {
 
   // reply_gate: 回复闸门(实验, 2026-09-05, 主人设想: 让 AI"自主判定要不要回", 判定不吃瓜时由宿主硬终止回合,
   // 实现"真·静默吃瓜"。机制参考 dsh-task-control: agent.cancel({kind:'user'},{keepInbox:true}) 立即切断当前回合输出)。
-  // ⚠️ 实验品: 依赖模型在正文前先调用 + 诚实传参; 判定规则后续可演进成代码硬判(被@状态等)。
+  // ⚠️ 描述只讲两个分支的效果, 不给场景规则——选哪个由模型按当前对话氛围自行权衡(写死规则会导致静默率过高)。
   const replyGateTool = defineTool({
     name: 'reply_gate',
-    description: '回复闸门: 每次开始回复前先调用它决定本回合要不要开口。群聊中如果这条消息没有 @ 机器人(上下文里没有 (@you) 点名、也没有私聊语境), 传 reply:false 并附 reason —— 工具会静默终止本回合, 你不会再输出任何内容(真·吃瓜不插嘴); 如果被 @ 了或是私聊, 传 reply:true 再正常回复。',
+    description: '回复闸门: 开始回复前先调用它, 决定本回合开口还是静默。传 reply:true → 正常继续, 按当前对话决定说什么; 传 reply:false → 本回合立即静默终止, 你不会再输出任何内容(这条消息就像没发生过)。选 true 还是 false 由你根据当前对话自己判断: 觉得该回应就 true, 觉得安静待着更好就 false。',
     parameters: {
-      reply: { type: 'boolean', required: true, description: 'true=本回合需要开口; false=不需要(如未被@的群聊消息), 将静默终止本回合' },
+      reply: { type: 'boolean', required: true, description: 'true=正常开口回复; false=静默终止本回合(不再输出任何内容)' },
       reason: { type: 'string', required: true, description: '简短判定理由, 如"未@不插嘴" / "被@需回复" / "私聊"' },
     },
     output: {
