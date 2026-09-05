@@ -60,6 +60,7 @@ export function mapErrHuman(code: string | number, gateHuman?: string): string {
   const c = String(code);
   const table: Record<string, string> = {
     '11253': gateHuman || '该能力官方尚未开放/未授权(内邀中或需白名单), 请联系平台运营',
+    '11703': gateHuman || '机器人无该接口权限: 需为该群管理员, 或该能力尚未对应用开放(探针实测 2026-09-05)',
     '11202': '接口调用异常, 请稍后重试',
     '11201': '机器人不在该群或参数错误',
     '40101': '频控: 请求太快, 稍等再试',
