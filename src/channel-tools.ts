@@ -657,12 +657,129 @@ export function apply(ctx: Context): void {
     },
   });
 
+  // ── QQ 群管理工具组(2026-09-05, P2; 依赖 config.groupAdmin.enabled + 机器人=群管理员) ──
+  // 危险写操作(审批/禁言)仅按主人指示执行(工具描述写死约束); owners 白名单接入留待后续,
+  // 官方未开放能力(踢人/成员列表)由 client FEATURE_GATES 返回人话, 不在本层重复。
+  function groupAdminOf(exec: unknown): { client: NonNullable<SessionManager['groupAdmin']>; gid?: string } | undefined {
+    try {
+      const s = findSessionRec(channelOf(exec as never), exec as never);
+      if (!s) return undefined;
+      const client = s.ch.manager.groupAdmin;
+      if (!client) return undefined;
+      const t = s.rec.replyTarget;
+      const gid = t && t.scope === 'group' ? t.targetId : undefined;
+      return { client, gid };
+    } catch {
+      return undefined;
+    }
+  }
+
+  const listJoinRequestsTool = defineTool({
+    name: 'group_join_requests',
+    description: '群管理(读): 查看当前群待审批的入群申请列表(申请人/验证消息/来源/风险提示)。仅主人要求时调用。需在设置开启"QQ群管理"且机器人为群管理员。',
+    parameters: {},
+    output: { schema: { type: 'object', additionalProperties: true }, render: () => [] },
+    async execute(_args, exec) {
+      const ga = groupAdminOf(exec);
+      if (!ga) return { ok: false, msg: '群管理未开启(设置→QQ群管理)或非群会话' };
+      if (!ga.gid) return { ok: false, msg: '当前不是群会话, 无法确定目标群' };
+      const r = await ga.client.listJoinRequests(ga.gid);
+      if (!r.ok) return { ok: false, msg: r.err.human };
+      const list = r.data.list;
+      if (list.length === 0) return { ok: true, msg: '当前没有待审批的入群申请 ✓' };
+      const lines = list.map((j, i) => `${i + 1}. ${j.username ?? '?'} (${String(j.member_openid).slice(0, 10)}…) 来源:${j.apply_source ?? '?'} 验证:${j.verify_info?.verify_message ?? j.verify_info?.method ?? '-'}${j.risk_tips ? ` ⚠️${j.risk_tips}` : ''}`);
+      return { ok: true, msg: `入群申请 ${list.length} 条:\n${lines.join('\n')}` };
+    },
+  });
+
+  const approveJoinTool = defineTool({
+    name: 'group_approve_join',
+    description: '群管理(写,危险): 审批入群申请。approve=放行 / decline=拒绝(可带理由)。仅主人明确要求时调用; 调用前建议先 group_join_requests 核对申请人。',
+    parameters: {
+      member_openid: { type: 'string', required: true, description: '申请人 member_openid(来自 group_join_requests)' },
+      op: { type: 'string', required: true, enum: ['approve', 'decline'], description: 'approve 放行 / decline 拒绝' },
+      reason: { type: 'string', required: true, description: '拒绝理由(decline 时填; approve 或不需要可填 "-")' },
+    },
+    output: {
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: { ok: { type: 'boolean', required: true }, msg: { type: 'string', required: true } },
+      },
+      render: (_a, v: { ok: boolean; msg: string }) => [{ type: 'text' as const, text: v.ok ? v.msg : `失败: ${v.msg}` }],
+    },
+    async execute(args, exec) {
+      const ga = groupAdminOf(exec);
+      if (!ga) return { ok: false, msg: '群管理未开启或非群会话' };
+      if (!ga.gid) return { ok: false, msg: '当前不是群会话' };
+      const r = await ga.client.approveJoinRequest(ga.gid, args.member_openid, args.op as 'approve' | 'decline', {
+        ...(args.op === 'decline' && String(args.reason ?? '') && String(args.reason) !== '-'
+          ? { reject_reason: String(args.reason) }
+          : {}),
+      });
+      if (!r.ok) return { ok: false, msg: r.err.human };
+      return { ok: true, msg: args.op === 'approve' ? '✅ 已放行该入群申请' : '已拒绝该入群申请' };
+    },
+  });
+
+  const muteStateTool = defineTool({
+    name: 'group_mute_state',
+    description: '群管理(读): 查看当前群禁言状态(全员模式 + 正在禁言中的成员及到期时间)。仅主人要求时调用。',
+    parameters: {},
+    output: { schema: { type: 'object', additionalProperties: true }, render: () => [] },
+    async execute(_args, exec) {
+      const ga = groupAdminOf(exec);
+      if (!ga) return { ok: false, msg: '群管理未开启或非群会话' };
+      if (!ga.gid) return { ok: false, msg: '当前不是群会话' };
+      const r = await ga.client.getMuteState(ga.gid);
+      if (!r.ok) return { ok: false, msg: r.err.human };
+      const mode = r.data.global_rule?.mode ?? 'none';
+      const members = r.data.members ?? [];
+      const lines = members.map((m) => `${m.username ?? String(m.member_openid).slice(0, 10)}… 禁言至 ${m.mute_expire_at ?? '?'}`);
+      return { ok: true, msg: `全员禁言: ${mode === 'always' ? '开启' : mode === 'schedule' ? '定时' : '关闭'}\n禁言中 ${members.length} 人:\n${lines.length ? lines.join('\n') : '(无)'}` };
+    },
+  });
+
+  const muteMemberTool = defineTool({
+    name: 'group_mute_member',
+    description: '群管理(写,危险): 禁言/解除群成员。action=mute 禁言(seconds 秒, 默认600); unmute=立即解除。只能禁普通成员(群主/管理员禁不了)。仅主人明确要求时调用。',
+    parameters: {
+      member_openid: { type: 'string', required: true, description: '目标成员 member_openid' },
+      action: { type: 'string', required: true, enum: ['mute', 'unmute'], description: 'mute 禁言 / unmute 解除' },
+      seconds: { type: 'number', required: true, description: '禁言秒数(mute 时; 不需要可填 600)' },
+    },
+    output: {
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: { ok: { type: 'boolean', required: true }, msg: { type: 'string', required: true } },
+      },
+      render: (_a, v: { ok: boolean; msg: string }) => [{ type: 'text' as const, text: v.ok ? v.msg : `失败: ${v.msg}` }],
+    },
+    async execute(args, exec) {
+      const ga = groupAdminOf(exec);
+      if (!ga) return { ok: false, msg: '群管理未开启或非群会话' };
+      if (!ga.gid) return { ok: false, msg: '当前不是群会话' };
+      const secs = Math.max(1, Math.min(30 * 86400, Math.round(Number(args.seconds ?? 600))));
+      const pad = (n: number): string => String(n).padStart(2, '0');
+      const expire = args.action === 'mute' ? new Date(Date.now() + secs * 1000) : null;
+      const rfc = expire
+        ? `${expire.getFullYear()}-${pad(expire.getMonth() + 1)}-${pad(expire.getDate())}T${pad(expire.getHours())}:${pad(expire.getMinutes())}:${pad(expire.getSeconds())}+08:00`
+        : null;
+      const r = await ga.client.setMemberMute(ga.gid, args.member_openid, rfc);
+      if (!r.ok) return { ok: false, msg: r.err.human };
+      return { ok: true, msg: args.action === 'mute' ? `✅ 已禁言, ${Math.round(secs / 60)} 分钟后自动解除` : '已解除禁言' };
+    },
+  });
+
   // 逐个注册并记录结果(便于线上定位是哪个工具失败)
   const toolDefs: Array<{ name: string; tool: unknown }> = [
     { name: 'send_media', tool: sendMediaTool },
     { name: 'recall_message', tool: recallTool },
     { name: 'text_break', tool: textBreakTool },
     { name: 'reply_gate', tool: replyGateTool },
+    { name: 'group_join_requests', tool: listJoinRequestsTool },
+    { name: 'group_approve_join', tool: approveJoinTool },
+    { name: 'group_mute_state', tool: muteStateTool },
+    { name: 'group_mute_member', tool: muteMemberTool },
     { name: 'list_stickers', tool: listStickersTool },
     { name: 'sticker_tag', tool: tagStickerTool },
     { name: 'sticker_delete', tool: deleteStickerTool },

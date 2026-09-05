@@ -34,6 +34,7 @@ import type {
 } from './types.js';
 import type { QQBotSender } from '../transport/outbound-buffer.js';
 import { apply as mountChannelTools } from '../channel-tools.js';
+import { createGroupAdmin } from '../api/group-admin.js';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { appendFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -72,6 +73,16 @@ export class SessionManager {
   public get scheduleDataDir(): string {
     return join(this.config.cwd || process.cwd(), '.qqbot');
   }
+
+  /** 本实例群管理客户端(懒建; groupAdmin.enabled=false 时 undefined) */
+  public get groupAdmin(): ReturnType<typeof createGroupAdmin> | undefined {
+    if (!this.config.groupAdmin?.enabled) return undefined;
+    if (!this._groupAdmin) {
+      this._groupAdmin = createGroupAdmin({ appId: this.config.appId, appSecret: this.config.appSecret });
+    }
+    return this._groupAdmin;
+  }
+  private _groupAdmin?: ReturnType<typeof createGroupAdmin>;
 
   constructor(
     private readonly ctx: Context,

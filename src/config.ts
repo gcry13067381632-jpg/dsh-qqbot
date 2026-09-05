@@ -110,9 +110,16 @@ export interface ScheduleConfig {
   targets: ScheduleTargetConfig[];
 }
 
+/** QQ 群管理(2026-09-05): 总开关 + 主人 openid 白名单(空=不校验; 建议填主人与常用小号) */
+export interface GroupAdminConfig {
+  enabled: boolean;
+  owners: string[];
+}
+
 /** Web 设置可编辑子集(不含 appId/appSecret 等敏感/底层字段) */
 export interface EditableConfig {
   behavior: BehaviorConfig;
+  groupAdmin: GroupAdminConfig;
   sticker: {
     gates: StickerGatesConfig;
     /** 新图后台自动识图打标(消耗视觉额度; 默认关, 开=后台自动) */
@@ -244,9 +251,18 @@ const scheduleSchema = Schema.object({
   targets: Schema.array(scheduleTargetSchema).default([]).description('定时目标列表(每个群/人一组,下面挂时刻)'),
 }).default({ targets: [] }).description('定时唤醒(M3): 每天固定时刻主动找聊天');
 
+const groupAdminSchema = Schema.object({
+  enabled: Schema.boolean().default(false).description('QQ 群管理总开关(入群审批/禁言等; 需机器人为群管理员)'),
+  owners: Schema.array(Schema.string()).default([]).description('允许操作的主人 openid 白名单(空=不校验; 群管理操作仅建议主人使用)'),
+}).default({
+  enabled: false,
+  owners: [],
+}).description('QQ 群管理');
+
 /** Web 设置页可编辑项的 schema(behavior/sticker.gates/injectRules/groupPrompt/schedule) */
 export const EditableConfigSchema: Schema<EditableConfig> = Schema.object({
   behavior: behaviorSchema,
+  groupAdmin: groupAdminSchema,
   sticker: Schema.object({
     gates: stickerGatesSchema,
     autoTagEnabled: Schema.boolean().default(false).description('新图后台自动识图打标(耗视觉额度,默认关)'),
@@ -302,6 +318,8 @@ export interface ImQQBotConfig {
   injectRules: InjectRuleConfig[];
   /** 定时唤醒任务(M3) */
   schedule: ScheduleConfig;
+  /** QQ 群管理(入群审批/禁言等; 需机器人=群管理员) */
+  groupAdmin: GroupAdminConfig;
   /** 是否展示工具调用成功结果（工具错误始终展示） */
   showToolResults: boolean;
   /** 调试模式 */
@@ -367,6 +385,7 @@ export const ConfigSchema: Schema<ImQQBotConfig> = Schema.object({
   }).description('表情包图库'),
   injectRules: Schema.array(injectRuleItemSchema).default([]).description('条件注入规则:消息含图片/链接/自定义文本时自动插入系统提示'),
   schedule: scheduleSchema,
+  groupAdmin: groupAdminSchema,
   showToolResults: Schema.boolean().default(false).description('是否展示工具调用成功结果（工具错误始终展示）'),
   debug: Schema.boolean().default(false),
   enableApprovals: Schema.boolean().default(false).description('通过 QQ 接收并处理 dsh 一次性权限申请(远程审批: 发起者用 /approve CODE 放行)'),
