@@ -1,0 +1,90 @@
+/**
+ * QQ 表情标签 → 可读文本(名字优先, faceId 兜底)
+ *
+ * QQ 入站消息里表情有两种形态:
+ *   老格式: [<face,id=0/>]                                  → id 直接查表
+ *   新格式: <faceType=6,faceId="0",ext="base64">            → ext.text 优先, 空则按 faceId 查表
+ *
+ * ⚠️ 必须挂在 SDK contentSanitizer(parseFaceTags) **之前**: SDK 的正则
+ * 只解 ext.text, text 为空会把 faceId 一起丢掉 → 输出"未知表情"。
+ * 本层先把标签整体替换成可读文本, SDK 就再也匹配不到原标签了。
+ */
+import type { MiddlewareContext } from '@tencent-connect/qqbot-nodejs';
+
+/** QQ 经典系统表情 faceId → 中文名(0=微笑…, 常见 0~138; 覆盖不全的按 ext.text) */
+const QQ_FACE_NAMES: Record<string, string> = {
+  '0': '微笑', '1': '撇嘴', '2': '色', '3': '发呆', '4': '得意', '5': '流泪',
+  '6': '害羞', '7': '闭嘴', '8': '睡', '9': '大哭', '10': '尴尬', '11': '发怒',
+  '12': '调皮', '13': '呲牙', '14': '惊讶', '15': '难过', '16': '酷', '17': '冷汗',
+  '18': '抓狂', '19': '吐', '20': '偷笑', '21': '可爱', '22': '白眼', '23': '傲慢',
+  '24': '饥饿', '25': '困', '26': '惊恐', '27': '流汗', '28': '憨笑', '29': '悠闲',
+  '30': '奋斗', '31': '咒骂', '32': '疑问', '33': '嘘', '34': '晕', '35': '狂躁',
+  '36': '衰', '37': '骷髅', '38': '敲打', '39': '再见', '40': '擦汗', '41': '抠鼻',
+  '42': '鼓掌', '43': '糗大了', '44': '坏笑', '45': '左哼哼', '46': '右哼哼', '47': '哈欠',
+  '48': '鄙视', '49': '委屈', '50': '快哭了', '51': '阴险', '52': '亲亲', '53': '吓',
+  '54': '可怜', '55': '菜刀', '56': '西瓜', '57': '啤酒', '58': '篮球', '59': '乒乓',
+  '60': '咖啡', '61': '饭', '62': '猪头', '63': '玫瑰', '64': '凋谢', '65': '示爱',
+  '66': '爱心', '67': '心碎', '68': '蛋糕', '69': '闪电', '70': '炸弹', '71': '刀',
+  '72': '足球', '73': '便便', '74': '月亮', '75': '太阳', '76': '礼物', '77': '拥抱',
+  '78': '强', '79': '弱', '80': '握手', '81': '胜利', '82': '抱拳', '83': '勾引',
+  '84': '拳头', '85': '差劲', '86': '爱你', '87': 'NO', '88': 'OK', '89': '爱情',
+  '90': '飞吻', '91': '跳跳', '92': '发抖', '93': '怄火', '94': '转圈', '95': '磕头',
+  '96': '回头', '97': '跳绳', '98': '挥手', '99': '激动', '100': '街舞', '101': '献吻',
+  '102': '左太极', '103': '右太极', '104': '双喜', '105': '鞭炮', '106': '灯笼', '107': '发财',
+  '108': 'K歌', '109': '购物', '110': '邮件', '111': '帅', '112': '喝彩', '113': '祈祷',
+  '114': '爆筋', '115': '棒棒糖', '116': '喝奶', '117': '下面', '118': '香蕉', '119': '飞机',
+  '120': '开车', '121': '左车头', '122': '车厢', '123': '右车头', '124': '多云', '125': '下雨',
+  '126': '钞票', '127': '熊猫', '128': '灯泡', '129': '风车', '130': '闹钟', '131': '打伞',
+  '132': '彩球', '133': '钻戒', '134': '沙发', '135': '纸巾', '136': '药', '137': '手枪',
+  '138': '茶', '139': '眨眼', '140': '泪奔', '141': '无奈', '142': '托腮', '143': '卖萌',
+  '144': '斜眼笑', '145': 'doge', '146': '惊喜', '147': '骚扰', '148': '小纠结', '149': '赞',
+  '150': '无语', '151': '献花', '152': '撇嘴2', '153': '暗送秋波', '154': '挑眉', '155': '委屈2',
+  '156': '吓哭', '157': '财神', '158': '右太极', '159': '歌唱', '160': '水', '161': '猪头2',
+};
+
+/** 解新格式标签: 返回可读文本(找不到名字给通用占位) */
+function decodeNewTag(_full: string, faceId: string, ext: string): string {
+  // 1) ext 里带 text → 官方给的名字最准
+  if (ext) {
+    try {
+      const decoded = Buffer.from(ext, 'base64').toString('utf-8');
+      const parsed = JSON.parse(decoded) as { text?: string } | null;
+      const t = (parsed && typeof parsed.text === 'string' && parsed.text.trim()) ? parsed.text.trim() : '';
+      if (t) return `【表情: ${t}】`;
+    } catch {
+      /* ext 不可解 → 走 faceId 兜底 */
+    }
+  }
+  // 2) faceId 查表
+  const name = QQ_FACE_NAMES[faceId];
+  if (name) return `【表情: ${name}】`;
+  return faceId ? `【表情: id${faceId}】` : '【表情】';
+}
+
+/** 把消息 content 里的表情标签全部转成可读文本 */
+export function resolveFaceTags(text: string): string {
+  if (!text) return text;
+  // 新格式: <faceType=N,faceId="X",ext="b64"> (属性顺序可能与 SDK 不同, 宽松匹配)
+  let out = text.replace(/<faceType=\d+,faceId="([^"]*)",ext="([^"]*)">/g, (m, id: string, ex: string) => decodeNewTag(m, id, ex));
+  // 宽松形态(缺 ext / 顺序不同): <faceType=N,faceId="X">
+  out = out.replace(/<faceType=\d+,faceId="([^"]*)">/g, (_m, id: string) => {
+    const name = QQ_FACE_NAMES[id];
+    return name ? `【表情: ${name}】` : (id ? `【表情: id${id}】` : '【表情】');
+  });
+  // 老格式: [<face,id=N/>]
+  out = out.replace(/\[<face,id=(\d+)\/?>]/g, (_m, id: string) => {
+    const name = QQ_FACE_NAMES[id];
+    return name ? `【表情: ${name}】` : '【表情】';
+  });
+  return out;
+}
+
+/** 中间件: 在 SDK contentSanitizer 之前清洗表情标签(不依赖 SDK 的 parseFaceTags) */
+export function faceTagResolver() {
+  return async (ctx: MiddlewareContext, next: () => Promise<void>): Promise<void> => {
+    if (typeof ctx.message.content === 'string') {
+      ctx.message.content = resolveFaceTags(ctx.message.content);
+    }
+    await next();
+  };
+}

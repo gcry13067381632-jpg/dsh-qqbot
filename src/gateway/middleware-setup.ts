@@ -28,6 +28,7 @@ import { getHistoryStore, historyGroupKey } from '../features/history-store.js';
 import { stickerActivityRecorder } from '../features/sticker-gate.js';
 import { chatLedgerRecorder } from '../features/chat-ledger.js';
 import { debounceLayer } from './debounce.js';
+import { faceTagResolver } from '../features/face-tags.js';
 import { join } from 'node:path';
 
 export function setupMiddlewares(
@@ -38,6 +39,14 @@ export function setupMiddlewares(
 ): void {
   // 1. 错误兜底（最外层洋葱皮）
   bot.use(errorHandler());
+
+  // 1.2 表情标签名字解析(本地实现, 2026-09-06): 必须挂在**最顶层**(任何历史/缓冲之前)——
+  //     mediaHistoryBuffer(第4步)会把 content 原文存进群历史, AI 上下文读的是历史里的文本,
+  //     若解析放后面, 历史里存的就是 <faceType=...> 原文, AI 永远看不到名字。
+  //     这里把 <faceType=N,faceId="X",ext="b64"> / [<face,id=N/>] 转成【表情: 名字】:
+  //     ext.text 优先(官方名字最准), 空则按 faceId 查 QQ 经典表情名表(0=微笑…160+),
+  //     SDK contentSanitizer(parseFaceTags) 只解 ext.text, text 空会丢 faceId → 本层先吃掉标签。
+  bot.use(faceTagResolver());
 
   // 1.5 消息串行闸(本地手改, 2026-09-05)：
   //     SDK 收帧处 `void Promise.resolve(onMessage(...))` 不等待 → 快速连发时多条消息的
