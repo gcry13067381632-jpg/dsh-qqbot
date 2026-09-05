@@ -116,6 +116,7 @@ window.__ModuleLoader__.load({
               groupPrompt: typeof v.groupPrompt === 'string' ? v.groupPrompt : DEFAULT_GROUP_PROMPT,
               enableApprovals: v.enableApprovals === true,
               approvalTimeoutMs: typeof v.approvalTimeoutMs === 'number' ? v.approvalTimeoutMs : 120000,
+              groupAdmin: { enabled: v.groupAdmin && v.groupAdmin.enabled === true, owners: Array.isArray(v.groupAdmin && v.groupAdmin.owners) ? v.groupAdmin.owners : [] },
             }
             setCfg(base); setRev(d.revision); setMsg('')
           } else { setMsg('读取失败: ' + JSON.stringify(d)) }
@@ -130,6 +131,7 @@ window.__ModuleLoader__.load({
       function setBehavior(p) { setCfg(function (c) { return { ...c, behavior: { ...c.behavior, ...p } } }) }
       function setGates(p) { setCfg(function (c) { return { ...c, sticker: { ...c.sticker, gates: { ...(c.sticker.gates || {}), ...p } } } }) }
       function setSticker(p) { setCfg(function (c) { return { ...c, sticker: { ...(c.sticker || {}), ...p } } }) }
+      function setGroupAdmin(p) { setCfg(function (c) { return { ...c, groupAdmin: { ...(c.groupAdmin || { enabled: false, owners: [] }), ...p } } }) }
       function setRules(list) { setCfg(function (c) { return { ...c, injectRules: list } }) }
 
       function addRule() {
@@ -162,6 +164,7 @@ window.__ModuleLoader__.load({
           groupPrompt: typeof gpOverride === 'string' ? gpOverride : (typeof cfg.groupPrompt === 'string' ? cfg.groupPrompt : ''),
           enableApprovals: cfg.enableApprovals === true,
           approvalTimeoutMs: typeof cfg.approvalTimeoutMs === 'number' ? cfg.approvalTimeoutMs : 120000,
+          groupAdmin: { enabled: cfg.groupAdmin && cfg.groupAdmin.enabled === true, owners: Array.isArray(cfg.groupAdmin && cfg.groupAdmin.owners) ? cfg.groupAdmin.owners : [] },
         }
         fetch(UPDATE, {
           method: 'POST', headers: { 'content-type': 'application/json' },
@@ -176,6 +179,7 @@ window.__ModuleLoader__.load({
               groupPrompt: typeof v2.groupPrompt === 'string' ? v2.groupPrompt : (typeof cfg.groupPrompt === 'string' ? cfg.groupPrompt : DEFAULT_GROUP_PROMPT),
               enableApprovals: v2.enableApprovals === true,
               approvalTimeoutMs: typeof v2.approvalTimeoutMs === 'number' ? v2.approvalTimeoutMs : 120000,
+              groupAdmin: { enabled: v2.groupAdmin && v2.groupAdmin.enabled === true, owners: Array.isArray(v2.groupAdmin && v2.groupAdmin.owners) ? v2.groupAdmin.owners : [] },
             })
             setRev(d.revision); setMsg('已保存 ✓(live 生效)')
           }
@@ -245,6 +249,12 @@ window.__ModuleLoader__.load({
         h('div', { style: boxStyle },
           BoolRow({ label: '开启 QQ 远程审批(不勾=保持默认审批方式)', value: cfg.enableApprovals === true, onChange: function (v) { setCfg(function (c) { return { ...c, enableApprovals: v } }) } }),
           NumRow({ label: '审批等待秒数(超时自动拒绝;默认120)', value: Math.round((cfg.approvalTimeoutMs || 120000) / 1000), onChange: function (v) { setCfg(function (c) { return { ...c, approvalTimeoutMs: v * 1000 } }) } })),
+
+        h('div', { style: sectionTitle }, '⑥ QQ 群管理(入群审批/禁言;需机器人=群管理员)'),
+        h('p', { style: { fontSize: 12, color: '#888' } }, '开启后,QQ 会话里可用群管理工具(查入群申请/审批放行、查禁言/禁言成员);踢人/成员列表等官方未开放能力会在工具里提示等待公测。开启请勾下面开关,白名单可留空(建议填你的 openid,逗号分隔多个)。'),
+        h('div', { style: boxStyle },
+          BoolRow({ label: '开启 QQ 群管理(不勾=群管理工具不可用)', value: cfg.groupAdmin && cfg.groupAdmin.enabled === true, onChange: function (v) { setGroupAdmin({ enabled: v }) } }),
+          StrRow({ label: '允许操作的主人 openid(逗号分隔,可留空=不校验)', value: (cfg.groupAdmin && Array.isArray(cfg.groupAdmin.owners) ? cfg.groupAdmin.owners : []).join(','), wide: true, onChange: function (v) { setGroupAdmin({ owners: v.split(/[,，]/).map(function (s) { return s.trim() }).filter(Boolean) }) } })),
 
         h('div', { style: { margin: '12px 0' } },
           h('button', { className: 'qqs-btn', style: { marginRight: 8 }, onClick: save }, '保存'),
