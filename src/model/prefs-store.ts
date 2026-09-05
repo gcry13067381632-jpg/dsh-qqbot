@@ -3,8 +3,13 @@
  *
  * 隔离文件 I/O 操作，便于单元测试时 mock。
  * 存储路径：~/.dsh-qqbot/model-prefs.json
+ *
+ * 2026-09-06 移植上游 tencent-connect/dsh-qqbot PR #41:
+ *   - 写入改原子(先写 .tmp 再 renameSync 覆盖, 同卷 rename 由 OS 保证原子,
+ *     避免写盘瞬间被 kill 留下半截 JSON);
+ *   - load 解析失败不再静默吞掉: 损坏文件改名 .corrupt-<ts> 保留取证, 空偏好继续。
  */
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import type { ModelRoute } from './types.js';
@@ -94,7 +99,18 @@ export class PrefsStore {
         }
       }
     } catch (err) {
+      // 2026-09-06 (PR #41): 解析失败不静默 —— 损坏文件改名 .corrupt-<ts> 保留取证, 空偏好继续。
+      // 旧行为只在 debug 时打一行日志然后以空偏好继续, 坏文件会被下次 write 覆盖, 无法事后排查。
       this.debugLog?.(`loadPrefs failed: ${err instanceof Error ? err.message : String(err)}`);
+      try {
+        if (existsSync(this.prefsPath)) {
+          const quarantine = `${this.prefsPath}.corrupt-${Date.now()}`;
+          renameSync(this.prefsPath, quarantine);
+          this.debugLog?.(`prefs 文件损坏, 已隔离到 ${quarantine} 保留取证`);
+        }
+      } catch (qErr) {
+        this.debugLog?.(`prefs 损坏文件隔离失败: ${qErr instanceof Error ? qErr.message : String(qErr)}`);
+      }
     }
   }
 
@@ -105,7 +121,19 @@ export class PrefsStore {
         overrides: Object.fromEntries(this.overrides.entries()),
         sessionIds: Object.fromEntries(this.sessionIds.entries()),
       };
-      writeFileSync(this.prefsPath, JSON.stringify(data, null, 2), 'utf8');
+      // 2026-09-06 (PR #41): 原子写入 —— 先写 .tmp 再 renameSync 覆盖(同卷 rename 原子, OS 保证)。
+      // 旧行为 writeFileSync 就地全量覆盖, 写盘瞬间进程被 kill → 留下半截 JSON, 下次 load 静默重置。
+      const tmpPath = `${this.prefsPath}.tmp`;
+      writeFileSync(tmpPath, JSON.stringify(data, null, 2), 'utf8');
+      try {
+        renameSync(tmpPath, this.prefsPath);
+      } catch (renameErr) {
+        // 极端情况下 rename 失败(如目标被占用): 清掉 tmp 残留, 避免堆积
+        try {
+          if (existsSync(tmpPath)) renameSync(tmpPath, `${this.prefsPath}.stale-${Date.now()}`);
+        } catch { /* ignore */ }
+        throw renameErr;
+      }
     } catch (err) {
       this.debugLog?.(`writePrefs failed: ${err instanceof Error ? err.message : String(err)}`);
     }

@@ -120,6 +120,17 @@ npx @deepseek-ai/dsh plugin --profile web add /tmp/zaofan-dsh-qqbot-0.4.0.tgz
 > ① 目录路径含空格时 Windows 会把参数在空格处拆碎（pnpm 报 `- isn't supported`）；
 > ② `add` 目录 = pnpm link(junction)，插件无法按"代码位置"反推 profile → 扫码凭据落不了盘，只能走环境变量。
 
+### 排障: npm 安装报 ERESOLVE(2026-09-06 移植上游 PR #42)
+
+首次 `npm install` 可能报 `ERESOLVE could not resolve`——原因: `@deepseek-ai/dsh-tools`/`dsh-agent` 等 peer 依赖仍在 prerelease(-rc) 版本线,npm 7+ 严格解析拒绝不相交组合。**这是上游版本线问题,不是插件 bug**,两条绕过路:
+
+```bash
+npm install --legacy-peer-deps     # 仅安装期解析策略, 不改运行行为
+# 或: 装完依赖后手动 build + pack(peer 由 dsh 宿主解析, 不受影响)
+```
+
+> 跟踪中: 上游 #37 根治后此段可删(版本线收敛后 npm 不再报错)。
+
 ### 首次启动与绑定
 
 启动 `dsh web` 后，若未配置凭据会自动进入**扫码引导**：终端输出二维码 → 手机 QQ 扫码绑定 → 凭据自动保存，重启不丢（设置面板里也可随时「扫码绑定」/改账号）。

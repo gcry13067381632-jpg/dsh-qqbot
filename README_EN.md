@@ -108,6 +108,19 @@ npx @deepseek-ai/dsh plugin --profile web add /tmp/zaofan-dsh-qqbot-0.4.0.tgz
 > ② `add <dir>` becomes a pnpm link (junction), so the plugin can't locate the profile by its code location,
 > and scanned credentials cannot be persisted (env-var-only fallback).
 
+### Troubleshooting: npm install fails with ERESOLVE (backported from upstream PR #42)
+
+A fresh `npm install` may fail with `ERESOLVE could not resolve`. Cause: peer deps like
+`@deepseek-ai/dsh-tools` / `dsh-agent` are still on prerelease (-rc) version lines, and npm 7+
+strict resolution rejects non-intersecting combinations. **This is an upstream version-line issue, not a plugin bug.** Two workarounds:
+
+```bash
+npm install --legacy-peer-deps     # install-time resolution only; runtime behavior unchanged
+# or: install deps, then build & pack manually (peers are resolved by the dsh host)
+```
+
+> Tracked: once upstream #37 is fixed and version lines converge, this section can be removed.
+
 ### First launch & binding
 
 Start `dsh web`. If credentials are missing, the **QR flow** starts automatically: a QR code is printed in the
