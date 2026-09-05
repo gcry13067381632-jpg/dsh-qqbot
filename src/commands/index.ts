@@ -10,7 +10,7 @@ import { resetCommand, newCommand } from './session.js';
 import { modelCommand } from './model.js';
 import { statusCommand } from './status.js';
 import { helpCommand } from './help.js';
-import { pingCommand, versionCommand, stopCommand } from './misc.js';
+import { pingCommand, versionCommand, stopCommand, toolsReloadCommand } from './misc.js';
 
 /**
  * 构建标准命令列表
@@ -28,6 +28,8 @@ export function buildCommandList(deps: CommandDeps): SlashCommand[] {
     pingCommand(),
     versionCommand(deps),
     stopCommand(),
+    // 开发: 工具热刷新
+    toolsReloadCommand(deps),
   ];
 
   // help 需要访问完整列表（含自身），通过闭包惰性引用

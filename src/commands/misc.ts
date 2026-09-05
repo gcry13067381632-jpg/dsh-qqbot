@@ -35,3 +35,13 @@ export function stopCommand(): SlashCommand {
     handler: () => ({ kind: 'noop' as const }),
   };
 }
+
+/** /tools-reload — 热刷新 QQ 通道工具(开发用, 2026-09-05): 新增工具即时生效, 无需重启宿主 */
+export function toolsReloadCommand({ manager }: CommandDeps): SlashCommand {
+  return {
+    name: 'tools-reload',
+    description: '热刷新 QQ 通道工具(开发用: 新工具无需重启即可用; 已有工具改动仍需重启)',
+    hidden: true,
+    handler: async () => manager.reloadAllChannelTools(),
+  };
+}

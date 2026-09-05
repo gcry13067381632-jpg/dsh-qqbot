@@ -462,6 +462,49 @@ export class SessionManager {
   }
 
   /**
+   * 工具热刷新(2026-09-05, 主人定 A 方案): cache-bust 动态重载最新 dist 的 channel-tools
+   * 并注册到给定 agentCtx。DSH 工具表每步现收集 → 新工具**下一轮立即对 LLM 可见**, 无需重启宿主。
+   * 说明: 新增工具即时生效; 与已有工具同名的注册会被 channel-tools 内部 try/catch 跳过(保留旧实现),
+   *       想更新已有工具逻辑仍需正式重启(或临时换新工具名)。
+   */
+  async hotReloadChannelTools(agentCtx: Context): Promise<void> {
+    const url = new URL('../channel-tools.js', import.meta.url);
+    url.searchParams.set('hot', String(Date.now())); // 绕 ESM 模块缓存
+    const mod = (await import(url.href)) as { apply?: (c: Context) => unknown };
+    const applyFn = (mod.apply ?? mountChannelTools) as (c: Context) => unknown;
+    await applyFn(agentCtx);
+    this.logger.info('im-qqbot: 通道工具热刷新完成(新工具已注册到 agentCtx)');
+    diagSm('hotReloadChannelTools: 完成');
+  }
+
+  /** 对所有活会话的 agentCtx 执行一次工具热刷新。返回给人看的摘要文本。 */
+  async reloadAllChannelTools(): Promise<string> {
+    const seen = new Set<Context>();
+    const targets: Context[] = [];
+    for (const rec of this.sessions.values()) {
+      const agentCtx = ((rec.agent as { ctx?: Context } | undefined)?.ctx ?? rec.agentCtx) as Context | undefined;
+      if (agentCtx && !seen.has(agentCtx)) {
+        seen.add(agentCtx);
+        targets.push(agentCtx);
+      }
+    }
+    if (targets.length === 0) {
+      return '当前没有活动会话可热刷(先随便发条消息让会话跑起来, 再试 /tools-reload)';
+    }
+    let ok = 0; let fail = 0;
+    for (const c of targets) {
+      try {
+        await this.hotReloadChannelTools(c);
+        ok++;
+      } catch (err) {
+        fail++;
+        this.logger.warn?.(`im-qqbot: 热刷新失败: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    return `✅ 工具热刷新完成: ${ok} 个会话成功${fail > 0 ? `, ${fail} 个失败(见日志)` : ''}。新工具下一条消息即可用。`;
+  }
+
+  /**
    * 守则/身份 context 注册自愈(幂等): 每次消息处理路径都会调用。
    * 用 record.agent.ctx(恒有, 不依赖 setup; 重启恢复会话也覆盖)。
    * 注册方式照审批 approval:policy: ctx.inject(['systemPrompt']) → systemPrompt.context;

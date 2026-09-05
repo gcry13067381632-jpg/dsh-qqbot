@@ -603,11 +603,52 @@ export function apply(ctx: Context): void {
     },
   });
 
+  // reply_gate: 回复闸门(实验, 2026-09-05, 主人设想: 让 AI"自主判定要不要回", 判定不吃瓜时由宿主硬终止回合,
+  // 实现"真·静默吃瓜"。机制参考 dsh-task-control: agent.cancel({kind:'user'},{keepInbox:true}) 立即切断当前回合输出)。
+  // ⚠️ 实验品: 依赖模型在正文前先调用 + 诚实传参; 判定规则后续可演进成代码硬判(被@状态等)。
+  const replyGateTool = defineTool({
+    name: 'reply_gate',
+    description: '回复闸门: 每次开始回复前先调用它决定本回合要不要开口。群聊中如果这条消息没有 @ 机器人(上下文里没有 (@you) 点名、也没有私聊语境), 传 reply:false 并附 reason —— 工具会静默终止本回合, 你不会再输出任何内容(真·吃瓜不插嘴); 如果被 @ 了或是私聊, 传 reply:true 再正常回复。',
+    parameters: {
+      reply: { type: 'boolean', required: true, description: 'true=本回合需要开口; false=不需要(如未被@的群聊消息), 将静默终止本回合' },
+      reason: { type: 'string', required: true, description: '简短判定理由, 如"未@不插嘴" / "被@需回复" / "私聊"' },
+    },
+    output: {
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          ok: { type: 'boolean', required: true },
+          stopped: { type: 'boolean', required: true },
+        },
+      },
+      render: (_a, v: { ok: boolean; stopped: boolean }) => [
+        { type: 'text' as const, text: v.stopped ? '(已静默: 本回合终止, 不再回复)' : '' },
+      ],
+    },
+    async execute(args, exec) {
+      if (args.reply === false) {
+        try {
+          const agent = (exec as unknown as { agent?: unknown }).agent as
+            | { cancel?: (kind: unknown, opts?: unknown) => unknown }
+            | undefined;
+          if (agent && typeof agent.cancel === 'function') {
+            agent.cancel({ kind: 'user' }, { keepInbox: true });
+          }
+        } catch {
+          /* cancel 抛错也按静默处理 */
+        }
+        return { ok: true, stopped: true };
+      }
+      return { ok: true, stopped: false };
+    },
+  });
+
   // 逐个注册并记录结果(便于线上定位是哪个工具失败)
   const toolDefs: Array<{ name: string; tool: unknown }> = [
     { name: 'send_media', tool: sendMediaTool },
     { name: 'recall_message', tool: recallTool },
     { name: 'text_break', tool: textBreakTool },
+    { name: 'reply_gate', tool: replyGateTool },
     { name: 'list_stickers', tool: listStickersTool },
     { name: 'sticker_tag', tool: tagStickerTool },
     { name: 'sticker_delete', tool: deleteStickerTool },
