@@ -312,7 +312,9 @@ export async function bootstrapGateway(
           logger.warn?.(`[schedule] tick 异常: ${err instanceof Error ? err.message : String(err)}`);
         }
       };
-      scheduleTicker = setInterval(tickSchedule, 30_000);
+      // 会话自设定时 ticker: 5s 粒度(原 30s → 一次性任务延迟上限 30s 太大, 主人实测 11:35 任务 11:36 才发;
+  // 任务量小 store 内存读, 5s 开销可忽略) → 延迟压到 ≤5s。
+  scheduleTicker = setInterval(tickSchedule, 5_000);
       scheduleTicker.unref?.();
       logger.info(`[schedule] ticker 启动 (30s, dataDir=${scheduleDataDir})`);
 
