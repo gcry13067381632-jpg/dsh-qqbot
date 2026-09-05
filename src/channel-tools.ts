@@ -88,14 +88,28 @@ function findSessionRec(ch: QQChannel | undefined, exec: { agent?: unknown }): {
 }
 
 /**
- * 按当前执行 agent 会话归属的账号实例取图库/定时 store(多账号: 各实例 cwd 各库;
- * 优先 findSessionRec 精确实例, 解析不到回退 primary)。
+ * 按当前执行 agent 会话归属的账号实例取图库/定时 store(多账号: 各实例 cwd 各库)。
+ * 解析优先级: ① findSessionRec(undefined, exec) —— 遍历全部实例桥、按 exec.agent 精确匹配 record
+ *             (不会张冠李戴; 旧代码 findSessionRec(channelOf(exec),…) 在 agent 未命中时会错落 primary);
+ *            ② channelOf(exec) —— agent.ctx 的 qqChannel(本实例通道), 退而求其次;
+ *            ③ 回退 primary 单例库。
  */
 function stickerStoreOf(exec: { agent?: unknown }): ReturnType<typeof getStickerStore> {
   try {
-    const s = findSessionRec(channelOf(exec as never), exec);
-    if (s) return getStickerStore(s.ch.manager.stickerDataDir);
-  } catch { /* ignore */ }
+    const s = findSessionRec(undefined, exec);
+    if (s) {
+      diag(`stickerStoreOf: 按 agent 命中实例 dir=${s.ch.manager.stickerDataDir}`);
+      return getStickerStore(s.ch.manager.stickerDataDir);
+    }
+    const ch = channelOf(exec as never);
+    if (ch) {
+      diag(`stickerStoreOf: 走 agent.ctx 通道 dir=${ch.manager.stickerDataDir}`);
+      return getStickerStore(ch.manager.stickerDataDir);
+    }
+  } catch (e) {
+    diag(`stickerStoreOf: 解析异常 ${e instanceof Error ? e.message : String(e)}`);
+  }
+  diag('stickerStoreOf: 回退 primary');
   return getStickerStore();
 }
 
