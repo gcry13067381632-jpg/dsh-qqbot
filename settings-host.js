@@ -335,7 +335,9 @@ export function apply(ctx) {
     return out.join('\n');
   }
 
-  /** 保存实例清单(全量同步; 行级重建, 其它插件行/注释原样保留) */
+  /** 保存实例清单(全量同步; 行级重建, 其它插件行/注释原样保留)
+   *  借鉴 dsh-qqbot-panel(2026-09-06): appSecret 空值/掩码(********) = 保留原值,
+   *  只有提供全新非掩码值才覆盖 —— 前端只回显掩码, 不会因漏传/未改而误清 secret。 */
   function saveInstances(instances) {
     const { raw, hasFile, bots } = parsePatch();
     if (!hasFile) return { ok: false, error: '找不到 cordis.patch.yml(仅 web profile 支持)' };
@@ -348,6 +350,12 @@ export function apply(ctx) {
     for (const inst of instances) {
       if (inst.remove) continue;
       const t = bots.find((b) => b.id === inst.id);
+      // 掩码/空 → 保留原 secret(仅当原值存在; 全新账号本就无原值则维持空)
+      if (!inst.appSecret || inst.appSecret === SECRET_MASK) {
+        const orig = bots.find((b) => b.id === inst.id);
+        if (orig && orig.cfg?.appSecret) inst.appSecret = orig.cfg.appSecret;
+        else inst.appSecret = '';
+      }
       const blockText = renderBotBlock(inst);
       if (t) edits.push({ start: t.start, end: t.end, text: blockText });
       else edits.push({ append: blockText });
@@ -365,6 +373,9 @@ export function apply(ctx) {
   }
 
   // 账号列表(多账号: 每条带 settings ns 与数据目录, 供二级 UI 按账号读写)
+  // 借鉴 zhengjy01/dsh-qqbot-panel(2026-09-06): appSecret 只回显掩码(不泄露明文),
+  // 并带 hasSecret 供前端区分"已保存"与"真空"; 保存时空值/掩码 = 保留原 secret。
+  const SECRET_MASK = '********';
   route(ctx, 'GET', '/api/qqbot-settings/accounts', async (_req, res) => {
     try {
       const { bots, hasFile } = parsePatch();
@@ -376,7 +387,8 @@ export function apply(ctx) {
             id: b.id,
             ns: b.id, // settings 命名空间 = 实例 id(主 im-qqbot; 非主实例 render 已写 settingsNs=id)
             appId: b.cfg?.appId || '',
-            appSecret: b.cfg?.appSecret || '', // 本机回环页回显(保存是全量同步, 缺失会把 secret 清空!)
+            appSecret: b.cfg?.appSecret ? SECRET_MASK : '', // 掩码回显(借鉴 panel: masked)
+            hasSecret: !!b.cfg?.appSecret,
             preset: b.cfg?.preset || '',
             cwd,
             disabled: !!b.disabled,
@@ -395,6 +407,50 @@ export function apply(ctx) {
     try {
       const r = saveInstances(body.instances);
       writeJson(res, r.ok ? 200 : 400, r);
+    } catch (e) { writeJson(res, 500, { error: String(e?.message ?? e) }); }
+  });
+
+  // ── 工作区列表(借鉴 zhengjy01/dsh-qqbot-panel 的 workspace picker, 2026-09-06):
+  //    列出"已有 dsh 会话"的工作区目录 + 会话数, 供账号 cwd 挑选(避免指到空目录/错目录)。
+  //    dsh 把会话按工作区路径归到 ~/.dsh/sessions/--<编码路径>--, 目录内 *.zstd = 会话数。
+  /** dsh session 目录名 → 工作区绝对路径(~XXXX 为 UTF-16 code unit, - 为段分隔, 首段补盘符冒号) */
+  function decodeSessionDirName(name) {
+    try {
+      const segs = name.split('-').filter(Boolean);
+      if (segs.length === 0) return '';
+      const decoded = segs.map((s) => s.replace(/~([0-9A-F]{4})/g, (_m, hex) => String.fromCharCode(parseInt(hex, 16))));
+      // 首段是盘符(D / C) → 补冒号; 其余段拼回路径分隔
+      const head = /^[A-Za-z]$/.test(decoded[0]) ? decoded[0] + ':' : decoded[0];
+      return [head].concat(decoded.slice(1)).join('\\');
+    } catch { return ''; }
+  }
+  route(ctx, 'GET', '/api/qqbot-settings/workspaces', async (_req, res) => {
+    try {
+      const sessionsRoot = join(homedir(), '.dsh', 'sessions');
+      const out = [];
+      if (existsSync(sessionsRoot)) {
+        for (const ent of readdirSync(sessionsRoot, { withFileTypes: true })) {
+          if (!ent.isDirectory()) continue;
+          const dir = join(sessionsRoot, ent.name);
+          let count = 0;
+          try {
+            // 会话文件(.zstd)在 workspace 目录的深层子目录里, 需递归统计
+            const stack = [dir];
+            while (stack.length) {
+              const cur = stack.pop();
+              for (const f of readdirSync(cur, { withFileTypes: true })) {
+                const p = join(cur, f.name);
+                if (f.isDirectory()) stack.push(p);
+                else if (f.isFile() && f.name.endsWith('.zstd')) count += 1;
+              }
+            }
+          } catch { /* 目录读取失败忽略 */ }
+          const path = decodeSessionDirName(ent.name);
+          out.push({ dir: ent.name, path: path || ent.name, count });
+        }
+      }
+      out.sort((a, b) => b.count - a.count);
+      writeJson(res, 200, { workspaces: out });
     } catch (e) { writeJson(res, 500, { error: String(e?.message ?? e) }); }
   });
 

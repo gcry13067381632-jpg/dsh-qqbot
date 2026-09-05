@@ -1197,6 +1197,9 @@ window.__ModuleLoader__.load({
     var API_ACCOUNTS = '/api/qqbot-settings/accounts'
     var API_PRESETS = '/api/qqbot-settings/presets'
     var API_BIND = '/api/qqbot-settings/bind'
+    var API_WORKSPACES = '/api/qqbot-settings/workspaces'
+    // appSecret 掩码(借鉴 dsh-qqbot-panel): host 只回显掩码, 留空/掩码保存=保留原值
+    var SECRET_MASK = '********'
     var PRESET_HINT = '想改人设：点预设卡片「打开文件夹」，编辑里面 agent.cordis.yml —— persona 插件 config.text 那段就是人设正文(改完保存并重启 dsh 生效)；preset.yml 的 name 是预设显示名。做新人格：选一个预设点「复制」，填「预设 id」(=文件夹名,字母/数字开头,可含 - _) 和「人设名」(中文随意)，保存后自动生成新预设文件夹。'
     function inputRow(label, node) {
       return h('label', { style: { display: 'block', margin: '5px 0', fontSize: 13 } }, label, node)
@@ -1205,6 +1208,7 @@ window.__ModuleLoader__.load({
       var [insts, setInsts] = useState(null)
       var [presets, setPresets] = useState([])
       var [root, setRoot] = useState('')
+      var [workspaces, setWorkspaces] = useState([])
       var [msg, setMsg] = useState('')
       var [busy, setBusy] = useState('')
       var [bind, setBind] = useState(null) // {id,url,status,error,iframeUrl}
@@ -1216,11 +1220,14 @@ window.__ModuleLoader__.load({
         Promise.all([
           fetch(API_ACCOUNTS).then(function (r) { return r.json() }).catch(function () { return {} }),
           fetch(API_PRESETS).then(function (r) { return r.json() }).catch(function () { return {} }),
+          fetch(API_WORKSPACES).then(function (r) { return r.json() }).catch(function () { return {} }),
         ]).then(function (rs) {
           var a = rs[0] || {}
           if (Array.isArray(a.instances)) setInsts(a.instances)
           var p = rs[1] || {}
           if (Array.isArray(p.presets)) { setPresets(p.presets); if (p.root) setRoot(p.root) }
+          var w = rs[2] || {}
+          if (Array.isArray(w.workspaces)) setWorkspaces(w.workspaces)
           if (!quiet) setMsg('')
         })
       }
@@ -1262,9 +1269,9 @@ window.__ModuleLoader__.load({
       function save() {
         if (busy) return
         setBusy('save'); setMsg('保存中…')
-        var list = (insts || []).filter(function (x) { return x.id && (x.appId || x.appSecret || !x._new || x._bound) })
-        // 空账号(全空且没绑定)不保存; 全新手动号若两凭据都空则提示
-        var blanks = list.filter(function (x) { return !x.appSecret && !x._bound })
+        var list = (insts || []).filter(function (x) { return x.id && (x.appId || x.appSecret || x.hasSecret || !x._new || x._bound) })
+        // 空账号(全空且没绑定)不保存; 全新手动号若两凭据都空则提示(hasSecret=已保存的账号不算空)
+        var blanks = list.filter(function (x) { return !x.appSecret && !x.hasSecret && !x._bound })
         if (blanks.length && !window.confirm('有 ' + blanks.length + ' 个账号没填 appSecret(不填的会被保存为只有骨架的实例, 可能启动就弹扫码)。继续?')) { setBusy(''); return }
         // 保存兜底: preset 仍为空的账号自动填第一个候选(防 effect 未触发/用户未手动选导致保存丢 preset)
         var knowNow = presets.length > 0 && presets.every(function (p) { return p.hasChannelTools === true || p.hasChannelTools === false })
@@ -1366,11 +1373,21 @@ window.__ModuleLoader__.load({
                 h('input', { className: 'qqs-cb', type: 'checkbox', checked: !it.disabled, onChange: function (e) { upd(i, { disabled: !e.target.checked }) } }), ' 启用'),
               h('button', { className: 'qqs-btn', onClick: function () { removeInst(i) }, style: { marginLeft: 'auto' } }, '删除')),
             inputRow('AppID: ', h('input', { className: 'qqs-inp', style: Object.assign({ width: 220 }, st), value: it.appId || '', onChange: function (e) { upd(i, { appId: e.target.value }) }, placeholder: '如 1905515836' })),
-            inputRow('AppSecret: ', h('input', { className: 'qqs-inp', type: 'password', style: Object.assign({ width: 320 }, st), value: it.appSecret || '', onChange: function (e) { upd(i, { appSecret: e.target.value }) }, placeholder: '扫码绑定会自动填; 也可手动填(两个都要填全才不弹码)' })),
+            inputRow('AppSecret: ', h('input', { className: 'qqs-inp', type: 'password', style: Object.assign({ width: 320 }, st), value: (it.appSecret === SECRET_MASK || (!it.appSecret && it.hasSecret)) ? '' : (it.appSecret || ''), onChange: function (e) { upd(i, { appSecret: e.target.value }) }, placeholder: (it.hasSecret && !it._new) ? '已保存(留空/掩码=保留原值; 填新值=更换)' : '扫码绑定会自动填; 也可手动填(两个都要填全才不弹码)' })),
             inputRow('Agent 预设(人格): ', (function () { if (usable.length === 0 && !selInvalid) {
                 return h('span', { className: 'qqs-inp', style: { display: 'inline-block', verticalAlign: 'middle', padding: '5px 10px', fontSize: 12, color: '#e8590c', background: '#fff5f0', borderRadius: 6 } }, '⚠️ 还没有可用的 Agent 预设——请在下方②复制一个(如 whale-girl / whitegirl), 复制会自动带 QQ 工具。')
               } return h('select', { className: 'qqs-inp', style: { width: 320, padding: '4px 8px' }, value: it.preset || '', onChange: function (e) { upd(i, { preset: e.target.value }) } }, opts.map(function (o) { return h('option', { key: o.id, value: o.id, style: selInvalid && o.id === it.preset ? { color: '#e03131' } : null }, o.label) })) })()),
-            inputRow('工作目录(各账号数据放这, 留空=默认): ', h('input', { className: 'qqs-inp', style: Object.assign({ width: '90%' }, st), value: it.cwd || '', onChange: function (e) { upd(i, { cwd: e.target.value }) }, placeholder: '如 D:\\bots\\二号机' })))
+            inputRow('工作目录(各账号数据放这, 留空=默认): ', h('input', { className: 'qqs-inp', style: Object.assign({ width: '90%' }, st), value: it.cwd || '', onChange: function (e) { upd(i, { cwd: e.target.value }) }, placeholder: '如 D:\\bots\\二号机' })),
+            (function () {
+              var ws = (workspaces || []).filter(function (w) { return w.path && w.count > 0 })
+              if (ws.length === 0) return null
+              return h('div', { style: { margin: '2px 0 4px', fontSize: 12, color: '#555' } },
+                '📁 已有 dsh 会话的工作区(点选填入上方): ',
+                ws.map(function (w) {
+                  return h('button', { key: w.dir, className: 'qqs-btn', style: { fontSize: 11, padding: '1px 8px', margin: '2px 4px 2px 0' }, onClick: function () { upd(i, { cwd: w.path }) } },
+                    (w.path.length > 46 ? w.path.slice(0, 43) + '…' : w.path) + ' (' + w.count + ')')
+                }))
+            })())
         }),
         h('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', margin: '8px 0' } },
           h('button', { className: 'qqs-btn', onClick: addBlank }, '+ 添加账号(手动填凭据)'),
