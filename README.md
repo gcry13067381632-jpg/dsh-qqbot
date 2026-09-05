@@ -33,12 +33,15 @@
 
 ### 📸 效果展示
 
-左图：dsh 运行后台——思考过程、工具调用、Token 用量一目了然（配合「回复闸门 reply_gate」可让机器人自主判断该开口还是静默吃瓜）；
-右图：QQ 群里的实际对话效果——抓鬼游戏互动，该回就回、该藏就藏，角色扮演全自动。
+图①：dsh 运行后台——思考过程、工具调用、Token 用量一目了然（配合「回复闸门 reply_gate」可让机器人自主判断该开口还是静默吃瓜）；
+图②：QQ 群里的抓鬼游戏互动——该回就回、该藏就藏，角色扮演全自动；
+图③：斗图实战——机器人用自己收藏的表情包接招回击，图、文分开两条连发。
 
 ![后台运行日志（思考过程与工具调用可见）](docs/showcase-1-log.png)
 
 ![QQ 群聊互动效果（角色扮演/自主静默）](docs/showcase-2-chat.png)
+
+![斗图实战（发表情包接招回击）](docs/showcase-3-doutu.png)
 
 ### 给开发者的话
 - QQ 会话内可直接调用的标准工具：发图/撤图/查库/打标/查未整理/定时（`send_media`/`recall_message`/`list_stickers`/`sticker_tag`/`sticker_untagged`/`schedule_timer`/`schedule_cancel`…），会话按账号精确路由

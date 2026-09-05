@@ -23,11 +23,14 @@ This repo is an enhanced fork of [@tencent-connect/dsh-qqbot](https://github.com
 ### 📸 Showcase
 
 Left: the dsh runtime backend — reasoning, tool calls and token usage are fully visible (paired with the `reply_gate` gate tool, the bot decides on its own whether to speak or stay silently idle);
-Right: real QQ group conversation — hide-and-seek role-play, replying when it should and staying quiet when it shouldn't.
+Middle: real QQ group conversation — hide-and-seek role-play, replying when it should and staying quiet when it shouldn't;
+Right: sticker-battle in action — the bot answers with stickers from its own library, image and text sent as separate messages.
 
 ![Runtime backend log (reasoning & tool calls visible)](docs/showcase-1-log.png)
 
 ![QQ group conversation (role-play / self-decided silence)](docs/showcase-2-chat.png)
+
+![Sticker battle (replying with own sticker library)](docs/showcase-3-doutu.png)
 
 ### For developers
 - Standard tools available inside QQ sessions: `send_media` / `recall_message` / `list_stickers` / `sticker_tag` / `sticker_untagged` / `schedule_timer` / `schedule_cancel` …, routed per bot account.
