@@ -679,6 +679,11 @@ export function apply(ctx: Context): void {
       diag(`注册成功: ${t.name}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      // 重复注册(already registered)= 幂等全量重跑的正常现象, 静默跳过不刷日志
+      if (/already registered/i.test(msg)) {
+        diag(`注册幂等跳过(已存在): ${t.name}`);
+        continue;
+      }
       ctx.logger?.warn?.(`[channel-tools] 注册失败 ${t.name}: ${msg}`);
       diag(`注册失败: ${t.name} → ${msg}`);
     }

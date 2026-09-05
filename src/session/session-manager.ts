@@ -438,12 +438,14 @@ export class SessionManager {
   }
 
   /**
-   * 通道工具自愈：若会话因宿主初始化竞态没装上 send_media/recall/list_stickers，
-   * 在消息处理路径上补一次注册(幂等)。修复"开着浏览器重启 → 会话无工具"问题。
+   * 通道工具自愈 + 固化(2026-09-05 升级): 每次消息都全量幂等注册 channel-tools(静态 import,
+   * 进程加载的就是最新 dist) → 重启后"恢复"会话的第一条消息也会自动把 reply_gate 等正式工具
+   * 全部注册上,**工具永久固化, 重启不再需要 /tools-reload**(热刷只留给进程内"新增"工具的即时生效)。
+   * 已注册工具重复注册会被 channel-tools 内部静默跳过(already registered), 无副作用无噪音。
    */
   async ensureChannelTools(record: SessionRecord): Promise<void> {
-    if (!this.channelSender || record.channelToolsReady) return;
-    const agentCtx = record.agentCtx as Context | undefined;
+    if (!this.channelSender) return;
+    const agentCtx = (((record.agent as { ctx?: Context } | undefined)?.ctx ?? record.agentCtx) as Context | undefined);
     if (!agentCtx) {
       diagSm('ensureChannelTools: 跳过(无 agentCtx, setup 未执行到)');
       return;
@@ -452,11 +454,10 @@ export class SessionManager {
       await mountChannelTools(agentCtx);
       (agentCtx as unknown as { [k: symbol]: unknown })[CTX_TOOLS_READY] = true;
       record.channelToolsReady = true;
-      this.logger.info('im-qqbot: 工具自愈补注册完成(send_media/recall_message/list_stickers)');
-      diagSm('ensureChannelTools: 自愈补注册成功');
+      diagSm('ensureChannelTools: 全量幂等注册完成');
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      this.logger.warn?.(`im-qqbot: 工具自愈补注册失败: ${msg}`);
+      this.logger.warn?.(`im-qqbot: 工具自愈注册失败: ${msg}`);
       diagSm(`ensureChannelTools: 失败 ${msg}`);
     }
   }
