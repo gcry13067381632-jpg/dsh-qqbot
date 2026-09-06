@@ -224,6 +224,31 @@ export class GroupAdminClient {
       : [{ op: 'del', member_openid: memberOpenid, mute_expire_at: '' }];
     return this.call('POST', `/v2/groups/${encodeURIComponent(gid)}/restrict_chat_setting`, { members });
   }
+
+  /**
+   * 以机器人身份向群发送消息(面板"代发消息"用; 官方被动消息接口, 建议群内先有交互)。
+   * 自动选通道: 内容含 QQ 交互标签 → markdown 通道(msg_type:2, QQ 端才会渲染成可点标签;
+   *   实测 2026-09-06: 高亮 @ 格式 = `<@openid>`(无斜杠) 或 `<qqbot-at-user id="openid" />`;
+   *   纯文本 msg_type:0 会原样显示标签); 否则纯文本(msg_type:0)。
+   */
+  async sendGroupText(gid: string, content: string): Promise<ApiResult<{ id?: string }>> {
+    const msgSeq = Math.floor(Date.now() / 1000) % 1000000; // 官方要求递增 msg_seq, 秒级够用(防同秒重复可加余数)
+    const hasTag = /<@[A-Za-z0-9]+>|<qqbot-at-user|<qqbot-at-everyone|<qqbot-cmd-|<emoji:|<#/.test(content);
+    const body: Record<string, unknown> = hasTag
+      ? { markdown: { content }, msg_type: 2, msg_seq: msgSeq }
+      : { content, msg_type: 0, msg_seq: msgSeq };
+    return this.call('POST', `/v2/groups/${encodeURIComponent(gid)}/messages`, body);
+  }
+
+  /** 以机器人身份向用户发私聊文本(c2c 主动消息; 同 sendGroupText 的通道选择逻辑) */
+  async sendC2cText(userOpenid: string, content: string): Promise<ApiResult<{ id?: string }>> {
+    const msgSeq = Math.floor(Date.now() / 1000) % 1000000;
+    const hasTag = /<@[A-Za-z0-9]+>|<qqbot-at-user|<qqbot-at-everyone|<qqbot-cmd-|<emoji:|<#/.test(content);
+    const body: Record<string, unknown> = hasTag
+      ? { markdown: { content }, msg_type: 2, msg_seq: msgSeq }
+      : { content, msg_type: 0, msg_seq: msgSeq };
+    return this.call('POST', `/v2/users/${encodeURIComponent(userOpenid)}/messages`, body);
+  }
 }
 
 /** 工厂: 每实例一个 client(配置来自各 bot config.appId/appSecret) */

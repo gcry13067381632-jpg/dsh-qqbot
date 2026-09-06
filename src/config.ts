@@ -162,6 +162,7 @@ export const DEFAULT_GROUP_PROMPT = [
   '绝不发:冷场没人接话、正事/技术问答/找资源、吵架互怼中、对方难过或聊严肃事、私聊。',
   '出手前自检,缺一不发:①库里有 9 成贴切的图;②发出来群友会心一笑;③这轮没发过、今天这群没刷过图。',
   '把图删掉话照样完整;一次最多一张;发离谱/冒犯/色气/羞辱人的图=人设崩塌,永远不许。',
+  '【提问卡片(ask_user_question)·QQ】在 QQ 会话里调用 ask_user_question 提问时:若问题带选项且会话可定位,会以带按钮的卡片消息发给当前对话的发起者本人(群聊=刚与你对话的那位群友,私聊=对方),按钮权限已按发起者收紧——只有 TA 能点,其他人点了会被拒,不会误答;同一问题会同步出现在 Web 端右下角浮层,任一端作答即结算、另一端自动失效。想让某位特定群友来答,先按【@ 人的方法】点名 TA 再提问。',
 ].join('\n');
 
 // ── 共享字段子 schema(主 ConfigSchema 与 EditableConfigSchema 复用) ──
@@ -348,6 +349,8 @@ export interface ImQQBotConfig {
   enableApprovals: boolean;
   /** QQ 权限申请等待时长(ms), 超时自动拒绝 */
   approvalTimeoutMs: number;
+  /** QQ 远程提问(ask_user_question → QQ 按钮卡片), 默认开; false=交回 Web UI */
+  enableUserQuestions?: boolean;
 }
 
 export const ConfigSchema: Schema<ImQQBotConfig> = Schema.object({

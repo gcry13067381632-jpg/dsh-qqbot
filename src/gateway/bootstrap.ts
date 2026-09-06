@@ -22,8 +22,25 @@ import { initStickerGate, bindStickerGates, flushStickerGate, getStickerGate, St
 import { startScheduler } from '../features/scheduler.js';
 import { configureScheduleStore, getScheduleStore } from '../features/schedule-store.js';
 import { setChannelBridge } from '../channel-tools.js';
-import { QqApprovalController, setApprovalDispatch, makeApprovalListener } from '../features/qq-approval.js';
+import { QqApprovalController, setApprovalDispatch, makeApprovalListener, registerApprovalController } from '../features/qq-approval.js';
+import { QqUserQuestionsController, registerQuestionController } from '../features/qq-user-questions.js';
 import { handleGroupJoinRequestEvent } from '../features/group-join-request.js';
+import { registerSessionManager } from '../features/session-registry.js';
+
+/** 从 interaction 事件推出"回复目标"(回执发到按钮所在群/私聊)。scope 由事件 chat_type/scene 推断 */
+function replyTargetOfInteraction(
+  event: unknown,
+  _ctx: unknown,
+  _manager: SessionManager,
+): { scope: 'group' | 'c2c'; targetId: string; msgId?: string } {
+  const e = event as {
+    scene?: string; chat_type?: number; group_openid?: string; group_member_openid?: string; user_openid?: string;
+  };
+  if (e?.group_openid) return { scope: 'group', targetId: e.group_openid };
+  if (e?.user_openid) return { scope: 'c2c', targetId: e.user_openid };
+  // 兜底: 群聊 member_openid 只能推群, 但没有 group_openid 无法构造 → 空 target(上层会忽略)
+  return { scope: (e?.chat_type === 1 || e?.scene === 'group') ? 'group' : 'c2c', targetId: e?.group_member_openid ?? '' };
+}
 
 export async function bootstrapGateway(
   ctx: Context,
@@ -34,6 +51,7 @@ export async function bootstrapGateway(
   const manager = new SessionManager(ctx, agents, config, logger);
   // QQ 远程审批控制器(enableApprovals 时创建; 定义在 sender 就绪后, 此处先声明供入站回调引用)
   let approvalController: QqApprovalController | undefined;
+  let questionController: QqUserQuestionsController | undefined;
 
   // ── 表情包图库单例预初始化(防目录分裂) ──
   // ⚠️ 单例时序坑：谁先 getStickerStore 谁定路径。必须在启动早期按 config.cwd
@@ -151,9 +169,16 @@ export async function bootstrapGateway(
         // 平台限制: markdown 主动消息常需专门权限; c2c 主动需 48h 互动窗, 窗口外拒收。
         // 降级顺序: sendMarkdown → sendText(纯文本主动) → c2c sendWakeup(is_wakeup 召回, 30天窗)。
         if (!target.msgId) {
+          // ⚠️ 清洗仅针对 markdown 语法字符; QQ at 标签必须原样保留——
+          // 实测(2026-09-06): 高亮 @ 用 `<@openid>`(无斜杠)或 `<qqbot-at-user id="openid" />`;
+          // 剥掉 '>' 会把标签弄残 → QQ 不渲染。这里先把两类 at 标签暂存, 清洗完再恢复。
           const plain = String(content || '')
+            .replace(/<qqbot-at-user\s+id="([A-Za-z0-9]+)"\s*\/>/g, '\u0001ATQ:$1\u0001')
+            .replace(/<@([A-Za-z0-9]+)>/g, '\u0001ATA:$1\u0001')
             .replace(/[#*`_~>]/g, '')
             .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+            .replace(/\u0001ATQ:([A-Za-z0-9]+)\u0001/g, '<qqbot-at-user id="$1" />')
+            .replace(/\u0001ATA:([A-Za-z0-9]+)\u0001/g, '<@$1>')
             .trim();
           if (plain) {
             try {
@@ -180,6 +205,15 @@ export async function bootstrapGateway(
         }
         throw err;
       }
+    },
+    sendMarkdownWithKeyboard: async (target, content, keyboard) => {
+      // 卡片按钮(审批/提问): bot.send 显式 msg_type=2 + keyboard。
+      // 失败直接抛(不静默降级)——由调用方决定文本兜底, 避免"卡片+文本码"双发。
+      const resp = (await bot.send(
+        { target, msgType: 2, markdown: { content }, keyboard: keyboard as never },
+      )) as { id?: string } | undefined;
+      pushSent(target, resp?.id);
+      return resp;
     },
     openStream: (target) => bot.openStream({
       target: {
@@ -244,6 +278,10 @@ export async function bootstrapGateway(
   // ①dispatch: ownership(只处理本 bot 的 agent)+ enableApprovals 闸门;
   // ②监听: 注册在插件 apply ctx, 用 {prepend:true} 插到链首(抢在宿主 GUI 转发器 dsh-api-remotes 之前)。
   approvalController = new QqApprovalController(manager, sender, logger, () => config.approvalTimeoutMs);
+  // 注册进 ns 注册表(Web 审批浮层经 settings-host 同源路由读写); ns 取 settingsNs 与 index.ts 一致
+  const myNs = (config as { settingsNs?: string }).settingsNs?.trim() || 'im-qqbot';
+  registerApprovalController(myNs, approvalController);
+  registerSessionManager(myNs, manager);
   setApprovalDispatch(((request: unknown, next: () => Promise<string>) => {
     if (!config.enableApprovals) return next();
     const reqAgent = (request as { agent?: unknown }).agent;
@@ -255,6 +293,49 @@ export async function bootstrapGateway(
   }).on('approval/request', makeApprovalListener() as never, { prepend: true });
   console.log('[qq-approval] ACP-mode listener registered (apply-ctx + prepend)');
   logger.info(`[im-qqbot] QQ 远程审批接线就绪(${config.enableApprovals ? '已启用' : '默认关闭, Web 设置可热开'})`);
+
+  // ── QQ 远程提问(按钮卡片版): ask_user_question → QQ 卡片按钮 ──
+  // 宿主 user-questions/request 是 Agent 作用域 waterfall(同 approval), Web UI 答案器
+  // 在宿主引导期注册 → 本监听同样 {prepend:true} 抢链首。enableQuestions 默认开(与审批独立开关)。
+  const enableUserQuestions = config.enableUserQuestions !== false;
+  questionController = new QqUserQuestionsController(manager, sender, logger, () => config.approvalTimeoutMs || 120000);
+  registerQuestionController(myNs, questionController);
+  (ctx as unknown as {
+    on(event: string, handler: (...args: unknown[]) => unknown, config?: { prepend?: boolean }): void;
+  }).on('user-questions/request', (async (request: unknown, next: () => Promise<unknown>) => {
+    if (!enableUserQuestions) return next();
+    const reqAgent = (request as { agent?: unknown }).agent;
+    if (!reqAgent || !manager.findByAgent(reqAgent as never)) return next(); // 非本 bot agent → GUI 兜底
+    try {
+      return await questionController!.request(request as never, next as never);
+    } catch (err) {
+      logger.warn(`[qq-questions] request 异常: ${err instanceof Error ? err.message : String(err)}`);
+      return next();
+    }
+  }) as never, { prepend: true });
+  logger.info(`[im-qqbot] QQ 远程提问接线就绪(${enableUserQuestions ? '启用' : '关闭'})`);
+
+  // ── 按钮回调(INTERACTION_CREATE, type=11): 审批/提问卡片共用分发 ──
+  // SDK 事件: bot.on('interaction', (ctx, event) => …); 需 PUT /interactions/{id} 回应防 loading。
+  if (typeof (bot as unknown as { on: (e: string, h: unknown) => void }).on === 'function') {
+    (bot as unknown as { on: (e: string, h: (...a: unknown[]) => void) => void }).on('interaction', (async (ctx: unknown, event: unknown) => {
+      const ev = event as { id?: string; data?: { type?: number } };
+      if (ev?.data?.type !== 11) return; // 只处理消息按钮回调
+      const target = replyTargetOfInteraction(ev, ctx, manager);
+      let consumed = false;
+      try {
+        if (approvalController) consumed = await approvalController.handleInteraction(ev, target);
+        if (!consumed && questionController) consumed = await questionController.handleInteraction(ev, target);
+      } catch (err) {
+        logger.warn(`[qq-interaction] 处理异常: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      // 回应 loading(无论是否消费都要 ack; 防客户端一直转圈)
+      try {
+        await (bot as unknown as { acknowledgeInteraction(id: string): Promise<void> }).acknowledgeInteraction(ev.id ?? '');
+      } catch { /* ack 失败不致命 */ }
+    }) as never);
+    logger.info('[im-qqbot] interaction(按钮回调)分发就绪');
+  }
 
   const outboundHandler = createOutboundHandler(manager, sender, config, logger, toolsRegistry);
   (ctx as unknown as { on(event: string, handler: (...args: unknown[]) => void): void })
@@ -338,7 +419,11 @@ export async function bootstrapGateway(
 
       return async () => {
         logger.info('Shutting down');
+        registerApprovalController(myNs, undefined);
+        registerQuestionController(myNs, undefined);
+        registerSessionManager(myNs, undefined);
         approvalController?.dispose();
+        questionController?.dispose();
         stopScheduler?.();
         if (scheduleTicker) { clearInterval(scheduleTicker); scheduleTicker = undefined; }
         flushStickerGate();

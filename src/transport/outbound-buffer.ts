@@ -29,6 +29,12 @@ export interface StreamSessionLike {
 /** QQ Bot 发送接口 */
 export interface QQBotSender {
   sendMarkdown(target: ReplyTarget, content: string): Promise<unknown>;
+  /** 发送带内联按钮(keyboard)的 markdown 消息 —— 审批卡片/提问卡片用 */
+  sendMarkdownWithKeyboard(
+    target: ReplyTarget,
+    content: string,
+    keyboard: unknown,
+  ): Promise<unknown>;
   openStream(target: ReplyTarget): StreamSessionLike;
   /** 发送富媒体(图片/语音/视频/文件)；url/localPath 二选一；返回新消息 id(若可得) */
   sendMedia(

@@ -8,6 +8,7 @@ import { extname, join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
+import { createHash } from 'node:crypto';
 import { getStickerStore } from '@zaofan/dsh-qqbot/sticker-store';
 import { getScheduleStore } from '@zaofan/dsh-qqbot/schedule-store';
 
@@ -741,6 +742,66 @@ export function apply(ctx) {
   const NSQ = (u) => (u.searchParams.get('ns') || '').trim() || undefined;
   const GQ = (u) => (u.searchParams.get('gid') || '').trim();
 
+  // ── Web 会话 → QQ 目标反查(悬浮球自动选目标用) ──
+  // dsh-qqbot 的 sessionId = sha256(`qqbot:{appId}:{scope}:{peerId}`) 前 32 hex 排成 UUID。
+  // 输入 web 当前会话 sessionId, 遍历所有实例的注册表群 + 台账私聊, 命中即返回归属。
+  function deriveSessionIdOf(appId, scope, peerId) {
+    const hash = createHash('sha256').update(`qqbot:${appId}:${scope}:${peerId}`).digest('hex');
+    return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`;
+  }
+  function chatLedgerNames(dataDir) {
+    const out = new Map(); // key=scope:id -> {name, ts}
+    try {
+      const raw = readFileSync(join(dataDir, 'known-chats.jsonl'), 'utf8');
+      for (const l of raw.split('\n')) {
+        const t = l.trim(); if (!t) continue;
+        try {
+          const o = JSON.parse(t);
+          if (o && typeof o.id === 'string' && (o.scope === 'group' || o.scope === 'c2c') && o.id) {
+            const key = o.scope + ':' + o.id;
+            const cur = out.get(key);
+            if (!cur || (o.ts || 0) > cur.ts) out.set(key, { name: o.name || '', ts: o.ts || 0 });
+          }
+        } catch { /* 坏行 */ }
+      }
+    } catch { /* 无台账 */ }
+    return out;
+  }
+  route(ctx, 'GET', '/api/qqbot-settings/session-lookup', async (req, res) => {
+    try {
+      const u = new URL(req.url ?? '/', 'http://x');
+      const sessionId = (u.searchParams.get('sessionId') || '').trim();
+      if (!sessionId) return writeJson(res, 400, { error: 'sessionId 必填' });
+      const { bots } = parsePatch();
+      const hits = [];
+      for (const bot of bots) {
+        if (bot.disabled || !bot.cfg?.appId || !bot.cfg?.cwd) continue;
+        const appId = bot.cfg.appId;
+        const cwd = bot.cfg.cwd;
+        const ns = bot.id;
+        const ledger = chatLedgerNames(join(cwd, '表情包'));
+        // 群: 注册表 + 台账
+        const groups = readGroupsJson(cwd);
+        const gids = new Set([...Object.keys(groups), ...[...ledger.keys()].filter((k) => k.startsWith('group:')).map((k) => k.slice(6))]);
+        for (const gid of gids) {
+          if (!gid) continue;
+          if (deriveSessionIdOf(appId, 'group', gid) !== sessionId) continue;
+          const regMeta = groups[gid];
+          const ld = ledger.get('group:' + gid);
+          hits.push({ ns, scope: 'group', peerId: gid, name: (regMeta && regMeta.name) || (ld && ld.name) || '' });
+        }
+        // 私聊: 台账 c2c
+        for (const [key, ld] of ledger) {
+          if (!key.startsWith('c2c:')) continue;
+          const openid = key.slice(4);
+          if (!openid || deriveSessionIdOf(appId, 'c2c', openid) !== sessionId) continue;
+          hits.push({ ns, scope: 'c2c', peerId: openid, name: ld.name || '' });
+        }
+      }
+      writeJson(res, 200, { ok: true, sessionId, hits });
+    } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
+  });
+
   // 群列表(注册表 + pending 出现过的群 + 台账群; 逐个调官方 info 校验有效性+补群名, 11255=群已注销/不存在则标记失效并过滤)
   route(ctx, 'GET', '/api/qqbot-settings/group/accounts', async (req, res) => {
     try {
@@ -907,6 +968,131 @@ export function apply(ctx) {
     } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
   });
 
+  // 面板代发消息: 以机器人身份向群发文本 {ns?, gid, text, insertContext?}
+  // insertContext=true → 发完后往该 QQ 会话 append 一条 user/message(模拟用户消息, 内容以
+  // 「用户代你发送: 」开头, web 流可见、不唤醒、不开回合——与入群申请通知同款姿势)。
+  // 该文本只进 web 流, QQ 群里收到的是干净原文。
+  route(ctx, 'POST', '/api/qqbot-settings/group/send', async (req, res) => {
+    const body = await readJsonBody(req);
+    if (!body || typeof body !== 'object') return writeJson(res, 400, { error: 'bad body' });
+    const gid = String(body.gid || '').trim();
+    const text = String(body.text || '').trim();
+    if (!gid || !text) return writeJson(res, 400, { error: 'gid 与 text 必填' });
+    if (text.length > 2000) return writeJson(res, 400, { error: '文本过长(最多 2000 字符)' });
+    try {
+      const gc = await groupClientOf(String(body.ns || ''));
+      if (!gc) return writeJson(res, 400, { error: '找不到该账号实例(请先在账号页配置 appId/appSecret)' });
+      const r = await gc.client.sendGroupText(gid, text);
+      audit(gc.bot.cwd, { ev: 'group.send', ns: gc.bot.id, gid, text: text.slice(0, 120), ok: r.ok, code: r.ok ? undefined : (r.err && r.err.code) });
+      let ctxNote = '';
+      if (r.ok && body.insertContext === true) {
+        const why = await appendUserRelayToPeer(String(body.ns || 'im-qqbot'), 'group', gid, text).catch((e) => { audit(gc.bot.cwd, { ev: 'group.send.insertContext-failed', ns: gc.bot.id, error: String((e && e.message) || e) }); return 'failed'; });
+        if (why) audit(gc.bot.cwd, { ev: 'group.send.insertContext-skipped', ns: gc.bot.id, gid, reason: why });
+        ctxNote = why ? '(' + (WHY_MAP[why] || why) + ')' : '(已写入上下文: 用户代你发送)';
+      }
+      writeJson(res, r.ok ? 200 : 200, r.ok ? { ok: true, msg: '已发送 ✓ ' + ctxNote } : { ok: false, err: r.err });
+    } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
+  });
+
+  // 面板代发私聊: 以机器人身份向用户发文本 {ns?, openid, text, insertContext?}(悬浮球 dock 发消息用)
+  route(ctx, 'POST', '/api/qqbot-settings/chat/send', async (req, res) => {
+    const body = await readJsonBody(req);
+    if (!body || typeof body !== 'object') return writeJson(res, 400, { error: 'bad body' });
+    const openid = String(body.openid || '').trim();
+    const text = String(body.text || '').trim();
+    if (!openid || !text) return writeJson(res, 400, { error: 'openid 与 text 必填' });
+    if (text.length > 2000) return writeJson(res, 400, { error: '文本过长(最多 2000 字符)' });
+    try {
+      const gc = await groupClientOf(String(body.ns || ''));
+      if (!gc) return writeJson(res, 400, { error: '找不到该账号实例(请先在账号页配置 appId/appSecret)' });
+      const r = await gc.client.sendC2cText(openid, text);
+      audit(gc.bot.cwd, { ev: 'chat.send', ns: gc.bot.id, openid, text: text.slice(0, 120), ok: r.ok, code: r.ok ? undefined : (r.err && r.err.code) });
+      let ctxNote = '';
+      if (r.ok && body.insertContext === true) {
+        const why = await appendUserRelayToPeer(String(body.ns || 'im-qqbot'), 'c2c', openid, text).catch((e) => { audit(gc.bot.cwd, { ev: 'chat.send.insertContext-failed', ns: gc.bot.id, error: String((e && e.message) || e) }); return 'failed'; });
+        if (why) audit(gc.bot.cwd, { ev: 'chat.send.insertContext-skipped', ns: gc.bot.id, openid, reason: why });
+        ctxNote = why ? '(' + (WHY_MAP[why] || why) + ')' : '(已写入上下文: 用户代你发送)';
+      }
+      writeJson(res, r.ok ? 200 : 200, r.ok ? { ok: true, msg: '已发送 ✓ ' + ctxNote } : { ok: false, err: r.err });
+    } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
+  });
+
+const WHY_MAP = { busy: '目标会话回合活跃(思考/流式中),已跳过注入', 'no-session': '未找到该群/私聊的活跃会话', 'no-msg': '构造消息失败', failed: '写入失败' };
+
+  // 安全闸: 目标会话 LLM 回合活跃(turn/start 已开、turn/end 未闭合——覆盖思考中/流式输出/工具执行)
+  // 时禁止外部往该会话插入任何消息(含模拟用户消息), 防止把正在生成的回合流搞乱(曾因此写坏会话)。
+  // 查不到则放行(append 自身有 reenter 兜底)。
+  function sessionTurnActive(sess) {
+    try {
+      const seq = typeof sess?.seq === 'number' ? sess.seq : -1;
+      if (seq <= 0 || typeof sess.snapshotEvents !== 'function') return false;
+      const tail = sess.snapshotEvents(Math.max(0, seq - 400), seq);
+      let lastStart = -1;
+      let lastEnd = -1;
+      for (const ev of tail) {
+        if (ev.type === 'turn/start') lastStart = ev.seq;
+        else if (ev.type === 'turn/end') lastEnd = ev.seq;
+      }
+      return lastStart > lastEnd;
+    } catch { return false; }
+  }
+
+  // 线B(用户代发→插入上下文): 往目标 QQ 会话 append 一条 user/message 模拟用户消息, 不唤醒、不开回合。
+  // 文本以「用户代你发送: 」开头(只进 web 流, QQ 收到干净原文); 主人下次真人消息开回合时, 该
+  // user/message 作为历史被 deriveMessages 组装进上下文 → bot 自然看到"主人代我发了这句"。
+  // 活跃回合/找不到会话时跳过并在 audit 留痕。
+  async function appendUserRelayToPeer(ns, scope, peerId, text) {
+    const reg = await import('./dist/features/session-registry.js');
+    let rec = typeof reg.findRecordByPeerWeb === 'function' ? reg.findRecordByPeerWeb(ns, scope, peerId) : undefined;
+    // 活跃表 miss(会话被 idle 回收/未建立)→ 与入群申请通知/定时任务同款: getOrCreate 恢复/重建会话(不开回合),
+    // 保证 log 存在能 append(否则 findRecordByPeerWeb 永远 no-session, QQ 发出但 web 流无痕)。
+    if (!rec && typeof reg.getOrCreateByPeerWeb === 'function') {
+      try { rec = await reg.getOrCreateByPeerWeb(ns, scope, peerId, 'master'); } catch { /* 恢复失败按 no-session 走 */ }
+    }
+    if (!rec || !rec.agent) return 'no-session';
+    const agent = rec.agent;
+    const sess = agent && (agent.session || (agent.ctx && agent.ctx.session));
+    const appendFn = sess && typeof sess.append === 'function' ? sess.append.bind(sess) : undefined;
+    if (!appendFn) return 'no-session';
+    if (sessionTurnActive(sess)) return 'busy'; // 🔒 LLM 回合活跃(思考/流式中), 不插入
+    const llm = await import('@deepseek-ai/dsh-llm');
+    const relayText = `用户代你发送: ${text}`;
+    const msg = llm.createUserMessage
+      ? llm.createUserMessage({ content: [{ type: 'text', text: relayText }], source: { kind: 'user' } })
+      : undefined;
+    if (!msg) return 'no-msg';
+    // 与 agent-loop turn()/入群申请通知同款: user/message 的 data 就是消息体本身(不包 message 层)。
+    appendFn('user/message', msg, { surfaceOp: 'append' });
+    return null;
+  }
+
+  // 入群申请红点汇总(悬浮球 dock 用): 遍历所有已配置实例, 返回各实例待审申请数(计数不上报明细)
+  route(ctx, 'GET', '/api/qqbot-settings/group/join-summary', async (_req, res) => {
+    try {
+      const { bots } = parsePatch();
+      const out = [];
+      for (const bot of bots) {
+        if (bot.disabled || !bot.cfg?.appId || !bot.cfg?.appSecret) continue;
+        try {
+          const ns = bot.id;
+          const gc = await groupClientOf(ns);
+          if (!gc) continue;
+          const reg = readGroupsJson(bot.cwd);
+          let pending = 0;
+          for (const gid of Object.keys(reg)) {
+            if (!gid) continue;
+            try {
+              const r = await gc.client.listJoinRequests(gid);
+              if (r.ok && Array.isArray(r.data?.list)) pending += r.data.list.length;
+            } catch { /* 单群失败不阻断 */ }
+          }
+          out.push({ ns, pending });
+        } catch { /* 实例失败跳过 */ }
+      }
+      writeJson(res, 200, { ok: true, items: out });
+    } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
+  });
+
   // 绑定/登记群 {ns?, gid, name?}
   route(ctx, 'POST', '/api/qqbot-settings/group/bind', async (req, res) => {
     const body = await readJsonBody(req);
@@ -921,6 +1107,52 @@ export function apply(ctx) {
       writeGroupsJson(bot.cwd, reg);
       audit(bot.cwd, { ev: 'group.bind', ns: bot.id, gid });
       writeJson(res, 200, { ok: true });
+    } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
+  });
+
+  // ── 审批双通道: Web 浮层同源路由(读待办 / 点按钮结算) ──
+  // 数据来自各实例 QqApprovalController(经 registerApprovalController 注册表),
+  // 与 QQ 按钮卡片/文本码共用同一 pending —— 先到先得, 两端天然同步。
+  route(ctx, 'GET', '/api/qqbot-settings/approval/pending', async (_req, res) => {
+    try {
+      const mod = await import('./dist/features/qq-approval.js');
+      const list = typeof mod.listAllPendingWeb === 'function' ? mod.listAllPendingWeb() : [];
+      writeJson(res, 200, { ok: true, pending: list });
+    } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
+  });
+  // {code, act:'allow'|'deny'}
+  route(ctx, 'POST', '/api/qqbot-settings/approval/decide', async (req, res) => {
+    const body = await readJsonBody(req);
+    if (!body || typeof body !== 'object') return writeJson(res, 400, { error: 'bad body' });
+    const code = String(body.code || '').toUpperCase();
+    const act = String(body.act || '');
+    if (!code || (act !== 'allow' && act !== 'deny')) return writeJson(res, 400, { error: 'code 与 act(allow|deny) 必填' });
+    try {
+      const mod = await import('./dist/features/qq-approval.js');
+      const r = typeof mod.decideByWebAny === 'function' ? mod.decideByWebAny(code, act) : { ok: false, msg: '审批模块不可用' };
+      writeJson(res, r.ok ? 200 : 404, r);
+    } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
+  });
+
+  // ── 提问双通道: Web 浮层同源路由(读待办问题 / 点选项结算) ──
+  route(ctx, 'GET', '/api/qqbot-settings/questions/pending', async (_req, res) => {
+    try {
+      const mod = await import('./dist/features/qq-user-questions.js');
+      const list = typeof mod.listAllPendingQuestionsWeb === 'function' ? mod.listAllPendingQuestionsWeb() : [];
+      writeJson(res, 200, { ok: true, pending: list });
+    } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
+  });
+  // {key, optIdx}
+  route(ctx, 'POST', '/api/qqbot-settings/questions/decide', async (req, res) => {
+    const body = await readJsonBody(req);
+    if (!body || typeof body !== 'object') return writeJson(res, 400, { error: 'bad body' });
+    const key = String(body.key || '');
+    const optIdx = Number(body.optIdx);
+    if (!key || !Number.isInteger(optIdx) || optIdx < 0) return writeJson(res, 400, { error: 'key 与 optIdx 必填' });
+    try {
+      const mod = await import('./dist/features/qq-user-questions.js');
+      const r = typeof mod.decideQuestionByWebAny === 'function' ? mod.decideQuestionByWebAny(key, optIdx) : { ok: false, msg: '提问模块不可用' };
+      writeJson(res, r.ok ? 200 : 404, r);
     } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
   });
 

@@ -21,6 +21,20 @@ This repo is an enhanced fork of [@tencent-connect/dsh-qqbot](https://github.com
 - **🧹 Messy library? Let the AI tidy it** — ask *"which stickers still lack tags or descriptions"* and it lists them, then tags and describes them itself.
 - **🖥️ No config-file surgery** — reply pacing, sticker gates, scheduled wake-ups, and per-bot personas are all editable in the settings panel; saving applies live (only adding/removing bots needs a restart).
 
+### ✨ What's new in v0.7.0
+
+**🧠 Floating-dock "relay send" that can write into the bot's context**
+The floating dock in the settings panel can send a message *as the bot* to a group or DM; tick the 🧠 box and, once sent, the message is also appended to the target session as a **simulated user message** (content prefixed with the `用户代你发送` relay marker), visible in the Web session stream only — **no wake-up, no new turn**; the bot only reads it the next time it is actually mentioned. If the target session was idle-recycled it is auto-resumed first; if the LLM is currently thinking/streaming the write is skipped so an in-flight turn is never corrupted.
+
+**❓ Questions become QQ button cards**
+When the bot asks via `ask_user_question`, options are delivered as button cards straight to the current chat partner's QQ — in a group only that member can answer (others are rejected); either the Web overlay or the QQ card can settle the question.
+
+**✅ Remote approval — settle from the Web too**
+Besides replying with the one-time CODE in QQ, pending approvals can be listed and settled across instances right from the Web panel; both ends stay in sync.
+
+**🔧 Robustness fixes**
+Before writing into a session the host runs a "turn active" safety gate and auto-resumes idle-recycled sessions via getOrCreate; simulated messages now follow dsh's official user/message event contract (identical shape to real messages), eliminating the corruption bug class.
+
 ### 📸 Showcase
 
 Left: the dsh runtime backend — reasoning, tool calls and token usage are fully visible (paired with the `reply_gate` gate tool, the bot decides on its own whether to speak or stay silently idle);
