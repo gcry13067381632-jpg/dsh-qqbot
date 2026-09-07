@@ -49,7 +49,7 @@
 
 ![斗图实战（发表情包接招回击）](docs/showcase-3-doutu.png)
 
-### 给开发者的话
+### 给AI的话
 - QQ 会话内可直接调用的标准工具：发图/撤图/查库/打标/查未整理/定时（`send_media`/`recall_message`/`list_stickers`/`sticker_tag`/`sticker_untagged`/`schedule_timer`/`schedule_cancel`…），会话按账号精确路由
 - **群管理工具**（`group_join_requests`/`group_approve_join`/`group_mute_state`/`group_mute_member`…）：入群审批与禁言，需机器人为该群管理员；对话内管当前群，web/非群会话用配置的 `manageGroup`
 - **纯文本也能发图撤消息**：让 AI 在回复里写 `[MEDIA:image|图片路径或网址]` 就自动变成真图发出去（`voice`/`video`/`file` 同理）；写 `[RECALL]` 撤回自己刚发的那条
