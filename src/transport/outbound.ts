@@ -46,6 +46,8 @@ const SILENT_TURN_ERROR_CODES = new Set(['STREAM_CLOSED']);
 class OutboundRouter {
   private readonly buffers = new Map<string, OutboundBuffer>();
   private readonly toolCalls = new Map<string, ToolCallRecord>();
+  /** 本回合群内已发送条数: >0 时后续消息去掉 msg_id 走主动(QQ 回复同一 msg 有限 ~4~5 条) */
+  private turnGroupSent = 0;
 
   public constructor(
     private readonly manager: SessionManager,
@@ -54,6 +56,14 @@ class OutboundRouter {
     private readonly logger: Logger,
     private readonly toolsRegistry: ToolsRegistryLike | undefined,
   ) {}
+
+  /** 出站目标: 群回合内已发过 >=1 条 → 去掉 msg_id 主动发(同面板); 首条/私聊保持被动回复 */
+  private outTarget(record: SessionRecord) {
+    if (this.turnGroupSent > 0 && record.replyTarget.scope === 'group' && record.replyTarget.targetId) {
+      return { scope: record.replyTarget.scope, targetId: record.replyTarget.targetId } as never;
+    }
+    return record.replyTarget;
+  }
 
   /** 事件分发入口 */
   public route(session: SessionLike, raw: RawSessionEvent): void {
@@ -115,7 +125,9 @@ class OutboundRouter {
     const fullText = textParts.join('\n');
     if (!fullText.trim()) return;
 
-    void this.send(record, fullText, 'sendMarkdown');
+    const targetNow = this.outTarget(record);
+    void this.send(record, targetNow, fullText, 'sendMarkdown');
+    if (record.replyTarget.scope === 'group') this.turnGroupSent += 1;
     this.buffers.delete(sessionId);
   }
 
@@ -141,11 +153,12 @@ class OutboundRouter {
     );
     if (!text) return;
 
-    void this.send(record, text, 'sendToolResult');
+    void this.send(record, record.replyTarget, text, 'sendToolResult');
   }
 
   /** 轮次结束：清理 buffer，异常结束时告知用户 */
-  private onTurnEnd(sessionId: string, record: SessionRecord, event: TurnEndEvent): void {
+  private onTurnEnd(sessionId: string, _record: SessionRecord, event: TurnEndEvent): void {
+    this.turnGroupSent = 0; // 新回合重置(下一条主人消息的首条回复恢复被动)
     const buffer = this.buffers.get(sessionId);
     if (buffer !== undefined) {
       if (buffer.text.trim()) {
@@ -158,18 +171,18 @@ class OutboundRouter {
 
     const failure = extractTurnError(event.reason);
     if (failure !== undefined && !SILENT_TURN_ERROR_CODES.has(failure.code)) {
-      void this.send(record, `⚠️ 本轮异常结束\n\`${failure.code}\`: ${failure.message}`, 'sendTurnEndError');
+      void this.send(_record, _record.replyTarget, `⚠️ 本轮异常结束\n\`${failure.code}\`: ${failure.message}`, 'sendTurnEndError');
     }
 
     this.logger.debug(`im-qqbot: turn/end sessionId=${sessionId}`);
   }
 
   /** 统一发送：富媒体感知 + 分块；媒体指令([MEDIA:..]/[RECALL])被剔除，失败降级记录 */
-  private async send(record: SessionRecord, text: string, tag: string): Promise<void> {
+  private async send(_record: SessionRecord, target: unknown, text: string, tag: string): Promise<void> {
     try {
       await sendRichOutbound(
         this.bot,
-        record.replyTarget,
+        target as never,
         text,
         this.config.textChunkLimit,
         this.config.cwd,
