@@ -12,31 +12,22 @@ An **enhanced fork** of the QQ Bot IM plugin for [deepseek-harness](https://gith
 
 This repo is an enhanced fork of [@tencent-connect/dsh-qqbot](https://github.com/tencent-connect/dsh-qqbot) (changes live outside the upstream source — reinstalling/upgrading upstream will wipe them).
 
-### What it does for you
+### What she does for you
 
-- **🤳 Group images become its sticker library automatically** — saved locally with dedup, organized into "to-sort / favorite / trash". Just say *"send something happy"* and it searches, picks and sends on its own — with optional guardrails (no posting into a cold chat, rate limits, no repeat stickers).
-- **⏰ It speaks up on time** — schedule a daily greeting at 9:00, or tell it *"remind me to drink water in 30 seconds"* and it actually will.
-- **🧑‍🤝‍🧑 Multiple bots, multiple personalities, one machine** — each bot has its own AppID, persona preset and working directory (sticker library / timers / gates fully isolated). Adding a bot is a phone-QR scan away from the Web panel — credentials are filled in automatically.
-- **🛡️ Group admin helper: join-request approval + mute management** — when the bot is a group admin, enable it in the panel (⑥ QQ Group Admin): join requests arrive as real-time events with an in-group reminder (reply "approve/reject" to handle them), and you can inspect mute state or mute/unmute members — all through official APIs with human-readable errors (not an admin / cannot mute the owner, etc.).
-- **🧹 Messy library? Let the AI tidy it** — ask *"which stickers still lack tags or descriptions"* and it lists them, then tags and describes them itself.
-- **🖥️ No config-file surgery** — reply pacing, sticker gates, scheduled wake-ups, and per-bot personas are all editable in the settings panel; saving applies live (only adding/removing bots needs a restart).
+**🤳 Group images become her sticker library automatically** — saved locally with dedup ("to-sort / favorite / trash"). Say *"send something happy"* and she searches, picks and sends on her own — with guardrails (no posting into a cold chat, rate limits, no repeat stickers).
 
-### ✨ What's new in v0.8.0
+**⏰ She speaks up on time** — schedule a daily greeting, or tell her *"remind me to drink water in 30 seconds"* and she actually will.
 
-**💬 Floating-dock QQ chat view**
-Open the floating dock in the settings panel → "💬 聊天" tab: pick a group or DM and replay its conversation with the bot in a QQ-style UI — avatars + bubbles (members left, bot right in blue), images zoom on click, videos (including local files) play inline, voice messages get a play bar (QQ SILK audio is converted to MP3 in pure JS — zero system dependencies), files render as downloadable cards. Injected context, tool noise, streaming chunks and history-packaging markers are filtered out automatically; multi-message history packs are **split back into individual bubbles**; scrolling up loads older messages.
+**🧑‍🤝‍🧑 Many bots, many personalities, one computer** — each with its own AppID, persona and working directory (stickers / timers / gates fully isolated). Adding one is a QR scan away in the Web panel.
 
-**📎 Chat & send unified + local media**
-The composer lives right below the chat history: text, images and files all send from one box. bbcode `[MEDIA:image|local-path-or-url]` sends local files directly; the 📷 / 📎 buttons and paste/drag of an image auto-wrap it into a MEDIA token; the send button locks while sending with progress feedback, and sends can be written into the session as a "relay" user message. Local absolute paths that appear in chat (images / audio / video) are previewed or played right in the dock.
+**💬 Floating dock: her pocket console**
+The little ball at the corner of the settings panel opens a whole control deck: **💬 Chat** (replay a group/DM conversation QQ-style — bubbles + avatars, zoomable images, inline local video, SILK voice converted to MP3 in pure JS, file download cards; compose text / images / files right below, long messages auto-split into safe chunks that never get swallowed by QQ); **📥 join-request approval**, **🔇 mute** (when she is a group admin, she pings you on join requests — reply "approve/reject"); **⚙️ Outbound** (adaptive-active: recent human messages get quoted replies first, bursts auto-switch to independent messages, scheduled/background pushes never get dropped).
 
-**🚚 Big files no longer block a turn**
-Local files ≥5MB (videos, archives…) switch to **background chunked upload**: the call returns immediately, and completion/failure is written back into the session as a "background task" notice; the dock file picker now streams files up to 300MB straight through.
+**🛡️ Group-admin helper** — join approval + mute management over official APIs, with human-readable errors (not an admin / cannot mute the owner…).
 
-**🖌️ Preset persona editor**
-The Web settings "②" area gains a ✏️ button to browse and edit the preset files of the active persona (presets/files API; only persona copies flagged with QQ tools are writable; ≤200KB atomic writes).
+**🖥️ No config-file surgery** — reply pacing, sticker gates, scheduled wake-ups, outbound mode and per-bot personas are all in the panel; saving applies live (only adding/removing bots needs a restart). There is even a ✏️ persona editor to tweak her "personality file" right in the browser.
 
-**🪄 Floating-dock UX**
-While expanded, drag the panel by its header (double-click the header to snap back to the ball); a ⛶ fullscreen toggle fixes header/footer and lets only the message list scroll; closing the image lightbox no longer collapses the dock.
+**📦 Clean & lean** — drive image sending / recall from plain text (`[MEDIA:image|path]` / `[RECALL]`); the repo contains no bot credentials or private data.
 
 ### 📸 Showcase
 
