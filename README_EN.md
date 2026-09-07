@@ -214,6 +214,8 @@ auto-cancelled when the agent is cancelled or dsh exits.
 | `/bot-reset` | Reset the current session (clear context) |
 | `/bot-model` | View or switch model |
 | `/bot-status` | View current session status |
+| `/bot-restart` | Self-restart the dsh host (~4s, auto relaunch) |
+| `/botplay` | List assembled interactive events; `/botplay <name>` triggers a keyboard card |
 | `/bot-help` | View all commands |
 
 ## Core Modules

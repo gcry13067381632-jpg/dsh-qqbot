@@ -110,6 +110,62 @@ export interface ScheduleConfig {
   targets: ScheduleTargetConfig[];
 }
 
+// ── botplay 互动事件装配器(2026-09-08, 设计见 参考文档/botplay互动事件装配器_设计完整稿.md) ──
+
+/** botAction 行为类型: reply_text=回指定文本 | jump_url=跳转(官方action.type=0) | callback=仅回调结算无bot回复 */
+export type BotplayActionType = 'reply_text' | 'jump_url' | 'callback';
+
+/** llmEffect.mode 三档: no_append=纯bot行为AI不知 / append_silent=记录不唤醒 / append_wake=记录并唤醒AI */
+export type BotplayEffectMode = 'no_append' | 'append_silent' | 'append_wake';
+
+/** perm.type: all=所有人 / triggerer=仅触发者本人 / owner=主人白名单 / users=指定openid列表 */
+export type BotplayPermType = 'all' | 'triggerer' | 'owner' | 'users';
+
+/** 一个按钮的完整定义 */
+export interface BotplayButtonConfig {
+  /** 按钮 id(回调 data 编码 事件id::按钮id; 建议 [a-zA-Z0-9_-] 避免分隔符冲突) */
+  id: string;
+  /** 按钮显示文字 */
+  label: string;
+  /** 点击后显示文字(visitedLabel), 留空=label */
+  visitedLabel?: string;
+  /** 0灰 1蓝 */
+  style?: number;
+  /** 点击后 bot(非LLM)直接做什么 */
+  botAction: {
+    type: BotplayActionType;
+    /** reply_text 用 */
+    text?: string;
+    /** jump_url 用 */
+    url?: string;
+  };
+  /** 点击事件对 LLM 的影响(自定义三档) */
+  llmEffect?: {
+    mode: BotplayEffectMode;
+    /** 自定义记录文本模板, 支持 {label} 占位; 空=默认可读描述 */
+    contextText?: string;
+  };
+}
+
+/** 一个可装配互动事件 */
+export interface BotplayEventConfig {
+  /** 事件唯一 id(斜杠触发用; 建议 [a-zA-Z0-9_-]) */
+  id: string;
+  /** 显示名(/botplay 列表显示) */
+  name: string;
+  /** 接受点击数: 0=不限; N=单次触发实例最多点 N 次(点满失效) */
+  maxClicks?: number;
+  /** 发卡后有效期(秒): 超时按钮不再受理 */
+  expireSec?: number;
+  /** 权限自定义(默认 all; triggerer=仅触发者本人) */
+  perm?: {
+    type: BotplayPermType;
+    /** users 时填 openid 列表; owner 时可用(留空=取群主白名单) */
+    userIds?: string[];
+  };
+  buttons: BotplayButtonConfig[];
+}
+
 /** QQ 群管理(2026-09-05): 总开关 + 主人 openid 白名单(空=不校验; 建议填主人与常用小号) */
 export interface GroupAdminConfig {
   enabled: boolean;
@@ -152,6 +208,8 @@ export interface EditableConfig {
   approvalTimeoutMs?: number;
   /** 出站模式: adaptive=适配主动(默认; 前5次带msg_id被动回复后自动转主动), passive=全被动回复, silent=完全不出站(思考但不发), nothink=完全不思考(QQ入站不唤醒LLM, 仅记录; 仅设置页可配防自锁) */
   outboundMode?: 'adaptive' | 'active' | 'passive' | 'silent' | 'nothink';
+  /** botplay 互动事件列表(dock「🎮 互动事件」装配器编辑; live 热更, 无需重启) */
+  botplayEvents: BotplayEventConfig[];
 }
 
 /**
@@ -268,6 +326,83 @@ const scheduleSchema = Schema.object({
   targets: Schema.array(scheduleTargetSchema).default([]).description('定时目标列表(每个群/人一组,下面挂时刻)'),
 }).default({ targets: [] }).description('定时唤醒(M3): 每天固定时刻主动找聊天');
 
+// ── botplay 互动事件(schema, 2026-09-08) ──
+const botplayActionSchema = Schema.object({
+  type: Schema.union(['reply_text', 'jump_url', 'callback']).default('reply_text').description('行为类型: reply_text=回指定文本 / jump_url=跳转 / callback=仅结算'),
+  text: Schema.string().default('').description('reply_text: 点击后 bot 直接回复的文本'),
+  url: Schema.string().default('').description('jump_url: 跳转链接'),
+}).default({ type: 'reply_text', text: '', url: '' }).description('按钮 bot(非LLM)动作');
+
+const botplayEffectSchema = Schema.object({
+  mode: Schema.union(['no_append', 'append_silent', 'append_wake']).default('no_append').description('LLM 三档影响: no_append=纯bot行为AI不知 / append_silent=记录进上下文不唤醒 / append_wake=记录并唤醒AI'),
+  contextText: Schema.string().default('').description('自定义记录文本(支持 {label} 占位); 空=默认「bot 发送了卡片, 用户点击了按钮」'),
+}).default({ mode: 'no_append', contextText: '' }).description('点击对 LLM 的影响');
+
+const botplayButtonSchema = Schema.object({
+  id: Schema.string().required().description('按钮 id(回调 data 编码 事件id::按钮id; 建议 [a-zA-Z0-9_-])'),
+  label: Schema.string().required().description('按钮显示文字'),
+  visitedLabel: Schema.string().description('点击后显示文字, 留空=label'),
+  style: Schema.number().default(1).description('0灰 1蓝'),
+  botAction: botplayActionSchema,
+  llmEffect: botplayEffectSchema,
+}).default({
+  id: '', label: '', visitedLabel: '', style: 1,
+  botAction: { type: 'reply_text', text: '', url: '' },
+  llmEffect: { mode: 'no_append', contextText: '' },
+}).description('按钮');
+
+const botplayPermSchema = Schema.object({
+  type: Schema.union(['all', 'triggerer', 'owner', 'users']).default('all').description('权限: all=所有人 / triggerer=仅触发者本人 / owner=主人白名单 / users=指定openid'),
+  userIds: Schema.array(Schema.string()).default([]).description('users 时填 openid 列表'),
+}).default({ type: 'all', userIds: [] }).description('权限');
+
+const botplayEventSchema = Schema.object({
+  id: Schema.string().required().description('事件唯一 id(斜杠 /botplay 触发用; 建议 [a-zA-Z0-9_-])'),
+  name: Schema.string().required().description('事件显示名(/botplay 列表显示)'),
+  maxClicks: Schema.number().default(0).description('接受点击数: 0=不限; N=单次触发最多点N次(点满失效)'),
+  expireSec: Schema.number().default(600).description('发卡后有效期(秒), 超时按钮失效'),
+  perm: botplayPermSchema,
+  buttons: Schema.array(botplayButtonSchema).default([]).description('按钮列表(QQ限制: 最多5行)'),
+}).default({
+  id: '', name: '', maxClicks: 0, expireSec: 600,
+  perm: { type: 'all', userIds: [] },
+  buttons: [],
+}).description('botplay 互动事件');
+
+/** Phase1 内置演示事件(仅当用户从未配置时生效; 保存后以用户配置为准) */
+const DEMO_BOTPLAY_EVENTS: BotplayEventConfig[] = [
+  {
+    id: 'checkin',
+    name: '签到',
+    maxClicks: 0,
+    expireSec: 600,
+    perm: { type: 'triggerer', userIds: [] },
+    buttons: [{
+      id: 'b1',
+      label: '✅ 签到',
+      visitedLabel: '已签到',
+      style: 1,
+      botAction: { type: 'reply_text', text: '✅ 签到成功 +1 🎉', url: '' },
+      llmEffect: { mode: 'no_append', contextText: '' },
+    }],
+  },
+  {
+    id: 'fortune',
+    name: '今日运势',
+    maxClicks: 0,
+    expireSec: 600,
+    perm: { type: 'triggerer', userIds: [] },
+    buttons: [{
+      id: 'b1',
+      label: '🔮 抽一签',
+      visitedLabel: '已抽取',
+      style: 1,
+      botAction: { type: 'callback', text: '', url: '' },
+      llmEffect: { mode: 'append_wake', contextText: '用户点击了「今日运势」的抽签按钮, 想看看今天的运势' },
+    }],
+  },
+];
+
 const groupAdminSchema = Schema.object({
   enabled: Schema.boolean().default(false).description('QQ 群管理总开关(入群审批/禁言等; 需机器人为群管理员)'),
   owners: Schema.array(Schema.string()).default([]).description('允许操作的主人 openid 白名单(空=不校验; 群管理操作仅建议主人使用)'),
@@ -297,6 +432,7 @@ export const EditableConfigSchema: Schema<EditableConfig> = Schema.object({
   enableApprovals: Schema.boolean().default(false).description('QQ 远程审批: dsh 权限申请发到 QQ, 用 /approve CODE 放行(保存后对新请求生效)'),
   approvalTimeoutMs: Schema.number().default(120000).description('QQ 权限申请等待时长(ms), 超时自动拒绝'),
   outboundMode: Schema.union(['adaptive', 'active', 'passive', 'silent', 'nothink']).default('adaptive').description('出站模式: 适配主动(默认)=收到新消息后前5次带msg_id被动回复, 超出/无新消息自动转主动(保连发); 被动=全程带回复id(连发受QQ上限); 完全不出站=思考但不发(静默); 完全不思考=QQ入站不唤醒LLM(仅记录, 仅设置页可配)'),
+  botplayEvents: Schema.array(botplayEventSchema).default(DEMO_BOTPLAY_EVENTS as never).description('botplay 互动事件(dock🎮装配器编辑, 保存即热更; /botplay 触发发卡)'),
 });
 
 export interface ImQQBotConfig {
@@ -356,6 +492,8 @@ export interface ImQQBotConfig {
   enableUserQuestions?: boolean;
   /** 出站模式: adaptive=适配主动(默认) / active=旧全主动(兼容) / passive=全被动回复 / silent=完全不出站 / nothink=完全不思考(仅设置页可配) */
   outboundMode?: 'adaptive' | 'active' | 'passive' | 'silent' | 'nothink';
+  /** botplay 互动事件列表(运行时 live, 与 settings 同源) */
+  botplayEvents: BotplayEventConfig[];
 }
 
 export const ConfigSchema: Schema<ImQQBotConfig> = Schema.object({
@@ -419,4 +557,5 @@ export const ConfigSchema: Schema<ImQQBotConfig> = Schema.object({
   enableApprovals: Schema.boolean().default(false).description('通过 QQ 接收并处理 dsh 一次性权限申请(远程审批: 发起者用 /approve CODE 放行)'),
   approvalTimeoutMs: Schema.number().default(120000).description('QQ 权限申请超时(ms), 超时自动拒绝'),
   outboundMode: Schema.union(['adaptive', 'active', 'passive', 'silent', 'nothink']).default('adaptive').description('出站模式: 适配主动(默认)=收到新消息后前5次带msg_id被动回复, 超出/无新消息自动转主动(连发不受限); 被动=携带msg_id回复(连发受QQ回复同一消息上限); 完全不出站=思考但不发(静默); 完全不思考=QQ入站不唤醒LLM, 仅记录上下文(仅设置页可配, 防机器人自锁)'),
+  botplayEvents: Schema.array(botplayEventSchema).default(DEMO_BOTPLAY_EVENTS as never).description('botplay 互动事件(装配器编辑; /botplay 触发发卡)'),
 });
