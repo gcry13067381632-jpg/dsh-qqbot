@@ -70,6 +70,39 @@ function optionsKeyboard(qid: string, token: string, opts: Array<{ label: string
   return { content: { rows } };
 }
 
+/**
+ * 解析"这张提问卡片该谁回答": 扫最近(≤60 条)真人 user/message——
+ *  ① 消息文本里的 <@openid>: 取最后一个(提问目标通常放在句末; 前面常是 @bot 自己)
+ *  ② 无点名: 取消息发送者壳 [昵称 (openid)] 的 openid(谁发的就给谁答)
+ *  ③ 兜底: 会话发起者 record.senderId
+ * plugin 注入(上下文/系统)跳过。
+ */
+function resolveCardOwner(record: { senderId: string; agent?: { session?: { events?: readonly unknown[] } } }): string {
+  try {
+    const evs = record.agent?.session?.events;
+    if (Array.isArray(evs) && evs.length > 0) {
+      const from = Math.max(0, evs.length - 60);
+      for (let i = evs.length - 1; i >= from; i--) {
+        const ev = evs[i] as { type?: string; data?: Record<string, unknown> } | undefined;
+        if (!ev || ev.type !== 'user/message') continue;
+        const data = ev.data && typeof ev.data === 'object' ? ev.data : (ev as unknown as Record<string, unknown>);
+        const src = data.source as { kind?: string } | undefined;
+        if (src && src.kind === 'plugin') continue;
+        const content = Array.isArray(data.content) ? (data.content as Array<{ text?: string }>) : [];
+        const text = content.map((b) => (b?.text ?? '')).join('\n');
+        if (!text) continue;
+        const ats: string[] = [];
+        for (const m of text.matchAll(/<@([A-Za-z0-9]{32})>/g)) ats.push(m[1]!);
+        if (ats.length > 0) return ats[ats.length - 1]!;
+        const shell = text.match(/\[[^\]\n]*?\s*\(([A-Za-z0-9]{32})\)\]/);
+        if (shell) return shell[1]!;
+        return record.senderId;
+      }
+    }
+  } catch { /* 解析失败回落 */ }
+  return record.senderId;
+}
+
 export class QqUserQuestionsController {
   private readonly pending = new Map<string, PendingItem>();
 
@@ -108,13 +141,17 @@ export class QqUserQuestionsController {
     const detailRaw = String(q?.detail ?? '');
     const questionRaw = String(q?.question ?? '');
 
+    // 卡片可点人: 从最近真人消息解析——被点名的最后一人(@)优先, 其次消息发送者壳, 回落会话发起者
+    // (修复: 主人让 bot 问群友时, 卡片应绑被问者而不是 bot/主人, 否则被问者点卡片=无权限)
+    const owner = resolveCardOwner(record);
+
     // 先注册 pending(防按钮回调先于 Promise 建立到达)
     let resolver: (v: unknown) => void = () => undefined;
     const answer = new Promise<unknown>((resolve) => { resolver = resolve; });
     const item: PendingItem = {
       qid, question: questionRaw, header: headerRaw, detail: detailRaw,
       opts: opts.map((o) => ({ label: String(o?.label ?? '') })),
-      ownerId: record.senderId,
+      ownerId: owner,
       deadlineAt: Date.now() + timeoutMs,
       resolve: resolver, timer: setTimeout(() => this.settle(key, true), timeoutMs),
       signal: req.signal,
@@ -130,7 +167,7 @@ export class QqUserQuestionsController {
     const prompt = `${header}❓ **${questionRaw}**${detail}\n\n⏱ ${Math.ceil(timeoutMs / 1000)} 秒内点下方按钮回答：`;
 
     try {
-      await this.sender.sendMarkdownWithKeyboard(record.replyTarget, prompt, optionsKeyboard(qid, token, opts, record.senderId));
+      await this.sender.sendMarkdownWithKeyboard(record.replyTarget, prompt, optionsKeyboard(qid, token, opts, owner));
       this.logger.info(`QQ question sent: qid=${qid} opts=${opts.length}`);
     } catch (err) {
       this.logger.warn(`QQ question card failed: ${err instanceof Error ? err.message : String(err)}`);
