@@ -150,8 +150,8 @@ export interface EditableConfig {
   enableApprovals?: boolean;
   /** QQ 权限申请等待时长(ms), 超时自动拒绝 */
   approvalTimeoutMs?: number;
-  /** 出站方式: adaptive=适配主动(默认; 收到新消息后前 5 次带 msg_id 被动回复, 之后自动转主动保连发), passive=全被动回复(带 msg_id, 连发受 QQ 回复上限) */
-  outboundMode?: 'adaptive' | 'active' | 'passive';
+  /** 出站模式: adaptive=适配主动(默认; 前5次带msg_id被动回复后自动转主动), passive=全被动回复, silent=完全不出站(思考但不发), nothink=完全不思考(QQ入站不唤醒LLM, 仅记录; 仅设置页可配防自锁) */
+  outboundMode?: 'adaptive' | 'active' | 'passive' | 'silent' | 'nothink';
 }
 
 /**
@@ -296,7 +296,7 @@ export const EditableConfigSchema: Schema<EditableConfig> = Schema.object({
   schedule: scheduleSchema,
   enableApprovals: Schema.boolean().default(false).description('QQ 远程审批: dsh 权限申请发到 QQ, 用 /approve CODE 放行(保存后对新请求生效)'),
   approvalTimeoutMs: Schema.number().default(120000).description('QQ 权限申请等待时长(ms), 超时自动拒绝'),
-  outboundMode: Schema.union(['adaptive', 'active', 'passive']).default('adaptive').description('出站方式: 适配主动(默认)=收到新消息后前5次带msg_id被动回复, 超出/无新消息自动转主动(保连发); 主动(旧)=全程不带回复id; 被动=全程带回复id(连发受QQ上限)'),
+  outboundMode: Schema.union(['adaptive', 'active', 'passive', 'silent', 'nothink']).default('adaptive').description('出站模式: 适配主动(默认)=收到新消息后前5次带msg_id被动回复, 超出/无新消息自动转主动(保连发); 被动=全程带回复id(连发受QQ上限); 完全不出站=思考但不发(静默); 完全不思考=QQ入站不唤醒LLM(仅记录, 仅设置页可配)'),
 });
 
 export interface ImQQBotConfig {
@@ -354,8 +354,8 @@ export interface ImQQBotConfig {
   approvalTimeoutMs: number;
   /** QQ 远程提问(ask_user_question → QQ 按钮卡片), 默认开; false=交回 Web UI */
   enableUserQuestions?: boolean;
-  /** 出站方式: adaptive=适配主动(默认) / active=旧全主动(兼容) / passive=全被动回复 */
-  outboundMode?: 'adaptive' | 'active' | 'passive';
+  /** 出站模式: adaptive=适配主动(默认) / active=旧全主动(兼容) / passive=全被动回复 / silent=完全不出站 / nothink=完全不思考(仅设置页可配) */
+  outboundMode?: 'adaptive' | 'active' | 'passive' | 'silent' | 'nothink';
 }
 
 export const ConfigSchema: Schema<ImQQBotConfig> = Schema.object({
@@ -418,5 +418,5 @@ export const ConfigSchema: Schema<ImQQBotConfig> = Schema.object({
   debug: Schema.boolean().default(false),
   enableApprovals: Schema.boolean().default(false).description('通过 QQ 接收并处理 dsh 一次性权限申请(远程审批: 发起者用 /approve CODE 放行)'),
   approvalTimeoutMs: Schema.number().default(120000).description('QQ 权限申请超时(ms), 超时自动拒绝'),
-  outboundMode: Schema.union(['adaptive', 'active', 'passive']).default('adaptive').description('出站方式: 适配主动(默认)=收到新消息后前5次带msg_id被动回复, 超出/无新消息自动转主动(连发不受限, 私聊受48h窗); 主动(旧)=不携带回复msg_id; 被动=携带msg_id回复(连发受QQ回复同一消息上限)'),
+  outboundMode: Schema.union(['adaptive', 'active', 'passive', 'silent', 'nothink']).default('adaptive').description('出站模式: 适配主动(默认)=收到新消息后前5次带msg_id被动回复, 超出/无新消息自动转主动(连发不受限); 被动=携带msg_id回复(连发受QQ回复同一消息上限); 完全不出站=思考但不发(静默); 完全不思考=QQ入站不唤醒LLM, 仅记录上下文(仅设置页可配, 防机器人自锁)'),
 });

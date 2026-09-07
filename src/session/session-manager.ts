@@ -89,6 +89,16 @@ export class SessionManager {
     return this.config.groupAdmin?.manageGroup ?? '';
   }
 
+  /** 当前出站模式(adaptive/passive/silent/nothink; 命令与 channel 工具读它显示当前值) */
+  public get outboundMode(): string {
+    return (this.config as { outboundMode?: string }).outboundMode || 'adaptive';
+  }
+
+  /** 实例 settingsNs(多账号实例 id; 无则默认 im-qqbot) */
+  public get settingsNs(): string {
+    return ((this.config as { settingsNs?: string }).settingsNs ?? '').trim() || 'im-qqbot';
+  }
+
   constructor(
     private readonly ctx: Context,
     private readonly agents: DshAgentRegistry,

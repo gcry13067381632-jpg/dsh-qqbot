@@ -16,6 +16,7 @@ import { getStickerStore } from './features/sticker-store.js';
 import { autoTagImage } from './features/sticker-tagger.js';
 import { isStickerGateDenied } from './features/sticker-gate.js';
 import { getScheduleStore } from './features/schedule-store.js';
+import { switchOutboundMode } from './features/outbound-mode-switch.js';
 
 /** 诊断日志路径: 默认关闭; 需要排查时设环境变量 QQBOT_DIAG_FILE 指向日志文件 */
 const DIAG_FILE = process.env.QQBOT_DIAG_FILE || '';
@@ -706,6 +707,34 @@ export function apply(ctx: Context): void {
     },
   });
 
+  // outbound_mode: 出站模式开关(2026-09-07, 主人定) —— 让 AI 自己决定三档(不含 nothink!)
+  // ⚠️ 安全边界: nothink(完全不思考)禁止 AI 自切(防锁死, 主人只能在设置页配; 唤醒走 /outmode 斜杠)。
+  // 切换走 outbound-mode-switch 注册表 → live 热生效 + settings 持久化 → dock/设置一致。
+  const outboundModeTool = defineTool({
+    name: 'outbound_mode',
+    description: '出站模式开关(自己决定): 切换本 bot 向 QQ 发消息的方式, 保存即热更新(不用重启, dock与设置同步)。三档任选: adaptive=适配主动(默认推荐): 真人消息前5条带引用回你、连发自动转独立消息不被QQ吞; passive=被动: 始终回复最后一条(连发约4~5条后被QQ吞); silent=完全不出站: 照常思考但这条回复不发出(潜水观察用; web上仍可对话)。注意: 不提供 nothink(完全不思考)——那档只能由主人在设置页配置。根据当下场景选: 正常聊天/被@回应→adaptive; 想保持引用感→passive; 判断不该在群里说话(冷场/打扰)→silent。',
+    parameters: {
+      mode: { type: 'string', required: true, enum: ['adaptive', 'passive', 'silent'], description: '目标模式: adaptive(默认推荐) / passive / silent' },
+      reason: { type: 'string', required: true, description: '为什么切到这档(简短理由)' },
+    },
+    output: {
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: { ok: { type: 'boolean', required: true }, msg: { type: 'string', required: true }, mode: { type: 'string', required: true } },
+      },
+      render: (_a, v: { ok: boolean; msg: string; mode: string }) => [
+        { type: 'text' as const, text: v.ok ? `(出站模式 → ${v.mode})` : `切换失败: ${v.msg}` },
+      ],
+    },
+    async execute(args) {
+      if (args.mode !== 'adaptive' && args.mode !== 'passive' && args.mode !== 'silent') {
+        return { ok: false, msg: '只允许 adaptive/passive/silent(nothink 需主人在设置页配置)', mode: String(args.mode ?? '') };
+      }
+      const r = await switchOutboundMode(args.mode);
+      return { ok: r.ok, msg: r.msg, mode: r.mode };
+    },
+  });
+
   // ── QQ 群管理工具组(2026-09-05, P2; 依赖 config.groupAdmin.enabled + 机器人=群管理员) ──
   // 危险写操作(审批/禁言)仅按主人指示执行(工具描述写死约束); owners 白名单接入留待后续,
   // 官方未开放能力(踢人/成员列表)由 client FEATURE_GATES 返回人话, 不在本层重复。
@@ -860,6 +889,7 @@ export function apply(ctx: Context): void {
     { name: 'recall_message', tool: recallTool },
     { name: 'text_break', tool: textBreakTool },
     { name: 'reply_gate', tool: replyGateTool },
+    { name: 'outbound_mode', tool: outboundModeTool },
     { name: 'group_join_requests', tool: listJoinRequestsTool },
     { name: 'group_approve_join', tool: approveJoinTool },
     { name: 'group_mute_state', tool: muteStateTool },

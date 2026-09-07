@@ -94,6 +94,14 @@ export async function handleInbound(
   const scope: ChatScope = msg.kind === 'group' ? 'group' : 'c2c';
   const peerId = scope === 'group' ? (msg.groupOpenid ?? msg.senderId) : msg.senderId;
 
+  // 完全不思考(nothink, 2026-09-07 主人定): QQ 入站不唤醒 LLM —— 消息已被链上
+  // mediaHistoryBuffer 记入群历史/上下文, 这里直接吞掉(web 对话/下次触发时 AI 仍能看到记录)。
+  // 本档只能由主人在设置页配置; 唤醒走 /outmode 斜杠命令(SDK 直通不经 LLM)。
+  if ((config as { outboundMode?: string }).outboundMode === 'nothink') {
+    logger.info(`[nothink] 入站不唤醒: scope=${scope} peer=${peerId} body="${String(msg.content ?? '').slice(0, 60)}"`);
+    return;
+  }
+
   const replyTarget: ReplyTarget = {
     scope,
     targetId: peerId,

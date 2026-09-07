@@ -98,6 +98,19 @@ class OutboundRouter {
     const record = this.manager.findBySessionId(session.header.id);
     if (record === undefined) return;
 
+    // 完全不出站(silent)= 照常思考但所有回复不向 QQ 发(静默潜水; dock/web 仍可见思考流);
+    // 完全不思考(nothink)= QQ 入站根本不唤醒 LLM(见 inbound), 这里防御性兜底同样吞。
+    const mode = this.config.outboundMode || 'adaptive';
+    if (mode === 'silent' || mode === 'nothink') {
+      // 丢弃累积的文本缓冲(不留残渣), 后续事件全部静默
+      const silentBuf = this.buffers.get(session.header.id);
+      if (silentBuf !== undefined) {
+        silentBuf.cancel();
+        this.buffers.delete(session.header.id);
+      }
+      return;
+    }
+
     switch (event.type) {
       case 'assistant/chunk':
         this.onChunk(session.header.id, record, event);

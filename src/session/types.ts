@@ -91,6 +91,8 @@ export interface SessionRecord {
   agentPreset?: string;
   /** 会话内最近一次真实入站(QQ 收到消息)时间戳; 定时注入/injectToPeer 不刷新 → 「适配主动」用它判最近 */
   lastInboundAt?: number;
+  /** LLM 回合进行中标记: 出站事件(assistant/tool)期间=true, turn/end 复位 → debounce 见它忙就把新消息全攒着 */
+  turnActive?: boolean;
   /** setup 收到的 agent ctx(工具自愈用；setup 竞态失败时可能缺) */
   agentCtx?: unknown;
   /** 通道工具是否已确认装载(自愈幂等标记) */

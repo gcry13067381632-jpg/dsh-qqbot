@@ -11,6 +11,7 @@ import type { DshAgentRegistry } from './session/index.js';
 import { getProfileDir, resolveEnv } from './shared/index.js';
 import { runQrSetup, persistCredentialsToProfile } from './setup.js';
 import type { Logger } from './types.js';
+import { setOutboundModeWriter } from './features/outbound-mode-switch.js';
 
 // ⚠️ @deepseek-ai/dsh-settings 的"注册 Web 可视化设置"入口在 harness 各版本间有差异：
 //   - rc.2 及更早：模块顶层具名导出 installSettingsSection(ctx, ns, schema, entry, hooks)
@@ -136,8 +137,8 @@ async function installLiveSettings(ctx: Context, live: ImQQBotConfig, logger: Lo
       if (next.groupAdmin) live.groupAdmin = next.groupAdmin;
       if (typeof next.enableApprovals === 'boolean') live.enableApprovals = next.enableApprovals;
       if (typeof next.approvalTimeoutMs === 'number') live.approvalTimeoutMs = next.approvalTimeoutMs;
-      // 出站方式: adaptive=适配主动(默认; active 旧值归一为 adaptive)
-      if (next.outboundMode === 'adaptive' || next.outboundMode === 'passive') live.outboundMode = next.outboundMode;
+      // 出站模式: adaptive=适配主动(默认; active 旧值归一 adaptive); passive=全被动; silent=不出站; nothink=不思考(仅设置页)
+      if (next.outboundMode === 'adaptive' || next.outboundMode === 'passive' || next.outboundMode === 'silent' || next.outboundMode === 'nothink') live.outboundMode = next.outboundMode;
       else if (next.outboundMode === 'active') live.outboundMode = 'adaptive';
       logger.info('[im-qqbot] 设置已同步(live): behavior/sticker/injectRules/groupPrompt/schedule/groupAdmin/approvals');
     } catch (err) {
@@ -152,7 +153,28 @@ async function installLiveSettings(ctx: Context, live: ImQQBotConfig, logger: Lo
   if (installed) {
     logger.info(`[im-qqbot:${ns}] settings 命名空间已注册 (${ns})`);
   }
+
+  // 出站模式切换 writer(2026-09-07): 命令/工具调 switchOutboundMode → 这里执行
+  // ①live.outboundMode 原地改(与 bootstrap/router 同引用, 立即热生效);
+  // ②尽力经 settings 服务 update 持久化 —— dock/设置面板与 live 同一数据源, 三方一致(重启不丢)。
+  setOutboundModeWriter(async (mode) => {
+    live.outboundMode = mode;
+    const svc = getSettingsService();
+    if (svc && typeof (svc as { update?: unknown }).update === 'function') {
+      try {
+        await (svc as { update: (ns: string, patch: unknown, rev?: unknown) => Promise<unknown> }).update(ns, { outboundMode: mode });
+      } catch (err) {
+        logger.warn?.(`im-qqbot: 出站模式已热更新(live), 但 settings 持久化失败: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    return { ok: true, msg: '已切换: ' + mode, mode };
+  });
 }
+
+/** settings 服务引用(registerSettingsSection 注入时保存; 无 settings 服务时为 undefined) */
+let _settingsSvc: unknown;
+function captureSettingsService(svc: unknown): void { _settingsSvc = svc; }
+export function getSettingsService(): unknown { return _settingsSvc; }
 
 /**
  * 版本自适应注册。两条路径语义等价：
@@ -177,6 +199,7 @@ async function registerSettingsSection(
         try {
           const svc = (settingsCtx as { settings?: { installSection?: (...args: unknown[]) => unknown } }).settings;
           if (svc && typeof svc.installSection === 'function') {
+            captureSettingsService(svc);
             svc.installSection(ctx, ns, schema, entry, hooks);
             logger.info(`[im-qqbot:${ns}] settings 命名空间已注册 (${ns})`);
             return;

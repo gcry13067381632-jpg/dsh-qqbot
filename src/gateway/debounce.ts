@@ -265,6 +265,11 @@ export function debounceLayer(
   }
 
   return async (ctx: MiddlewareContext, next: () => Promise<void>): Promise<void> => {
+    // 完全不思考(nothink, 2026-09-07): QQ 入站不唤醒 LLM —— 消息已由链上 mediaHistoryBuffer
+    // 记录, 这里直接吞掉不派发(不攒窗口不触发 agent); 仅设置页可配, 唤醒走 /outmode 斜杠。
+    const outMode = (config as { outboundMode?: string }).outboundMode || 'adaptive';
+    if (outMode === 'nothink') return; // 吞掉本消息(不调 next, 不进下方任何派发链路)
+
     const c = cfg();
     if (!c.enabled) return next();
 

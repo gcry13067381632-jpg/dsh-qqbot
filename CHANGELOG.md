@@ -4,6 +4,14 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [0.9.4] - 2026-09-07
+
+### 变更
+- 出站模式扩为四档: adaptive 适配主动(默认) / passive 被动 / silent 完全不出站(照常思考但不发) / nothink 完全不思考(QQ入站不唤醒LLM, 消息仅记录, web对话仍可见群聊上下文)。
+- 安全边界: nothink 仅设置页可配(AI 工具禁止自切防锁死); 新增 /outmode 斜杠命令(SDK直通不经LLM)可随时切换/唤醒。
+- 新增 AI 工具 outbound_mode: 鲸鱼娘自己可切 adaptive/passive/silent, 热更新并同步 dock/设置面板(settings 持久化)。
+- 修复: dock ⚙️出站页保存 revision 冲突(保存前重读最新版本+冲突自动重试); 设置页 load/patch/回填支持 silent/nothink 不丢字段。
+
 ## [0.9.3] - 2026-09-07
 
 ### 变更

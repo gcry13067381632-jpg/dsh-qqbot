@@ -11,6 +11,7 @@ import { modelCommand, modelAliasCommand } from './model.js';
 import { statusCommand } from './status.js';
 import { helpCommand } from './help.js';
 import { pingCommand, versionCommand, stopCommand, toolsReloadCommand } from './misc.js';
+import { outModeCommand } from './outmode.js';
 
 /**
  * 构建标准命令列表
@@ -25,6 +26,8 @@ export function buildCommandList(deps: CommandDeps): SlashCommand[] {
     modelAliasCommand(deps), // /model 简写
     // 状态
     statusCommand(deps),
+    // 出站模式(逃生通道: SDK 直通不经 LLM, nothink 也能唤醒)
+    outModeCommand(deps),
     // 杂项
     pingCommand(),
     versionCommand(deps),
