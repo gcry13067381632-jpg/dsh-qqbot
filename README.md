@@ -239,12 +239,45 @@ npx @deepseek-ai/dsh web --patch /path/to/dsh-qqbot/cordis.dev.yml
 
 ## 内置命令
 
+在 QQ 群里直接发（无需 @ 机器人；走 SDK 直通，不占用 AI 回合）：
+
 | 命令 | 说明 |
 |------|------|
+| `/outmode` | 查看当前出站模式与四档说明 |
+| `/outmode adaptive` | 切到 **适配主动**(默认): 收到真人消息前5条带引用回你, 之后自动转独立消息, 连发不被吞 |
+| `/outmode passive` | 切到 **被动**: 始终回复你那条(连发约4~5条后被QQ吞) |
+| `/outmode silent` | 切到 **完全不出站**: 她照常思考但不向QQ发任何回复(web可对话) |
+| `/outmode nothink` | 切到 **完全不思考**: QQ入站不唤醒AI, 消息只记录(逃生通道, 可随时切回) |
 | `/bot-reset` | 重置当前会话（清除上下文） |
-| `/bot-model` | 查看或切换模型 |
+| `/bot-new` | 开启新会话（保留旧会话历史） |
+| `/bot-model` / `/model` | 查看或切换模型（如 `/bot-model deepseek-official/deepseek-v4-flash`） |
 | `/bot-status` | 查看当前会话状态 |
+| `/bot-ping` | 连通性测试 |
+| `/bot-version` | 查看版本与当前模型 |
+| `/bot-stop` | 中止当前正在生成的内容 |
 | `/bot-help` | 查看所有指令 |
+| `/tools-reload` | 热刷新 QQ 通道工具(开发用, 新工具无需重启即可用) |
+
+> 💡 `/outmode` 是她的"逃生开关"：即使处于 nothink(完全不思考)状态，SDK 直通命令也能把她唤醒——在 QQ 里发 `/outmode adaptive` 即可。
+
+## 富媒体指令（AI 回复里写标记，自动变成真消息）
+
+让 AI（或你替她）在回复正文里写以下标记，插件会自动拆出来发成真实的 QQ 消息，**标记本身不会显示**：
+
+| 标记 | 效果 | 示例 |
+|------|------|------|
+| `[MEDIA:image\|来源]` | 发图片（本地路径或 http(s) 链接） | `[MEDIA:image\|D:\pics\kiss.jpg]` / `[MEDIA:image\|https://…/a.png]` |
+| `[MEDIA:voice\|来源]` | 发语音（仅支持本地路径或 QQ 可拉取的链接） | `[MEDIA:voice\|D:\audio\hi.silk]` |
+| `[MEDIA:video\|来源]` | 发视频 | `[MEDIA:video\|D:\videos\clip.mp4]` |
+| `[MEDIA:file\|来源]` | 发文件 | `[MEDIA:file\|D:\docs\计划.pdf]` |
+| `[RECALL]` | 撤回自己刚发的那条消息 | 单独一行写 `[RECALL]` |
+| `[RECALL:N]` | 撤回自己发的倒数第 N 条 | 如 `[RECALL:2]` 撤倒数第二条 |
+
+要点：
+- 图片/文件可用**本机绝对路径**或**网络 URL**；语音本地路径若为 QQ SILK 格式也能转码发送。
+- ≥5MB 的本地大文件（视频/压缩包…）自动转后台分片上传，不阻塞对话。
+- 一次回复可混用多条 `[MEDIA:]`，配合长文本拆条连发使用。
+- 这些是"AI 会自己写"的暗号——正常聊天时她收到"发个开心点的图"这类指令，会自己调工具完成，不需要你手动写标记。
 
 ## 核心模块
 
