@@ -57,6 +57,9 @@ interface DebounceWindow {
   timer: NodeJS.Timeout | null;
   /** 回合忙聚合起始时间(ms): 忙超过 MAX_BUSY_MS 强制派发, 防 turn/end 丢失导致消息永远攒着 */
   busySince?: number;
+  /** 是否因「LLM 回合中」defer 过(主人定 2026-09-07): 只有这类聚合才带系统时间提示;
+   *  原版 debounce 的"等用户连发完综合回"是正常对话, 不加提示。 */
+  turnDeferred?: boolean;
 }
 
 /** 回合忙聚合超时(ms): 超过则不再等回合结束, 强制批量派发(宁丢聚合也不丢消息) */
@@ -139,6 +142,7 @@ export function debounceLayer(
         if (busyRec?.turnActive) {
           const nowMs = Date.now();
           if (w.busySince === undefined) w.busySince = nowMs;
+          w.turnDeferred = true; // 本次窗口因回合忙被 defer → 派发时带系统时间提示
           // 忙超过阈值 → 强制派发(防 turn/end 丢失卡死窗口)
           if (nowMs - w.busySince > MAX_BUSY_MS) {
             w.busySince = undefined;
@@ -262,7 +266,8 @@ export function debounceLayer(
           senderName: cur.senderName,
           timestamp: new Date(cur.ts).toISOString(),
         };
-        const state: Record<string, unknown> = { history: hist, aggregated: true };
+        // 系统时间提示只在「LLM 回合中 defer 攒批」时带; 普通连发聚合(等用户停口)不带
+        const state: Record<string, unknown> = { history: hist, aggregated: w.turnDeferred === true };
         if (cur.wasMentioned) {
           // current 本身就是 @ 消息 → 走正常 mention, AI 见 (@you)
           state.mention = { wasMentioned: true };
@@ -292,7 +297,7 @@ export function debounceLayer(
           attachments: allAtts.length > 0 ? allAtts : undefined,
         };
         logger.info(`[debounce] flush(c2c ${String(base.senderId ?? '')}) ${entries.length}条 → handleInbound`);
-        await handleInbound(merged, manager, config, logger, { aggregated: true });
+        await handleInbound(merged, manager, config, logger, { aggregated: w.turnDeferred === true });
       }
     } catch (err) {
       logger.error(`[debounce] flush 失败: ${err instanceof Error ? err.message : String(err)}`);

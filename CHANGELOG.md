@@ -4,6 +4,11 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [0.9.6] - 2026-09-07
+
+### 修复
+- 系统时间提示只加在「LLM 回合中 defer 攒批」的聚合: debounce 窗口记 turnDeferred, 仅因回合忙(turnActive)被 defer 过的窗口派发时才带 aggregated 提示; 原版等用户连发完综合回的普通聚合不再误加提示。
+
 ## [0.9.5] - 2026-09-07
 
 ### 变更
