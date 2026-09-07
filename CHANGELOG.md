@@ -4,6 +4,11 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [0.8.7] - 2026-09-07
+
+### 修复
+- 斜杠命令层前移到群冷却之前: 冷却窗口内的命令不再被吞(延迟聚合对 / 命令本就直放行); bot-stop 放行后直达 concurrencyGuard 打断链路。
+
 ## [0.8.6] - 2026-09-07
 
 ### 修复

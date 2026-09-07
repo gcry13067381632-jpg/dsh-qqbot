@@ -130,37 +130,6 @@ export function setupMiddlewares(
   //     ⚠️ 本地手改功能, 同步纪律同下方群冷却中间件。
   bot.use(debounceLayer(config, manager, logger, lastDispatchAt));
 
-  // 7. 回复冷却调度(配置化, 替代写死 REPLY_COOLDOWN_MS=60000)：照常接收并记录所有群消息
-  //    (mediaHistoryBuffer 已在上方记录), 但每群按 config.behavior 间隔才真正派发一次给 AI。
-  //    注: debounce 开启时群消息被其拦截, 此中间件仅兜底 debounce 直放行的消息(命令/@秒回/功能关闭)。
-  //    ⚠️ 本地手改功能（曾被重编译冲掉），改完务必保持 src 与部署 dist 同步。
-  //    ⚠️ 每次调用现读 config.behavior(勿外层解构)——支持 Web settings live 热更新。
-  bot.use(async (ctx: MiddlewareContext, next: () => Promise<void>) => {
-    // 私聊/无群号：不纳入调度，直接放行
-    if (ctx.message.kind !== 'group' || !ctx.message.groupOpenid) {
-      return next();
-    }
-    const { freeIntervalSec, mentionIntervalSec } = config.behavior;
-    const gid = ctx.message.groupOpenid;
-    const wasMentioned = ctx.state.mention?.wasMentioned === true;
-    const intervalSec = wasMentioned ? mentionIntervalSec : freeIntervalSec;
-    // 适用间隔=0：不冷却直接放行(@立即回；无@放行后是否到 AI 由 requireMention 门控决定)
-    if (intervalSec <= 0) {
-      return next();
-    }
-    const now = Date.now();
-    const last = lastDispatchAt.get(gid) ?? 0;
-    if (now - last < intervalSec * 1000) {
-      // 冷却期内：消息已被 mediaHistoryBuffer 记进群历史，本次不派发 → 不调 next()
-      return;
-    }
-    // 冷却结束：派发当前消息。用独立的 batchDispatch 标记，让下游把累积的群历史一起打包
-    //（不伪装成 @you，避免出现假 (@you) 标签误导 AI）
-    lastDispatchAt.set(gid, now);
-    ctx.state.batchDispatch = true;
-    return next();
-  });
-
   // 8. 斜杠命令（在 concurrencyGuard 之前，命令匹配后不排队直接响应）
   const cmdList = buildCommandList({ manager, config });
   // 群聊放开"必须 @bot"限制(SDK 硬性要求 @ 才触发, 导致直发 /cmd 变文本):
@@ -208,7 +177,38 @@ export function setupMiddlewares(
     autoHelp: true,
     commands: cmdList,
   });
-  bot.use(slash.middleware);
+  bot.use(slash.middleware);  // 7. 回复冷却调度(配置化, 替代写死 REPLY_COOLDOWN_MS=60000)：照常接收并记录所有群消息
+  //    (mediaHistoryBuffer 已在上方记录), 但每群按 config.behavior 间隔才真正派发一次给 AI。
+  //    注: debounce 开启时群消息被其拦截, 此中间件仅兜底 debounce 直放行的消息(命令/@秒回/功能关闭)。
+  //    ⚠️ 本地手改功能（曾被重编译冲掉），改完务必保持 src 与部署 dist 同步。
+  //    ⚠️ 每次调用现读 config.behavior(勿外层解构)——支持 Web settings live 热更新。
+  bot.use(async (ctx: MiddlewareContext, next: () => Promise<void>) => {
+    // 私聊/无群号：不纳入调度，直接放行
+    if (ctx.message.kind !== 'group' || !ctx.message.groupOpenid) {
+      return next();
+    }
+    const { freeIntervalSec, mentionIntervalSec } = config.behavior;
+    const gid = ctx.message.groupOpenid;
+    const wasMentioned = ctx.state.mention?.wasMentioned === true;
+    const intervalSec = wasMentioned ? mentionIntervalSec : freeIntervalSec;
+    // 适用间隔=0：不冷却直接放行(@立即回；无@放行后是否到 AI 由 requireMention 门控决定)
+    if (intervalSec <= 0) {
+      return next();
+    }
+    const now = Date.now();
+    const last = lastDispatchAt.get(gid) ?? 0;
+    if (now - last < intervalSec * 1000) {
+      // 冷却期内：消息已被 mediaHistoryBuffer 记进群历史，本次不派发 → 不调 next()
+      return;
+    }
+    // 冷却结束：派发当前消息。用独立的 batchDispatch 标记，让下游把累积的群历史一起打包
+    //（不伪装成 @you，避免出现假 (@you) 标签误导 AI）
+    lastDispatchAt.set(gid, now);
+    ctx.state.batchDispatch = true;
+    return next();
+  });
+
+
 
   // 9. 并发串行 + 消息合并（同 peer 排队，避免 session 冲突）
   bot.use(concurrencyGuard({
