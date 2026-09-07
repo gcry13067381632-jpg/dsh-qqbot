@@ -123,6 +123,7 @@ async function installLiveSettings(ctx: Context, live: ImQQBotConfig, logger: Lo
     enableApprovals: live.enableApprovals,
     approvalTimeoutMs: live.approvalTimeoutMs,
     outboundMode: live.outboundMode,
+    botplayEvents: Array.isArray(live.botplayEvents) ? live.botplayEvents : [],
   };
   let source: () => EditableConfig = () => entry;
   const sync = (): void => {
@@ -140,7 +141,8 @@ async function installLiveSettings(ctx: Context, live: ImQQBotConfig, logger: Lo
       // 出站模式: adaptive=适配主动(默认; active 旧值归一 adaptive); passive=全被动; silent=不出站; nothink=不思考(仅设置页)
       if (next.outboundMode === 'adaptive' || next.outboundMode === 'passive' || next.outboundMode === 'silent' || next.outboundMode === 'nothink') live.outboundMode = next.outboundMode;
       else if (next.outboundMode === 'active') live.outboundMode = 'adaptive';
-      logger.info('[im-qqbot] 设置已同步(live): behavior/sticker/injectRules/groupPrompt/schedule/groupAdmin/approvals');
+      if (Array.isArray(next.botplayEvents)) live.botplayEvents = next.botplayEvents;
+      logger.info('[im-qqbot] 设置已同步(live): behavior/sticker/injectRules/groupPrompt/schedule/groupAdmin/approvals/botplayEvents');
     } catch (err) {
       logger.warn?.(`im-qqbot: 设置同步失败: ${err instanceof Error ? err.message : String(err)}`);
     }

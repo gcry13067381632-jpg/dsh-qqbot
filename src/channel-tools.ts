@@ -726,12 +726,29 @@ export function apply(ctx: Context): void {
         { type: 'text' as const, text: v.ok ? `(出站模式 → ${v.mode})` : `切换失败: ${v.msg}` },
       ],
     },
-    async execute(args) {
+    async execute(args, exec) {
       if (args.mode !== 'adaptive' && args.mode !== 'passive' && args.mode !== 'silent') {
         return { ok: false, msg: '只允许 adaptive/passive/silent(nothink 需主人在设置页配置)', mode: String(args.mode ?? '') };
       }
       const r = await switchOutboundMode(args.mode);
-      return { ok: r.ok, msg: r.msg, mode: r.mode };
+      if (!r.ok) return { ok: false, msg: r.msg, mode: r.mode };
+      // 切换成功后用 bot 直发确认消息(绕过出站路由): 即使切到 silent(不出站)/被动,
+      // 主人也一定能收到"模式已切换"的通知(与 send_media 同款工具直发通道, 不受 outboundMode 拦截)。
+      const MODE_LABEL: Record<string, string> = {
+        adaptive: '适配主动(推荐默认): 真人消息前5条带引用回你, 连发自动转独立消息',
+        passive: '被动: 始终回复你那条(连发约4~5条后被QQ吞)',
+        silent: '完全不出站: 照常思考但这条回复不发出(潜水观察用; web上仍可对话)',
+      };
+      try {
+        const _sess = findSessionRec(channelOf(exec as never), exec as never);
+        if (_sess) {
+          const confirm = `⇄ 出站模式已切换: **${r.mode}**\n${MODE_LABEL[r.mode] ?? ''}\n(由 outbound_mode 工具切换, bot 直发确认)`;
+          await _sess.ch.sender.sendMarkdown(_sess.rec.replyTarget, confirm);
+        }
+      } catch (err) {
+        diag(`outbound_mode 确认消息直发失败: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      return { ok: true, msg: r.msg, mode: r.mode };
     },
   });
 

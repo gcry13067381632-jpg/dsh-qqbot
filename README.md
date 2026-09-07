@@ -255,6 +255,8 @@ npx @deepseek-ai/dsh web --patch /path/to/dsh-qqbot/cordis.dev.yml
 | `/bot-ping` | 连通性测试 |
 | `/bot-version` | 查看版本与当前模型 |
 | `/bot-stop` | 中止当前正在生成的内容 |
+| `/bot-restart` | 自重启 dsh 宿主(约4秒, 期间短暂离线, 自动拉起) |
+| `/botplay` | 互动事件: 列出所有已装配事件; `/botplay 事件名` 触发发卡(如 `/botplay 签到`) |
 | `/bot-help` | 查看所有指令 |
 | `/tools-reload` | 热刷新 QQ 通道工具(开发用, 新工具无需重启即可用) |
 

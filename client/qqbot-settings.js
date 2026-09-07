@@ -1888,7 +1888,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
       setInterval(refreshBadge, 20000)
 
       // ── 面板状态(每个实例独立保存, 切回不丢) ──
-      var state = { ns: '', accts: [], gid: '', groups: [], tab: 'chat', sendScope: 'group', sendTo: '', sendName: '', sendText: '', insertCtx: true, targetQ: '', c2cs: [], joins: null, mutes: null, members: null, muteSecs: '60', bindGid: '', bindName: '', msg: '', busy: '', wantPeer: null, lookedUp: false, detected: null, detectedHit: null, chatItems: [], chatMore: false, chatBusy: '', chatErr: '', chatOldest: 0, chatText: '', chatIns: true, outMode: '', outRev: undefined }
+      var state = { ns: '', accts: [], gid: '', groups: [], tab: 'chat', sendScope: 'group', sendTo: '', sendName: '', sendText: '', insertCtx: true, targetQ: '', c2cs: [], joins: null, mutes: null, members: null, muteSecs: '60', bindGid: '', bindName: '', msg: '', busy: '', wantPeer: null, lookedUp: false, detected: null, detectedHit: null, chatItems: [], chatMore: false, chatBusy: '', chatErr: '', chatOldest: 0, chatText: '', chatIns: true, outMode: '', outRev: undefined, bpEvents: [], bpSel: null, bpDraft: null }
       var chatFlash = '' // 发送结果/错误提示(短时展示, 不被列表计数覆盖)
       // @ mention(输入框敲 @ 弹成员候选): 群聊目标才启用
       var atM = { members: [], open: false, kw: '', idx: 0, range: null, key: '' }
@@ -2174,6 +2174,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           + '<button data-t="join" class="' + (state.tab === 'join' ? 'on' : '') + '">📥 入群审批<span class="dk-join-badge" style="display:none;background:#ff4d4f;color:#fff;border-radius:8px;font-size:11px;padding:0 5px;margin-left:4px">0</span></button>'
           + '<button data-t="mute" class="' + (state.tab === 'mute' ? 'on' : '') + '">🔇 禁言</button>'
           + '<button data-t="out" class="' + (state.tab === 'out' ? 'on' : '') + '">⚙️ 出站</button>'
+          + '<button data-t="bp" class="' + (state.tab === 'bp' ? 'on' : '') + '">🎮 互动事件</button>'
           + '</div>'
         var body = tabs
         var status = state.msg ? '<div class="dk-msg" style="color:#2f9e44;margin:4px 0">' + esc(state.msg) + '</div>' : ''
@@ -2252,6 +2253,48 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           body += '<div class="dk-msg" style="line-height:1.6">适配主动=和QQ有关的会话回复都发到QQ: 刚收到真人消息时前5条带引用回你(能看到回的是哪句), 第6条起自动转独立新消息, 连发不被QQ吞; 定时/后台等没有新真人消息的主动推送也走独立消息。'
           body += '被动=始终以「回复你那条」发出, 连发约4~5条后会被QQ吞掉。完全不出站=本机静默, 不向QQ发任何回复(鲸鱼娘可用工具随时切回)。本开关对纯web(没绑QQ)的会话不生效。</div>'
           body += '<span class="dk-msg" id="dk-out-hint" style="color:#2f9e44;margin:4px 0"></span>'
+        } else if (state.tab === 'bp') {
+          body += '<div class="dk-row" style="font-weight:700;font-size:13px;margin:4px 0 2px">🎮 互动事件装配器(/botplay 触发)</div>'
+          body += '<div class="dk-row"><span class="dk-msg" style="flex:1">定义事件与按钮 → 保存即热更 → QQ 里发 <b>/botplay 事件名</b> 发卡。点击按钮走 bot 行为(回文本等)并可选影响 AI。</span></div>'
+          // 事件列表
+          body += '<div class="dk-list" id="dk-bp-list" style="max-height:16vh">'
+          if (!state.bpEvents.length) body += '<div class="dk-empty">还没有事件。点「➕ 新建事件」开始装配。</div>'
+          state.bpEvents.forEach(function (ev, i) {
+            var sel = state.bpSel === i
+            var btnN = (ev.buttons || []).length
+            body += '<div class="dk-item" style="cursor:pointer;background:' + (sel ? '#f1ecff' : 'transparent') + '" data-bpidx="' + i + '">'
+              + '<span style="flex:1"><b>' + esc(ev.name || '(未命名)') + '</b> <span style="color:#888;font-size:11px">/ ' + esc(ev.id || '?') + ' · ' + btnN + ' 按钮 · ' + (ev.perm && ev.perm.type ? esc(ev.perm.type) : 'all') + ' · ' + (ev.expireSec || 600) + 's</span></span>'
+              + '<button class="dk-btn no" data-bpdel="' + i + '">🗑</button></div>'
+          })
+          body += '</div>'
+          body += '<div class="dk-row"><button class="dk-btn ok" id="dk-bp-new">➕ 新建事件</button>'
+          body += '<button class="dk-btn ok" id="dk-bp-save">💾 保存全部(live 热更)</button>'
+          body += '<span class="dk-msg" id="dk-bp-hint" style="color:#2f9e44"></span></div>'
+          // 编辑器
+          if (state.bpDraft) {
+            var D = state.bpDraft
+            body += '<div style="border-top:1px dashed #e2d9ff;margin-top:8px;padding-top:8px">'
+            body += '<div class="dk-row"><label style="font-size:12px;color:#555;width:56px">事件名</label><input class="qqs-txt" id="dk-bp-name" value="' + esc(D.name) + '" style="flex:1" placeholder="如: 签到"></div>'
+            body += '<div class="dk-row"><label style="font-size:12px;color:#555;width:56px">id</label><input class="qqs-txt" id="dk-bp-id" value="' + esc(D.id) + '" style="flex:1" placeholder="英文/数字/_- (触发用)"></div>'
+            body += '<div class="dk-row"><label style="font-size:12px;color:#555;width:56px">权限</label>'
+              + '<select class="qqs-sel" id="dk-bp-perm">' + ['all','triggerer','owner','users'].map(function (p) { return '<option value="' + p + '"' + (D.perm && D.perm.type === p ? ' selected' : '') + '>' + ({ all: '所有人', triggerer: '仅触发者本人(推荐)', owner: '主人白名单', users: '指定openid' }[p]) + '</option>' }).join('') + '</select>'
+              + '<label style="font-size:12px;color:#555">有效期(s)</label><input class="qqs-txt" id="dk-bp-expire" type="number" min="30" value="' + (D.expireSec || 600) + '" style="width:70px">'
+              + '<label style="font-size:12px;color:#555">总次数(0不限)</label><input class="qqs-txt" id="dk-bp-max" type="number" min="0" value="' + (D.maxClicks || 0) + '" style="width:60px"></div>'
+            body += '<div style="font-weight:700;font-size:12px;margin:6px 0 2px;color:#4a3a9f">按钮(最多 5 个)</div>'
+            ;(D.buttons || []).forEach(function (b, bi) {
+              var bt = (b.botAction && b.botAction.type) || 'reply_text'
+              var md = (b.llmEffect && b.llmEffect.mode) || 'no_append'
+              body += '<div class="dk-item" style="border:1px solid #f0ecff;border-radius:8px;margin:3px 0;padding:4px 6px">'
+                + '<input class="qqs-txt" data-bplabel="' + bi + '" value="' + esc(b.label) + '" placeholder="按钮文字" style="flex:1;min-width:90px">'
+                + '<select class="qqs-sel" data-bpact="' + bi + '">' + ['reply_text','jump_url','callback'].map(function (t) { return '<option value="' + t + '"' + (bt === t ? ' selected' : '') + '>' + ({ reply_text: '回文本', jump_url: '跳链接', callback: '仅结算' }[t]) + '</option>' }).join('') + '</select>'
+                + '<select class="qqs-sel" data-bpmode="' + bi + '">' + ['no_append','append_silent','append_wake'].map(function (m) { return '<option value="' + m + '"' + (md === m ? ' selected' : '') + '>' + ({ no_append: '不影响AI', append_silent: '记录不唤醒', append_wake: '记录并唤醒AI' }[m]) + '</option>' }).join('') + '</select>'
+                + '<button class="dk-btn no" data-bpdelbtn="' + bi + '">✕</button></div>'
+                + '<input class="qqs-txt" data-bptext="' + bi + '" value="' + esc((b.botAction && b.botAction.text) || '') + '" placeholder="点击后 bot 回复的文本(回文本时用)" style="width:calc(100% - 8px);box-sizing:border-box;margin:0 0 4px 4px">'
+            })
+            body += '<div class="dk-row"><button class="dk-btn" id="dk-bp-addbtn">➕ 加按钮</button>'
+              + '<span class="dk-msg">按钮上限 5 个(QQ 键盘限制)</span></div>'
+            body += '</div>'
+          }
         }
         body += status
         body += '<div class="dk-row" style="border-top:1px solid #f0ecff;padding-top:8px;margin-top:8px"><span class="dk-msg">登记群(官方无群列表,手动粘贴):</span>'
@@ -2276,6 +2319,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             state.tab = btn.getAttribute('data-t'); state.msg = ''
             if (state.tab === 'join') loadJoins(); else if (state.tab === 'mute') loadMutes()
             else if (state.tab === 'out') loadOutMode()
+            else if (state.tab === 'bp') loadBotplay()
             else if (state.tab === 'chat') { state.chatItems = []; state.chatErr = ''; }
             paintBody()
           }
@@ -2393,6 +2437,140 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         }
         var bd = panel.querySelector('#dk-bind')
         if (bd) bd.onclick = function () { state.bindGid = (panel.querySelector('#dk-bindgid') || {}).value || ''; state.bindName = (panel.querySelector('#dk-bindname') || {}).value || ''; doBind() }
+        // ── 🎮 互动事件装配器: 列表选择/删除/新建/保存/编辑器字段 ──
+        var bpList = panel.querySelector('#dk-bp-list')
+        if (bpList) bpList.querySelectorAll('[data-bpidx]').forEach(function (it) {
+          it.onclick = function () {
+            var idx = Number(it.getAttribute('data-bpidx'))
+            state.bpSel = idx
+            state.bpDraft = JSON.parse(JSON.stringify(state.bpEvents[idx] || {}))
+            paintBody()
+          }
+        })
+        bpList && bpList.querySelectorAll('[data-bpdel]').forEach(function (b) {
+          b.onclick = function (e) {
+            e.stopPropagation()
+            var idx = Number(b.getAttribute('data-bpdel'))
+            state.bpEvents.splice(idx, 1)
+            if (state.bpSel === idx) { state.bpSel = null; state.bpDraft = null }
+            else if (state.bpSel !== null && state.bpSel > idx) state.bpSel -= 1
+            paintBody()
+          }
+        })
+        var bpNew = panel.querySelector('#dk-bp-new')
+        if (bpNew) bpNew.onclick = function () {
+          state.bpSel = null
+          state.bpDraft = { id: '', name: '', maxClicks: 0, expireSec: 600, perm: { type: 'all', userIds: [] }, buttons: [{ id: 'b1', label: '按钮', botAction: { type: 'reply_text', text: '' }, llmEffect: { mode: 'no_append', contextText: '' } }] }
+          paintBody()
+        }
+        // 编辑器字段(名称/id/有效期/总次数/权限)
+        var bpName = panel.querySelector('#dk-bp-name')
+        if (bpName) bpName.oninput = function (e) { state.bpDraft.name = e.target.value }
+        var bpId = panel.querySelector('#dk-bp-id')
+        if (bpId) bpId.oninput = function (e) { state.bpDraft.id = e.target.value.trim() }
+        var bpPerm = panel.querySelector('#dk-bp-perm')
+        if (bpPerm) bpPerm.onchange = function (e) { state.bpDraft.perm = state.bpDraft.perm || {}; state.bpDraft.perm.type = e.target.value }
+        var bpExpire = panel.querySelector('#dk-bp-expire')
+        if (bpExpire) bpExpire.oninput = function (e) { state.bpDraft.expireSec = Math.max(30, Number(e.target.value) || 600) }
+        var bpMax = panel.querySelector('#dk-bp-max')
+        if (bpMax) bpMax.oninput = function (e) { state.bpDraft.maxClicks = Math.max(0, Number(e.target.value) || 0) }
+        // 按钮行编辑(label/botAction.type/llmEffect.mode/删除/回复文本)
+        var bpBtns = panel.querySelectorAll('[data-bplabel]')
+        bpBtns.forEach(function (inp) {
+          var bi = Number(inp.getAttribute('data-bplabel'))
+          inp.oninput = function (e) {
+            state.bpDraft.buttons[bi].label = e.target.value
+            if (!state.bpDraft.buttons[bi].id) state.bpDraft.buttons[bi].id = 'b' + (bi + 1)
+          }
+        })
+        var bpActs = panel.querySelectorAll('[data-bpact]')
+        bpActs.forEach(function (sel) {
+          var bi = Number(sel.getAttribute('data-bpact'))
+          sel.onchange = function (e) {
+            state.bpDraft.buttons[bi].botAction = state.bpDraft.buttons[bi].botAction || {}
+            state.bpDraft.buttons[bi].botAction.type = e.target.value
+          }
+        })
+        var bpModes = panel.querySelectorAll('[data-bpmode]')
+        bpModes.forEach(function (sel) {
+          var bi = Number(sel.getAttribute('data-bpmode'))
+          sel.onchange = function (e) {
+            state.bpDraft.buttons[bi].llmEffect = state.bpDraft.buttons[bi].llmEffect || {}
+            state.bpDraft.buttons[bi].llmEffect.mode = e.target.value
+          }
+        })
+        var bpTexts = panel.querySelectorAll('[data-bptext]')
+        bpTexts.forEach(function (inp) {
+          var bi = Number(inp.getAttribute('data-bptext'))
+          inp.oninput = function (e) {
+            state.bpDraft.buttons[bi].botAction = state.bpDraft.buttons[bi].botAction || {}
+            state.bpDraft.buttons[bi].botAction.text = e.target.value
+          }
+        })
+        var bpDelBtn = panel.querySelectorAll('[data-bpdelbtn]')
+        bpDelBtn.forEach(function (b) {
+          b.onclick = function () {
+            state.bpDraft.buttons.splice(Number(b.getAttribute('data-bpdelbtn')), 1)
+            paintBody()
+          }
+        })
+        var bpAddBtn = panel.querySelector('#dk-bp-addbtn')
+        if (bpAddBtn) bpAddBtn.onclick = function () {
+          if (state.bpDraft.buttons.length >= 5) return
+          state.bpDraft.buttons.push({ id: 'b' + (state.bpDraft.buttons.length + 1), label: '按钮', botAction: { type: 'reply_text', text: '' }, llmEffect: { mode: 'no_append', contextText: '' } })
+          paintBody()
+        }
+        var bpSave = panel.querySelector('#dk-bp-save')
+        if (bpSave) bpSave.onclick = saveBotplay
+      }
+      // 🎮 互动事件装配器: 读/存(全量 patch 只带 botplayEvents; settings.update 部分合并 + revision 乐观锁)
+      function loadBotplay() {
+        if (state.tab !== 'bp') return
+        fetch(READ + (state.ns ? '?' + outNsQ() : '')).then(function (r) { return r.json() }).then(function (d) {
+          if (d && d.value) {
+            state.bpEvents = Array.isArray(d.value.botplayEvents) ? JSON.parse(JSON.stringify(d.value.botplayEvents)) : []
+            if (!state.bpDraft && state.bpEvents.length) { state.bpSel = 0; state.bpDraft = JSON.parse(JSON.stringify(state.bpEvents[0])) }
+            else if (!state.bpEvents.length) { state.bpSel = null; state.bpDraft = null }
+            paintBody()
+          }
+        }).catch(function () {})
+      }
+      function saveBotplay() {
+        var hint = panel.querySelector('#dk-bp-hint')
+        var ok = function (v) { if (hint) hint.textContent = v }
+        // 草稿回写进列表(存在编辑中草稿时)
+        if (state.bpDraft) {
+          var draft = state.bpDraft
+          if (!draft.id || !/^[A-Za-z0-9_-]+$/.test(draft.id)) { ok('⚠️ id 必填且只能 字母/数字/_/-'); return }
+          if (!draft.name || !draft.name.trim()) { ok('⚠️ 事件名必填'); return }
+          if (!Array.isArray(draft.buttons) || !draft.buttons.length) { ok('⚠️ 至少 1 个按钮'); return }
+          var dupId = false
+          state.bpEvents.forEach(function (ev, i) { if (ev.id === draft.id && i !== state.bpSel) dupId = true })
+          if (dupId) { ok('⚠️ 事件 id 重复: ' + draft.id); return }
+          if (state.bpSel !== null && state.bpEvents[state.bpSel]) state.bpEvents[state.bpSel] = JSON.parse(JSON.stringify(draft))
+          else { state.bpEvents.push(JSON.parse(JSON.stringify(draft))); state.bpSel = state.bpEvents.length - 1 }
+        }
+        if (hint) hint.textContent = '保存中…'
+        var trySave = function (curVal, curRev) {
+          var patch = Object.assign({}, curVal || {}, { botplayEvents: state.bpEvents })
+          return fetch(UPDATE, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ ns: state.ns || undefined, patch: patch, expectedRevision: curRev }),
+          }).then(function (r) { return r.json().catch(function () { return null }) }).then(function (d) {
+            if (d && d.value) {
+              state.bpEvents = Array.isArray(d.value.botplayEvents) ? d.value.botplayEvents : []
+              var h2 = panel.querySelector('#dk-bp-hint'); if (h2) h2.textContent = '✅ 已保存(共 ' + state.bpEvents.length + ' 个事件, live 热更已生效)' 
+            } else {
+              var conflicted = !!(d && d.error && String(d.error).indexOf('changed since it was read') >= 0)
+              if (conflicted) { fetch(READ + (state.ns ? '?' + outNsQ() : '')).then(function (r) { return r.json() }).then(function (dd) { if (dd && dd.value) trySave(dd.value, dd.revision) }).catch(function () {}) }
+              else { var h3 = panel.querySelector('#dk-bp-hint'); if (h3) h3.textContent = '保存失败: ' + ((d && d.error) || '未知错误') }
+            }
+          }).catch(function () { var h4 = panel.querySelector('#dk-bp-hint'); if (h4) h4.textContent = '保存异常' })
+        }
+        fetch(READ + (state.ns ? '?' + outNsQ() : '')).then(function (r) { return r.json() }).then(function (d0) {
+          if (d0 && d0.value) trySave(d0.value, d0.revision)
+          else { var h5 = panel.querySelector('#dk-bp-hint'); if (h5) h5.textContent = '保存失败: 无法读取当前设置' }
+        }).catch(function () { var h6 = panel.querySelector('#dk-bp-hint'); if (h6) h6.textContent = '保存失败: 读取异常' })
       }
       // ── 💬 聊天视图: 数据拉取 / QQ 风格气泡渲染 / 顶部滚动分页 ──
       function chatPeerReady() {

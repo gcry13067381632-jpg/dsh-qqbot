@@ -26,6 +26,7 @@ import { QqApprovalController, setApprovalDispatch, makeApprovalListener, regist
 import { QqUserQuestionsController, registerQuestionController } from '../features/qq-user-questions.js';
 import { handleGroupJoinRequestEvent } from '../features/group-join-request.js';
 import { registerSessionManager, setBotOnline } from '../features/session-registry.js';
+import { BotplayController, registerBotplayController, setBotplayTriggerImpl } from '../features/botplay.js';
 
 /** 从 interaction 事件推出"回复目标"(回执发到按钮所在群/私聊)。scope 由事件 chat_type/scene 推断 */
 function replyTargetOfInteraction(
@@ -52,6 +53,8 @@ export async function bootstrapGateway(
   // QQ 远程审批控制器(enableApprovals 时创建; 定义在 sender 就绪后, 此处先声明供入站回调引用)
   let approvalController: QqApprovalController | undefined;
   let questionController: QqUserQuestionsController | undefined;
+  // botplay 互动事件控制器(事件配置 live 现读 config.botplayEvents; 定义在 sender 就绪后)
+  let botplayController: BotplayController | undefined;
 
   // ── 表情包图库单例预初始化(防目录分裂) ──
   // ⚠️ 单例时序坑：谁先 getStickerStore 谁定路径。必须在启动早期按 config.cwd
@@ -343,17 +346,40 @@ export async function bootstrapGateway(
   }) as never, { prepend: true });
   logger.info(`[im-qqbot] QQ 远程提问接线就绪(${enableUserQuestions ? '启用' : '关闭'})`);
 
+  // ── botplay 互动事件装配器(2026-09-08, Phase1 MVP) ──
+  // 事件配置从 live config.botplayEvents 现读 → dock「🎮」装配器保存即热更(同 settings ns)。
+  // /botplay 命令 → triggerBotplay 模块级注册表 → 这里实现(带 sender/manager)发卡。
+  botplayController = new BotplayController(
+    manager,
+    sender,
+    logger,
+    () => (Array.isArray(config.botplayEvents) ? config.botplayEvents : []),
+    () => (Array.isArray(config.groupAdmin?.owners) ? config.groupAdmin.owners : []),
+    () => stickerDataDir,
+  );
+  registerBotplayController(myNs, botplayController);
+  setBotplayTriggerImpl((target, eventId, triggererId) => botplayController!.trigger(target, eventId, triggererId));
+  logger.info('[im-qqbot] botplay 互动事件接线就绪(/botplay 触发发卡, dock🎮装配, 保存即热更)');
+
   // ── 按钮回调(INTERACTION_CREATE, type=11): 审批/提问卡片共用分发 ──
   // SDK 事件: bot.on('interaction', (ctx, event) => …); 需 PUT /interactions/{id} 回应防 loading。
   if (typeof (bot as unknown as { on: (e: string, h: unknown) => void }).on === 'function') {
     (bot as unknown as { on: (e: string, h: (...a: unknown[]) => void) => void }).on('interaction', (async (ctx: unknown, event: unknown) => {
-      const ev = event as { id?: string; data?: { type?: number } };
+      const ev = event as { id?: string; data?: { type?: number; resolved?: { button_data?: string } } };
+      // 诊断落盘(排查按钮回调是否到达; ~/.dsh/botplay-diag.log)
+      try {
+        const { appendFileSync } = await import('node:fs');
+        const diagFile = String(process.env.USERPROFILE || process.env.HOME || '') + '/.dsh/botplay-diag.log';
+        const line = `[${new Date().toISOString()}] interaction id=${ev?.id ?? '?'} type=${ev?.data?.type ?? '?'} btn=${ev?.data?.resolved?.button_data ?? '(none)'} group_member=${(event as { group_member_openid?: string }).group_member_openid ?? ''} user=${(event as { user_openid?: string }).user_openid ?? ''}`;
+        appendFileSync(diagFile, line + '\n');
+      } catch { /* 诊断失败忽略 */ }
       if (ev?.data?.type !== 11) return; // 只处理消息按钮回调
       const target = replyTargetOfInteraction(ev, ctx, manager);
       let consumed = false;
       try {
         if (approvalController) consumed = await approvalController.handleInteraction(ev, target);
         if (!consumed && questionController) consumed = await questionController.handleInteraction(ev, target);
+        if (!consumed && botplayController) consumed = await botplayController.handleInteraction(ev, target);
       } catch (err) {
         logger.warn(`[qq-interaction] 处理异常: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -455,9 +481,12 @@ export async function bootstrapGateway(
         logger.info('Shutting down');
         registerApprovalController(myNs, undefined);
         registerQuestionController(myNs, undefined);
+        registerBotplayController(myNs, undefined);
+        setBotplayTriggerImpl(undefined);
         registerSessionManager(myNs, undefined);
         approvalController?.dispose();
         questionController?.dispose();
+        botplayController?.clear();
         stopScheduler?.();
         if (scheduleTicker) { clearInterval(scheduleTicker); scheduleTicker = undefined; }
         flushStickerGate();

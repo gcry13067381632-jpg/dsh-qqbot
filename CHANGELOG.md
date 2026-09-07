@@ -4,6 +4,21 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [0.9.7] - 2026-09-08
+
+### 新增
+- **botplay 互动事件装配器(Phase 1 MVP)**: dock 悬浮球新增「🎮 互动事件」页, 可视化装配"事件+按钮+行为+LLM影响三档", 保存即热更; QQ 群用 `/botplay` 列出事件、`/botplay 事件名` 触发发卡。
+  - 按钮行为: reply_text(点击后 bot 直接回指定文本, 不打扰 AI) / jump_url(预留) / callback(仅结算)。
+  - LLM 三档: `no_append`(纯 bot 行为 AI 不知情) / `append_silent`(记进上下文不唤醒, 下条真人消息 AI 自然看到) / `append_wake`(记录并唤醒 AI 立刻回应)。
+  - 事件级防刷: maxClicks(总点击次数) + expireSec(有效期); 权限: all / triggerer(仅触发者本人) / owner / users。
+  - 内置演示事件: 「签到」(no_append)与「今日运势」(append_wake, 点击后唤醒 AI 并带点击人昵称)。
+  - 交互回调点击人身份注入: 从聊天台账反查昵称(群成员/私聊对象表), 唤醒文本带「昵称(openid)」。
+  - 修复: 宿主重启后点击按钮无反应(会话 record 不在内存, 静默 miss)→ append 前自动 getOrCreate 恢复会话; interaction 回调加落盘诊断日志(~/.dsh/botplay-diag.log)。
+- `/bot-restart` 命令: 通用自重启 dsh 宿主(动态识别 node/启动参数, 杀旧+自动拉起, 约4秒)。
+
+### 变更
+- `outbound_mode` 工具切换成功后 bot 直发确认消息(绕过出站路由, 即使切到 silent/被动主人也能收到切换通知)。
+
 ## [0.9.6] - 2026-09-07
 
 ### 修复

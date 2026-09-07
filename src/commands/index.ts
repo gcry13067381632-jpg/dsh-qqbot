@@ -12,6 +12,8 @@ import { statusCommand } from './status.js';
 import { helpCommand } from './help.js';
 import { pingCommand, versionCommand, stopCommand, toolsReloadCommand } from './misc.js';
 import { outModeCommand } from './outmode.js';
+import { botplayCommand } from './botplay.js';
+import { botRestartCommand, botExitCommand } from './exit.js';
 
 /**
  * 构建标准命令列表
@@ -28,6 +30,11 @@ export function buildCommandList(deps: CommandDeps): SlashCommand[] {
     statusCommand(deps),
     // 出站模式(逃生通道: SDK 直通不经 LLM, nothink 也能唤醒)
     outModeCommand(deps),
+    // botplay 互动事件(/botplay 列表/触发发卡)
+    botplayCommand(deps),
+    // 自重启(杀旧+自动拉起 dsh web; /bot-exit 兼容同款)
+    botRestartCommand(),
+    botExitCommand(),
     // 杂项
     pingCommand(),
     versionCommand(deps),
