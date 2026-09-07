@@ -162,9 +162,51 @@ export function setupMiddlewares(
   });
 
   // 8. 斜杠命令（在 concurrencyGuard 之前，命令匹配后不排队直接响应）
+  const cmdList = buildCommandList({ manager, config });
+  // 群聊放开"必须 @bot"限制(SDK 硬性要求 @ 才触发, 导致直发 /cmd 变文本):
+  // 前置解析已知命令(除 stop/bot-stop——保留给下方 concurrencyGuard 的 urgent 打断链路)。类型宽松以适配 SDK ctx。
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const cmdMap = new Map<string, any>();
+  for (const c of cmdList) {
+    const names = Array.isArray(c.name) ? c.name : [c.name];
+    for (const n of names) cmdMap.set(String(n).toLowerCase(), c);
+  }
+  const sendCmdResult = async (ctx: any, result: unknown): Promise<void> => {
+    if (result === undefined || result === null) return;
+    if (typeof result === 'string') { if (result) await ctx.bot?.sendText(ctx.replyTarget, result); return; }
+    if (typeof result === 'object') {
+      const r = result as { kind?: string; content?: string };
+      if (r.kind === 'text' && r.content) await ctx.bot?.sendText(ctx.replyTarget, r.content);
+    }
+  };
+  bot.use(async (ctx: any, next: () => Promise<void>) => {
+    if (ctx.message?.kind !== 'group') return next(); // 私聊 SDK 已支持
+    const content = String(ctx.message?.content ?? '').trim();
+    if (!content || !content.startsWith('/')) return next();
+    const cleaned = content.replace(/<@!?[^>]+>\s*/g, '').trim();
+    if (!cleaned.startsWith('/')) return next();
+    const body = cleaned.slice(1);
+    const m = /^(\S+)(?:\s+(.*))?$/.exec(body);
+    if (!m) return next();
+    const name = String(m[1]).toLowerCase();
+    if (name === 'stop' || name === 'bot-stop') return next(); // 打断链路保留给 concurrencyGuard
+    const cmd = cmdMap.get(name);
+    if (!cmd) return next(); // 未知命令放行
+    const parsed = { name, args: m[2] ? String(m[2]).split(/\s+/) : [], raw: m[2] ?? '' };
+    if (ctx.state) ctx.state.command = parsed;
+    try {
+      const result = await cmd.handler({ ...ctx, command: parsed });
+      await sendCmdResult(ctx, result);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      ctx.log?.error?.('[qqbot-cmd] handler "' + name + '" threw: ' + msg);
+      try { await ctx.bot?.sendText(ctx.replyTarget, '命令出错: ' + msg); } catch { /* ignore */ }
+    }
+    if (typeof ctx.stop === 'function') { ctx.stop('command:' + name); return; }
+  });
   const slash = slashCommand({
     autoHelp: true,
-    commands: buildCommandList({ manager, config }),
+    commands: cmdList,
   });
   bot.use(slash.middleware);
 
