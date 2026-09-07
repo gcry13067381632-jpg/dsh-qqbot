@@ -4,6 +4,11 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [0.8.3] - 2026-09-07
+
+### 更新
+- 提问卡片支持在 header/question 文本里直接写 <@openid> 显式指定作答人(优先级高于历史消息点名解析)。
+
 ## [0.8.2] - 2026-09-07
 
 ### 更新

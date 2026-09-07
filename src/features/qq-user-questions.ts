@@ -71,13 +71,24 @@ function optionsKeyboard(qid: string, token: string, opts: Array<{ label: string
 }
 
 /**
- * 解析"这张提问卡片该谁回答": 扫最近(≤60 条)真人 user/message——
- *  ① 消息文本里的 <@openid>: 取最后一个(提问目标通常放在句末; 前面常是 @bot 自己)
- *  ② 无点名: 取消息发送者壳 [昵称 (openid)] 的 openid(谁发的就给谁答)
- *  ③ 兜底: 会话发起者 record.senderId
- * plugin 注入(上下文/系统)跳过。
+ * 解析"这张提问卡片该谁回答"(按钮 permission.type=0 + specify_user_ids 显式指定人):
+ *  ① 本次提问的 question/header 文本里的 <@openid> —— 工具输入直接写明 id 指定(优先级最高)
+ *  ② 最近真人 user/message 文本里的 <@openid>: 取最后一个(提问目标句末; 前面常是 @bot 自己)
+ *  ③ 消息发送者壳 [昵称 (openid)]
+ *  ④ 兜底: 会话发起者 record.senderId
+ * 注: 群投票/谁都能点可走 permission.type:2(owner 为空时 optionsKeyboard 已处理)。
  */
-function resolveCardOwner(record: { senderId: string; agent?: { session?: { events?: readonly unknown[] } } }): string {
+function resolveCardOwner(record: { senderId: string; agent?: { session?: { events?: readonly unknown[] } } }, inlineText?: string): string {
+  const firstAt = (text: string): string | null => {
+    const ats: string[] = [];
+    for (const m of String(text || '').matchAll(/<@([A-Za-z0-9]{32})>/g)) ats.push(m[1]!);
+    return ats.length > 0 ? ats[ats.length - 1]! : null;
+  };
+  // ① 提问文本里的点名 = 显式指定(id 写在 header/question 都算)
+  if (inlineText) {
+    const hit = firstAt(inlineText);
+    if (hit) return hit;
+  }
   try {
     const evs = record.agent?.session?.events;
     if (Array.isArray(evs) && evs.length > 0) {
@@ -91,10 +102,11 @@ function resolveCardOwner(record: { senderId: string; agent?: { session?: { even
         const content = Array.isArray(data.content) ? (data.content as Array<{ text?: string }>) : [];
         const text = content.map((b) => (b?.text ?? '')).join('\n');
         if (!text) continue;
-        const ats: string[] = [];
-        for (const m of text.matchAll(/<@([A-Za-z0-9]{32})>/g)) ats.push(m[1]!);
-        if (ats.length > 0) return ats[ats.length - 1]!;
-        const shell = text.match(/\[[^\]\n]*?\s*\(([A-Za-z0-9]{32})\)\]/);
+        // ② 最近真人消息点名(取最后一个 @)
+        const hit = firstAt(text);
+        if (hit) return hit;
+        // ③ 消息发送者壳
+        const shell = text.match(/\[\[^\]\n]*?\s*\(([A-Za-z0-9]{32})\)\]/);
         if (shell) return shell[1]!;
         return record.senderId;
       }
@@ -143,7 +155,7 @@ export class QqUserQuestionsController {
 
     // 卡片可点人: 从最近真人消息解析——被点名的最后一人(@)优先, 其次消息发送者壳, 回落会话发起者
     // (修复: 主人让 bot 问群友时, 卡片应绑被问者而不是 bot/主人, 否则被问者点卡片=无权限)
-    const owner = resolveCardOwner(record);
+    const owner = resolveCardOwner(record, headerRaw + ' ' + questionRaw);
 
     // 先注册 pending(防按钮回调先于 Promise 建立到达)
     let resolver: (v: unknown) => void = () => undefined;
