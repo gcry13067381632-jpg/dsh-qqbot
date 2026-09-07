@@ -21,19 +21,22 @@ This repo is an enhanced fork of [@tencent-connect/dsh-qqbot](https://github.com
 - **🧹 Messy library? Let the AI tidy it** — ask *"which stickers still lack tags or descriptions"* and it lists them, then tags and describes them itself.
 - **🖥️ No config-file surgery** — reply pacing, sticker gates, scheduled wake-ups, and per-bot personas are all editable in the settings panel; saving applies live (only adding/removing bots needs a restart).
 
-### ✨ What's new in v0.7.0
+### ✨ What's new in v0.8.0
 
-**🧠 Floating-dock "relay send" that can write into the bot's context**
-The floating dock in the settings panel can send a message *as the bot* to a group or DM; tick the 🧠 box and, once sent, the message is also appended to the target session as a **simulated user message** (content prefixed with the `用户代你发送` relay marker), visible in the Web session stream only — **no wake-up, no new turn**; the bot only reads it the next time it is actually mentioned. If the target session was idle-recycled it is auto-resumed first; if the LLM is currently thinking/streaming the write is skipped so an in-flight turn is never corrupted.
+**💬 Floating-dock QQ chat view**
+Open the floating dock in the settings panel → "💬 聊天" tab: pick a group or DM and replay its conversation with the bot in a QQ-style UI — avatars + bubbles (members left, bot right in blue), images zoom on click, videos (including local files) play inline, voice messages get a play bar (QQ SILK audio is converted to MP3 in pure JS — zero system dependencies), files render as downloadable cards. Injected context, tool noise, streaming chunks and history-packaging markers are filtered out automatically; multi-message history packs are **split back into individual bubbles**; scrolling up loads older messages.
 
-**❓ Questions become QQ button cards**
-When the bot asks via `ask_user_question`, options are delivered as button cards straight to the current chat partner's QQ — in a group only that member can answer (others are rejected); either the Web overlay or the QQ card can settle the question.
+**📎 Chat & send unified + local media**
+The composer lives right below the chat history: text, images and files all send from one box. bbcode `[MEDIA:image|local-path-or-url]` sends local files directly; the 📷 / 📎 buttons and paste/drag of an image auto-wrap it into a MEDIA token; the send button locks while sending with progress feedback, and sends can be written into the session as a "relay" user message. Local absolute paths that appear in chat (images / audio / video) are previewed or played right in the dock.
 
-**✅ Remote approval — settle from the Web too**
-Besides replying with the one-time CODE in QQ, pending approvals can be listed and settled across instances right from the Web panel; both ends stay in sync.
+**🚚 Big files no longer block a turn**
+Local files ≥5MB (videos, archives…) switch to **background chunked upload**: the call returns immediately, and completion/failure is written back into the session as a "background task" notice; the dock file picker now streams files up to 300MB straight through.
 
-**🔧 Robustness fixes**
-Before writing into a session the host runs a "turn active" safety gate and auto-resumes idle-recycled sessions via getOrCreate; simulated messages now follow dsh's official user/message event contract (identical shape to real messages), eliminating the corruption bug class.
+**🖌️ Preset persona editor**
+The Web settings "②" area gains a ✏️ button to browse and edit the preset files of the active persona (presets/files API; only persona copies flagged with QQ tools are writable; ≤200KB atomic writes).
+
+**🪄 Floating-dock UX**
+While expanded, drag the panel by its header (double-click the header to snap back to the ball); a ⛶ fullscreen toggle fixes header/footer and lets only the message list scroll; closing the image lightbox no longer collapses the dock.
 
 ### 📸 Showcase
 
