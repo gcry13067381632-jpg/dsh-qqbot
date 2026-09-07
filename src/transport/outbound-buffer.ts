@@ -108,8 +108,12 @@ export async function sendRichOutbound(
     } else {
       const clean = stripDirectives(seg.text);
       if (!clean.trim()) continue;
-      for (const chunk of chunkMarkdownText(clean, limit)) {
+      // QQ 对同会话极短时间连发多条会吞/乱序: 文本分块之间加 ~500ms 间隔限速
+      const chunks = chunkMarkdownText(clean, limit).map((c) => String(c || '')).filter((c) => c.trim());
+      for (let ci = 0; ci < chunks.length; ci++) {
+        const chunk = chunks[ci] as string;
         if (chunk.trim()) await bot.sendMarkdown(target, chunk);
+        if (ci < chunks.length - 1) await new Promise((r) => setTimeout(r, 500));
       }
     }
   }
