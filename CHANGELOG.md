@@ -4,6 +4,11 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [0.8.4] - 2026-09-07
+
+### 更新
+- 注入上下文写清: 提问卡片可在 question/header 里直接写 <@openid> 显式指定作答人(任意 AI 按此写法即生效)。
+
 ## [0.8.3] - 2026-09-07
 
 ### 更新
