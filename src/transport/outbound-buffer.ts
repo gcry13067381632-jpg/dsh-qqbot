@@ -53,6 +53,10 @@ export interface QQBotSender {
  *  1) 若整段为 [RECALL] 指令(去掉指令后无实质内容) → 触发 bot.recallLast
  *  2) 否则解析 [MEDIA:kind|src]，媒体段逐个 bot.sendMedia，文本段照常分块 sendMarkdown
  *  富媒体指令与 [RECALL] 从展示文本中剔除；任一失败不抛(逐项记录由调用方/logger)。
+ *
+ * resolveTarget(可选): 每次实际发送(每条媒体/每个文本分块)前调用一次, 返回该条的目标。
+ * 用于「适配主动」出站: 同一条入站消息的连续回复数到限后自动切主动(去掉 msg_id)。
+ * 注意: [RECALL] 撤回动作不消耗计数, 固定用传入 target。
  */
 export async function sendRichOutbound(
   bot: QQBotSender,
@@ -61,7 +65,9 @@ export async function sendRichOutbound(
   limit: number,
   cwd: string | undefined,
   logError?: (msg: string) => void,
+  resolveTarget?: () => ReplyTarget,
 ): Promise<void> {
+  const eff = (): ReplyTarget => (resolveTarget ? resolveTarget() : target);
   const hasRecall = containsRecall(text);
   const displayable = stripDirectives(text);
   // 只要含 [RECALL(:N)] 就执行，一条回复里多个 [RECALL] 逐个撤(可一次撤多条)；
@@ -96,7 +102,7 @@ export async function sendRichOutbound(
       const src = resolveSource(seg.source, cwd);
       const sourceOpt = src.kind === 'url' ? { url: src.url } : { localPath: src.path };
       try {
-        await bot.sendMedia(target, seg.kind, sourceOpt);
+        await bot.sendMedia(eff(), seg.kind, sourceOpt);
         if (isStickerSeg) turnStickerSent += 1;
       } catch (err) {
         if (err instanceof Error && err.name === 'StickerGateDenied') {
@@ -112,7 +118,7 @@ export async function sendRichOutbound(
       const chunks = chunkMarkdownText(clean, limit).map((c) => String(c || '')).filter((c) => c.trim());
       for (let ci = 0; ci < chunks.length; ci++) {
         const chunk = chunks[ci] as string;
-        if (chunk.trim()) await bot.sendMarkdown(target, chunk);
+        if (chunk.trim()) await bot.sendMarkdown(eff(), chunk);
         if (ci < chunks.length - 1) await new Promise((r) => setTimeout(r, 500));
       }
     }
@@ -131,6 +137,7 @@ export class OutboundBuffer {
     private readonly logger: Logger,
     streamingEnabled: boolean,
     private readonly cwd: string | undefined = undefined,
+    private readonly resolveTarget?: () => ReplyTarget,
   ) {
     this.writer = streamingEnabled
       ? new StreamingWriter({ bot, target: record.replyTarget, logger, throttleMs: STREAM_THROTTLE_MS })
@@ -168,6 +175,7 @@ export class OutboundBuffer {
         this.limit,
         this.cwd,
         (m) => this.logger.error(m),
+        this.resolveTarget,
       );
     } catch (err) {
       this.logger.error(`im-qqbot: flush failed: ${err instanceof Error ? err.message : String(err)}`);

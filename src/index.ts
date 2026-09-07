@@ -136,7 +136,9 @@ async function installLiveSettings(ctx: Context, live: ImQQBotConfig, logger: Lo
       if (next.groupAdmin) live.groupAdmin = next.groupAdmin;
       if (typeof next.enableApprovals === 'boolean') live.enableApprovals = next.enableApprovals;
       if (typeof next.approvalTimeoutMs === 'number') live.approvalTimeoutMs = next.approvalTimeoutMs;
-      if (next.outboundMode === 'active' || next.outboundMode === 'passive') live.outboundMode = next.outboundMode;
+      // 出站方式: adaptive=适配主动(默认; active 旧值归一为 adaptive)
+      if (next.outboundMode === 'adaptive' || next.outboundMode === 'passive') live.outboundMode = next.outboundMode;
+      else if (next.outboundMode === 'active') live.outboundMode = 'adaptive';
       logger.info('[im-qqbot] 设置已同步(live): behavior/sticker/injectRules/groupPrompt/schedule/groupAdmin/approvals');
     } catch (err) {
       logger.warn?.(`im-qqbot: 设置同步失败: ${err instanceof Error ? err.message : String(err)}`);

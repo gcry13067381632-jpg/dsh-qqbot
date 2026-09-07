@@ -220,6 +220,7 @@ window.__ModuleLoader__.load({
               groupPrompt: typeof v.groupPrompt === 'string' ? v.groupPrompt : DEFAULT_GROUP_PROMPT,
               enableApprovals: v.enableApprovals === true,
               approvalTimeoutMs: typeof v.approvalTimeoutMs === 'number' ? v.approvalTimeoutMs : 120000,
+              outboundMode: (v.outboundMode === 'passive' ? 'passive' : 'adaptive'),
               groupAdmin: { enabled: v.groupAdmin && v.groupAdmin.enabled === true, owners: Array.isArray(v.groupAdmin && v.groupAdmin.owners) ? v.groupAdmin.owners : [], manageGroup: v.groupAdmin && typeof v.groupAdmin.manageGroup === 'string' ? v.groupAdmin.manageGroup : '', watchJoinRequests: !!(v.groupAdmin && v.groupAdmin.watchJoinRequests), notifyInGroup: v.groupAdmin && v.groupAdmin.notifyInGroup !== false },
             }
             setCfg(base); setRev(d.revision); setMsg('')
@@ -268,6 +269,7 @@ window.__ModuleLoader__.load({
           groupPrompt: typeof gpOverride === 'string' ? gpOverride : (typeof cfg.groupPrompt === 'string' ? cfg.groupPrompt : ''),
           enableApprovals: cfg.enableApprovals === true,
           approvalTimeoutMs: typeof cfg.approvalTimeoutMs === 'number' ? cfg.approvalTimeoutMs : 120000,
+          outboundMode: cfg.outboundMode === 'passive' ? 'passive' : 'adaptive',
           groupAdmin: { enabled: cfg.groupAdmin && cfg.groupAdmin.enabled === true, owners: Array.isArray(cfg.groupAdmin && cfg.groupAdmin.owners) ? cfg.groupAdmin.owners : [], manageGroup: cfg.groupAdmin && typeof cfg.groupAdmin.manageGroup === 'string' ? cfg.groupAdmin.manageGroup : '', watchJoinRequests: !!(cfg.groupAdmin && cfg.groupAdmin.watchJoinRequests), notifyInGroup: cfg.groupAdmin && cfg.groupAdmin.notifyInGroup !== false },
         }
         fetch(UPDATE, {
@@ -283,6 +285,7 @@ window.__ModuleLoader__.load({
               groupPrompt: typeof v2.groupPrompt === 'string' ? v2.groupPrompt : (typeof cfg.groupPrompt === 'string' ? cfg.groupPrompt : DEFAULT_GROUP_PROMPT),
               enableApprovals: v2.enableApprovals === true,
               approvalTimeoutMs: typeof v2.approvalTimeoutMs === 'number' ? v2.approvalTimeoutMs : 120000,
+              outboundMode: (v2.outboundMode === 'passive' ? 'passive' : 'adaptive'),
               groupAdmin: { enabled: v2.groupAdmin && v2.groupAdmin.enabled === true, owners: Array.isArray(v2.groupAdmin && v2.groupAdmin.owners) ? v2.groupAdmin.owners : [], manageGroup: v2.groupAdmin && typeof v2.groupAdmin.manageGroup === 'string' ? v2.groupAdmin.manageGroup : '', watchJoinRequests: !!(v2.groupAdmin && v2.groupAdmin.watchJoinRequests), notifyInGroup: v2.groupAdmin && v2.groupAdmin.notifyInGroup !== false },
             })
             setRev(d.revision); setMsg('已保存 ✓(live 生效)')
@@ -316,7 +319,7 @@ window.__ModuleLoader__.load({
           NumRow({ label: '群里没人 @ 她时,隔几秒才回一次(0=每条都回)', value: cfg.behavior.freeIntervalSec, onChange: function (v) { setBehavior({ freeIntervalSec: v }) } }),
           NumRow({ label: '有人 @ 她时,两次回复至少隔几秒(0=随叫随到)', value: cfg.behavior.mentionIntervalSec, onChange: function (v) { setBehavior({ mentionIntervalSec: v }) } }),
           NumRow({ label: '私聊里隔几秒回一次(0=不限制)', value: cfg.behavior.directIntervalSec, onChange: function (v) { setBehavior({ directIntervalSec: v }) } }),
-          h('div', { style: { fontSize: 12, color: '#666', margin: '10px 0 2px' } }, '出站方式(连发消息 QQ 端丢失时切主动):'),          h('div', { style: { display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' } },            ['active', 'passive'].map(function (m) {              return h('label', { style: { display: 'inline-flex', gap: 5, alignItems: 'center', fontSize: 12, color: '#333', cursor: 'pointer' } },                h('input', { type: 'radio', name: 'qqs-outbound', checked: (cfg.outboundMode || 'active') === m, onChange: function () { setCfg(function (c) { return Object.assign({}, c, { outboundMode: m }) }) } }),                m === 'active' ? '主动(推荐:连发不受限)' : '被动(带回复id,连发受限)')            })),          h('div', { style: { fontSize: 12, color: '#888' } }, '主动=每条独立新消息(同面板,可连发十条; 私聊受48h互动窗); 被动=回复你那条消息(连发约4~5条后被QQ吞)。'),          h('div', { style: { fontSize: 12, color: '#666', margin: '10px 0 2px' } }, '延迟聚合(另一套机制,和上面冷却不冲突): 她收到消息先等一小会儿, 把连发的话攒一起综合回, 免得只回第一句。'),
+          h('div', { style: { fontSize: 12, color: '#666', margin: '10px 0 2px' } }, '出站方式(连发消息 QQ 端丢失时切主动):'),          h('div', { style: { display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' } },            ['adaptive', 'passive'].map(function (m) {              return h('label', { style: { display: 'inline-flex', gap: 5, alignItems: 'center', fontSize: 12, color: '#333', cursor: 'pointer' } },                h('input', { type: 'radio', name: 'qqs-outbound', checked: ((cfg.outboundMode || 'adaptive') === 'active' ? 'adaptive' : (cfg.outboundMode || 'adaptive')) === m, onChange: function () { setCfg(function (c) { return Object.assign({}, c, { outboundMode: m }) }) } }),                m === 'adaptive' ? '适配主动(推荐默认)' : '被动(只回最后一句)')            })),          h('div', { style: { fontSize: 12, color: '#888' } }, '适配主动=刚收到真人消息时前5条带引用回你, 第6条起自动转独立新消息(连发不被QQ吞); 一段时间没新消息的主动推送(定时等)也走独立消息。被动=始终回你那条(连发约4~5条后被QQ吞)。保存即热更新, 不用重启。'),          h('div', { style: { fontSize: 12, color: '#666', margin: '10px 0 2px' } }, '延迟聚合(另一套机制,和上面冷却不冲突): 她收到消息先等一小会儿, 把连发的话攒一起综合回, 免得只回第一句。'),
           BoolRow({ label: '开启延迟聚合(不勾=回到来一条回一条)', value: dbc.enabled !== false, onChange: function (v) { setBehavior({ debounce: { ...dbc, enabled: v } }) } }),
           NumRow({ label: '对方停口几秒后她才开口(默认3;0=不停顿)', value: dbc.silenceSec != null ? dbc.silenceSec : 3, onChange: function (v) { setBehavior({ debounce: { ...dbc, silenceSec: v } }) } }),
           NumRow({ label: '攒满几条立即开口,不等对方停(默认10)', value: dbc.maxMsgs != null ? dbc.maxMsgs : 10, onChange: function (v) { setBehavior({ debounce: { ...dbc, maxMsgs: v } }) } }),
@@ -1885,7 +1888,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
       setInterval(refreshBadge, 20000)
 
       // ── 面板状态(每个实例独立保存, 切回不丢) ──
-      var state = { ns: '', accts: [], gid: '', groups: [], tab: 'chat', sendScope: 'group', sendTo: '', sendName: '', sendText: '', insertCtx: true, targetQ: '', c2cs: [], joins: null, mutes: null, members: null, muteSecs: '60', bindGid: '', bindName: '', msg: '', busy: '', wantPeer: null, lookedUp: false, detected: null, detectedHit: null, chatItems: [], chatMore: false, chatBusy: '', chatErr: '', chatOldest: 0, chatText: '', chatIns: true }
+      var state = { ns: '', accts: [], gid: '', groups: [], tab: 'chat', sendScope: 'group', sendTo: '', sendName: '', sendText: '', insertCtx: true, targetQ: '', c2cs: [], joins: null, mutes: null, members: null, muteSecs: '60', bindGid: '', bindName: '', msg: '', busy: '', wantPeer: null, lookedUp: false, detected: null, detectedHit: null, chatItems: [], chatMore: false, chatBusy: '', chatErr: '', chatOldest: 0, chatText: '', chatIns: true, outMode: '', outRev: undefined }
       var chatFlash = '' // 发送结果/错误提示(短时展示, 不被列表计数覆盖)
       // @ mention(输入框敲 @ 弹成员候选): 群聊目标才启用
       var atM = { members: [], open: false, kw: '', idx: 0, range: null, key: '' }
@@ -1929,6 +1932,26 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
       function curDataDir() {
         var ac = null; state.accts.forEach(function (a) { if (a.ns === state.ns) ac = a })
         return ac ? (ac.dataDir || '') : ''
+      }
+      function outNsQ() { return state.ns ? 'ns=' + encodeURIComponent(state.ns) : '' }
+      // ⚙️ 出站方式: 读当前账号(ns)配置
+      function loadOutMode() {
+        if (state.tab !== 'out') return
+        fetch(READ + (state.ns ? '?' + outNsQ() : '')).then(function (r) { return r.json() }).then(function (d) {
+          if (d && d.value) { state.outMode = (d.value.outboundMode === 'passive' ? 'passive' : 'adaptive'); state.outRev = d.revision; paintBody() }
+        }).catch(function () {})
+      }
+      // ⚙️ 出站方式: 保存(全量 patch 只带 outboundMode; settings.update 部分合并)
+      function saveOutMode(m) {
+        var hint = panel ? panel.querySelector('#dk-out-hint') : null
+        if (hint) hint.textContent = '保存中…'
+        fetch(UPDATE, {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ ns: state.ns || undefined, patch: { outboundMode: m }, expectedRevision: state.outRev }),
+        }).then(function (r) { return r.json().catch(function () { return null }) }).then(function (d) {
+          if (d && d.value) { state.outMode = (d.value.outboundMode === 'passive' ? 'passive' : 'adaptive'); state.outRev = d.revision; var h2 = panel ? panel.querySelector('#dk-out-hint') : null; if (h2) h2.textContent = '已保存 ✓ live 热更新已生效(不用重启)' }
+          else { var h3 = panel ? panel.querySelector('#dk-out-hint') : null; if (h3) h3.textContent = '保存失败: ' + ((d && d.error) || '未知错误') }
+        }).catch(function () { var h4 = panel ? panel.querySelector('#dk-out-hint') : null; if (h4) h4.textContent = '保存异常' })
       }
       function refreshAll() {
         loadGroups(); loadC2cs()
@@ -2131,6 +2154,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           + '<button data-t="chat" class="' + (state.tab === 'chat' ? 'on' : '') + '">💬 聊天</button>'
           + '<button data-t="join" class="' + (state.tab === 'join' ? 'on' : '') + '">📥 入群审批<span class="dk-join-badge" style="display:none;background:#ff4d4f;color:#fff;border-radius:8px;font-size:11px;padding:0 5px;margin-left:4px">0</span></button>'
           + '<button data-t="mute" class="' + (state.tab === 'mute' ? 'on' : '') + '">🔇 禁言</button>'
+          + '<button data-t="out" class="' + (state.tab === 'out' ? 'on' : '') + '">⚙️ 出站</button>'
           + '</div>'
         var body = tabs
         var status = state.msg ? '<div class="dk-msg" style="color:#2f9e44;margin:4px 0">' + esc(state.msg) + '</div>' : ''
@@ -2199,6 +2223,15 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           body += '<div class="dk-list" id="dk-member-list"></div>'
           body += '<div style="font-weight:700;font-size:13px;margin:8px 0 4px">② 正在禁言中</div>'
           body += '<div class="dk-list" id="dk-mute-list"></div>'
+        } else if (state.tab === 'out') {
+          var om = state.outMode || 'adaptive'
+          body += '<div class="dk-row" style="font-weight:700;font-size:13px;margin:4px 0 2px">⇄ 出站方式(保存即热更新,不用重启)</div>'
+          body += '<div class="dk-row">'
+            + ['adaptive','passive'].map(function (m2) { return '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;color:#333"><input type="radio" name="dk-outmode" value="' + m2 + '"' + (om === m2 ? ' checked' : '') + '> ' + (m2==='adaptive' ? '适配主动(推荐默认)' : '被动(只回最后一句)') + '</label>' }).join('')
+            + '</div>'
+          body += '<div class="dk-msg" style="line-height:1.6">适配主动=和QQ有关的会话回复都发到QQ: 刚收到真人消息时前5条带引用回你(能看到回的是哪句), 第6条起自动转独立新消息, 连发不被QQ吞; 定时/后台等没有新真人消息的主动推送也走独立消息。'
+          body += '被动=始终以「回复你那条」发出, 连发约4~5条后会被QQ吞掉。本开关对纯web(没绑QQ)的会话不生效。</div>'
+          body += '<span class="dk-msg" id="dk-out-hint" style="color:#2f9e44;margin:4px 0"></span>'
         }
         body += status
         body += '<div class="dk-row" style="border-top:1px solid #f0ecff;padding-top:8px;margin-top:8px"><span class="dk-msg">登记群(官方无群列表,手动粘贴):</span>'
@@ -2222,6 +2255,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           btn.onclick = function () {
             state.tab = btn.getAttribute('data-t'); state.msg = ''
             if (state.tab === 'join') loadJoins(); else if (state.tab === 'mute') loadMutes()
+            else if (state.tab === 'out') loadOutMode()
             else if (state.tab === 'chat') { state.chatItems = []; state.chatErr = ''; }
             paintBody()
           }
@@ -2254,6 +2288,8 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         if (txt) { txt.oninput = function (e) { state.sendText = e.target.value; var n = panel.querySelector('.dk-msg'); if (n) n.textContent = '已输 ' + state.sendText.length + '/2000' } }
         var ins = panel.querySelector('#dk-insctx')
         if (ins) { ins.onchange = function (e) { state.insertCtx = !!e.target.checked } }
+        var omrad = panel.querySelectorAll('input[name="dk-outmode"]')
+        if (omrad) omrad.forEach(function (r2) { r2.onchange = function () { saveOutMode(r2.value) } })
         var snd = panel.querySelector('#dk-send')
         if (snd) snd.onclick = sendNow
         var rj = panel.querySelector('#dk-refresh-join')

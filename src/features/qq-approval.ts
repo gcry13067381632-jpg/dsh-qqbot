@@ -20,6 +20,7 @@
  *       只授权当前这一次操作; 群聊里其他成员看到 CODE 也无法批准(senderId 校验)。
  */
 import type { ReplyTarget } from '@tencent-connect/qqbot-nodejs';
+import { appendFileSync } from 'node:fs';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import type { QQBotSender } from '../transport/outbound-buffer.js';
 import type { SessionManager } from '../session/index.js';
@@ -200,10 +201,18 @@ export class QqApprovalController {
         ].filter(Boolean).join('\n');
         await this.sender.sendMarkdown(record.replyTarget, textPrompt);
       } catch (err2) {
-        // QQ 通道不可用(限频/网络)≠ 审批结束: 保留 pending 供 Web 浮层兜底处理,
-        // 不要 settle 删除 —— 否则 QQ 没送达时 web 也看不到(双通道同时失效)。
-        this.logger.error(`QQ approval prompt failed: ${err2 instanceof Error ? err2.message : String(err2)} (code=${code}, web 浮层可兜底)`);
-        return outcome;
+        // QQ 通道彻底不可用(按钮+文本都失败): 不再挂起 —— 清理本通道 pending 并 next() 交还宿主,
+        // 让宿主 Web 审批/其它 answerer 接管, 审批不会因 QQ 失败而无人应答(双保险)。
+        this.logger.error(`QQ approval prompt failed: ${err2 instanceof Error ? err2.message : String(err2)} (code=${code}, 已交还宿主 Web 兜底)`);
+        const pend2 = this.pending.get(code);
+        if (pend2) {
+          this.pending.delete(code);
+          clearTimeout(pend2.timer);
+          if (pend2.signal && pend2.onAbort) {
+            try { pend2.signal.removeEventListener('abort', pend2.onAbort); } catch { /* 忽略 */ }
+          }
+        }
+        return next();
       }
     }
     return outcome;
@@ -366,10 +375,15 @@ export function setApprovalDispatch(fn: ApprovalDispatch | undefined): void {
   dispatch = fn;
 }
 
+/** 审批诊断落盘(排查 QQ 通道未接管): ~/.dsh/qq-approval-diag.log */
+const DIAG_FILE = (typeof process !== 'undefined' ? ((process.env.USERPROFILE || process.env.HOME || '') + '/.dsh/qq-approval-diag.log') : '').replace(/\\/g, '/');
+function diagApprov(line: string): void {
+  try { appendFileSync(DIAG_FILE, '[' + new Date().toISOString() + '] ' + line + '\n'); } catch { /* 忽略 */ }
+}
 /** 生成挂在插件 apply ctx 的审批监听(ACP 模式): 非本 bot agent / 未启用 → next() 快速放行 */
 export function makeApprovalListener(): (req: unknown, next: () => Promise<string>) => Promise<string> {
   return ((req: unknown, next: () => Promise<string>) => {
-    console.log('[qq-approval] ctx listener fired');
+    console.log('[qq-approval] ctx listener fired'); diagApprov('listener fired');
     if (!dispatch) return next();
     return dispatch(req as never, next as never);
   }) as (req: unknown, next: () => Promise<string>) => Promise<string>;

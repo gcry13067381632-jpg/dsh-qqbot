@@ -6,7 +6,7 @@
  */
 import type { SessionManager, SessionRecord } from '../session/index.js';
 import type { ImQQBotConfig } from '../config.js';
-import type { Logger } from '../types.js';
+import type { Logger, ReplyTarget } from '../types.js';
 import { OutboundBuffer, sendRichOutbound, type QQBotSender } from './outbound-buffer.js';
 import { formatToolResult, type ToolsRegistryLike, type ToolResultData } from './tool-presenter.js';
 import {
@@ -40,14 +40,19 @@ interface ToolCallRecord {
 /** 不展示给用户的轮次错误码（底层传输/网络错误，对用户无意义，且常被重试兜住） */
 const SILENT_TURN_ERROR_CODES = new Set(['STREAM_CLOSED']);
 
+/** 适配主动: 同一入站消息(msg_id)最多被动回复条数(QQ 回复同一消息上限 ~4-5 条), 超出自动转主动 */
+const ADAPTIVE_MAX_PASSIVE = 5;
+/** 适配主动: 「最近收到消息」判据(距上次入站活动 N ms 内才算; 过期旧 msg_id 不再被动引用, 防引用失效丢消息) */
+const ADAPTIVE_RECENT_MS = 5 * 60_000;
+
 /**
  * 出站路由器：持有会话级状态，按事件类型分发到处理器
  */
 class OutboundRouter {
   private readonly buffers = new Map<string, OutboundBuffer>();
   private readonly toolCalls = new Map<string, ToolCallRecord>();
-  /** 本回合群内已发送条数: >0 时后续消息去掉 msg_id 走主动(QQ 回复同一 msg 有限 ~4~5 条) */
-  private turnGroupSent = 0;
+  /** 适配主动状态: sessionKey → 当前入站 msg_id 及已被动回复条数 */
+  private readonly adaptiveState = new Map<string, { msgId?: string; passiveCount: number }>();
 
   public constructor(
     private readonly manager: SessionManager,
@@ -57,14 +62,32 @@ class OutboundRouter {
     private readonly toolsRegistry: ToolsRegistryLike | undefined,
   ) {}
 
-  /** 出站目标: outboundMode=active → 一律不带 msg_id 主动发(连发不受限; 私聊受48h窗);
-   *  passive → 一律带 msg_id 被动回复(连发受 QQ 回复同一消息上限) */
-  private outTarget(record: SessionRecord) {
-    const mode = this.config.outboundMode || 'active';
-    if (mode === 'active' && record.replyTarget.targetId) {
-      return { scope: record.replyTarget.scope, targetId: record.replyTarget.targetId } as never;
+  /** 出站目标(每次实际发送前逐条调用, [RECALL] 除外):
+   *  passive → 一律带 msg_id 回复; adaptive(默认)/active → 智能: 最近 5 分钟内收到过消息
+   *  (lastActivity 新鲜)且同一条入站消息(msg_id)回复未超过 ADAPTIVE_MAX_PASSIVE 条 → 带 msg_id
+   *  被动回复(有引用感); 超出/无近期入站(定时推送等) → 自动去 msg_id 转主动(防 QQ 吞/引用失效)。
+   *  新入站消息(msg_id 变化)自动重置被动配额。 */
+  private resolveTarget(record: SessionRecord): ReplyTarget {
+    const rt = record.replyTarget;
+    const mode = this.config.outboundMode || 'adaptive';
+    if (mode === 'passive') return rt;
+    if (!rt.msgId) return { scope: rt.scope, targetId: rt.targetId };
+    // 仅真实入站(QQ 收到消息)后 5 分钟内算「最近收到消息」; 定时注入不刷新 lastInboundAt → 直接主动
+    const recent = Date.now() - (record.lastInboundAt || 0) <= ADAPTIVE_RECENT_MS;
+    if (!recent) return { scope: rt.scope, targetId: rt.targetId };
+    const key = record.sessionKey;
+    let st = this.adaptiveState.get(key);
+    if (!st || st.msgId !== rt.msgId) {
+      // 新入站消息(msg_id 变化)→ 重置被动配额
+      st = { msgId: rt.msgId, passiveCount: 0 };
+      this.adaptiveState.set(key, st);
     }
-    return record.replyTarget;
+    if (st.passiveCount < ADAPTIVE_MAX_PASSIVE) {
+      st.passiveCount += 1;
+      return rt;
+    }
+    // 已连续被动 5 条 → 本条起转主动(去掉 msg_id, 不再被 QQ 回复上限吞)
+    return { scope: rt.scope, targetId: rt.targetId };
   }
 
   /** 事件分发入口 */
@@ -98,7 +121,15 @@ class OutboundRouter {
   private onChunk(sessionId: string, record: SessionRecord, event: ChunkEvent): void {
     let buffer = this.buffers.get(sessionId);
     if (buffer === undefined) {
-      buffer = new OutboundBuffer(record, this.bot, this.config.textChunkLimit, this.logger, this.shouldStream(record), this.config.cwd);
+      buffer = new OutboundBuffer(
+        record,
+        this.bot,
+        this.config.textChunkLimit,
+        this.logger,
+        this.shouldStream(record),
+        this.config.cwd,
+        () => this.resolveTarget(record),
+      );
       this.buffers.set(sessionId, buffer);
     }
     buffer.append(event.text);
@@ -127,9 +158,7 @@ class OutboundRouter {
     const fullText = textParts.join('\n');
     if (!fullText.trim()) return;
 
-    const targetNow = this.outTarget(record);
-    void this.send(record, targetNow, fullText, 'sendMarkdown');
-    if (record.replyTarget.scope === 'group') this.turnGroupSent += 1;
+    void this.send(record, fullText, 'sendMarkdown');
     this.buffers.delete(sessionId);
   }
 
@@ -155,12 +184,11 @@ class OutboundRouter {
     );
     if (!text) return;
 
-    void this.send(record, record.replyTarget, text, 'sendToolResult');
+    void this.send(record, text, 'sendToolResult');
   }
 
   /** 轮次结束：清理 buffer，异常结束时告知用户 */
   private onTurnEnd(sessionId: string, _record: SessionRecord, event: TurnEndEvent): void {
-    this.turnGroupSent = 0; // 新回合重置(下一条主人消息的首条回复恢复被动)
     const buffer = this.buffers.get(sessionId);
     if (buffer !== undefined) {
       if (buffer.text.trim()) {
@@ -173,22 +201,23 @@ class OutboundRouter {
 
     const failure = extractTurnError(event.reason);
     if (failure !== undefined && !SILENT_TURN_ERROR_CODES.has(failure.code)) {
-      void this.send(_record, _record.replyTarget, `⚠️ 本轮异常结束\n\`${failure.code}\`: ${failure.message}`, 'sendTurnEndError');
+      void this.send(_record, `⚠️ 本轮异常结束\n\`${failure.code}\`: ${failure.message}`, 'sendTurnEndError');
     }
 
     this.logger.debug(`im-qqbot: turn/end sessionId=${sessionId}`);
   }
 
-  /** 统一发送：富媒体感知 + 分块；媒体指令([MEDIA:..]/[RECALL])被剔除，失败降级记录 */
-  private async send(_record: SessionRecord, target: unknown, text: string, tag: string): Promise<void> {
+  /** 统一发送：逐条自适应目标(适配主动) + 富媒体感知分块；媒体指令([MEDIA:..]/[RECALL])被剔除，失败降级记录 */
+  private async send(_record: SessionRecord, text: string, tag: string): Promise<void> {
     try {
       await sendRichOutbound(
         this.bot,
-        target as never,
+        _record.replyTarget,
         text,
         this.config.textChunkLimit,
         this.config.cwd,
         (m) => this.logger.error(m),
+        () => this.resolveTarget(_record),
       );
     } catch (err) {
       this.logger.error(`im-qqbot: ${tag} failed: ${err instanceof Error ? err.message : String(err)}`);

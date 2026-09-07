@@ -160,6 +160,7 @@ export async function handleInbound(
     source: { kind: 'user' as const },
   });
 
+  record.lastInboundAt = Date.now();
   record.agent.followup(message);
   logger.info(`→ followup sent: key=${scope}:${peerId}`);
 
