@@ -70,3 +70,10 @@ export function modelCommand({ manager, config }: CommandDeps): SlashCommand {
     },
   };
 }
+
+/** /model 简写别名: 复用 /bot-model 同一 handler */
+export function modelAliasCommand(deps: CommandDeps): SlashCommand {
+  const base = modelCommand(deps);
+  return { name: 'model', description: '查看或切换模型(简写, 同 /bot-model)', handler: base.handler };
+}
+

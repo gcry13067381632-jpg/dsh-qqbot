@@ -7,7 +7,7 @@
 import type { SlashCommand } from '@tencent-connect/qqbot-nodejs';
 import type { CommandDeps } from './types.js';
 import { resetCommand, newCommand } from './session.js';
-import { modelCommand } from './model.js';
+import { modelCommand, modelAliasCommand } from './model.js';
 import { statusCommand } from './status.js';
 import { helpCommand } from './help.js';
 import { pingCommand, versionCommand, stopCommand, toolsReloadCommand } from './misc.js';
@@ -22,6 +22,7 @@ export function buildCommandList(deps: CommandDeps): SlashCommand[] {
     newCommand(deps),
     // 模型
     modelCommand(deps),
+    modelAliasCommand(deps), // /model 简写
     // 状态
     statusCommand(deps),
     // 杂项
