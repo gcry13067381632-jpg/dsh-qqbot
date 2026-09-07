@@ -158,9 +158,30 @@ export async function bootstrapGateway(
       return false;
     }
   };
+  // 出站富媒体降级判定: 内容无 markdown 语法(且无 @提及/qqbot 标签)→ 走纯文本通道(msg_type:0),
+  // 避开 QQ 对 markdown 富媒体的严格频控(实测连发 5 条 markdown 后静默被拦)。
+  const hasMarkdownSyntax = (text: string): boolean => {
+    const t = String(text || '');
+    return (
+      /<@[A-Za-z0-9]+>|<qqbot-at-user|<qqbot-at-everyone|<emoji:|<#/.test(t) ||
+      t.includes('```') || t.includes('`') ||
+      /(^|\n)\s*(#{1,6}\s|>\s?|[-*+]\s|\d+\.\s)/.test(t) ||
+      /\*\*[^*]+\*\*/.test(t) ||
+      /\[([^\]\n]+)\]\(https?:[^)\n]+\)/.test(t) ||
+      /~~[^~\n]+~~/.test(t)
+    );
+  };
+
   const sender: QQBotSender = {
     sendMarkdown: async (target, content) => {
       try {
+        const rawText = String(content || '');
+        // 纯文本降级: 无 markdown 语法/@标签 → 直接纯文本通道, 省富媒体额度与频控
+        if (!hasMarkdownSyntax(rawText)) {
+          const respT = (await bot.sendText(target, rawText)) as { id?: string } | undefined;
+          pushSent(target, respT?.id);
+          return respT;
+        }
         const resp = (await bot.sendMarkdown(target, content)) as { id?: string } | undefined;
         pushSent(target, resp?.id);
         return resp;
@@ -283,15 +304,22 @@ export async function bootstrapGateway(
   registerApprovalController(myNs, approvalController);
   registerSessionManager(myNs, manager);
   setApprovalDispatch(((request: unknown, next: () => Promise<string>) => {
-    if (!config.enableApprovals) return next();
+    const diagA = (line: string) => { try { (globalThis as Record<string, unknown>).qqApprovalDiag = ((globalThis as Record<string, unknown>).qqApprovalDiag || []); ((globalThis as Record<string, unknown>).qqApprovalDiag as string[]).push('[' + new Date().toISOString() + '] ' + line); } catch { /* 忽略 */ } };
+    diagA('dispatch enter enable=' + config.enableApprovals);
+    if (!config.enableApprovals) { diagA('dispatch next: disabled'); return next(); }
     const reqAgent = (request as { agent?: unknown }).agent;
-    if (!reqAgent || !manager.findByAgent(reqAgent as never)) return next(); // 非本 bot agent → 放行给 GUI/ACP
+    const rec = reqAgent ? manager.findByAgent(reqAgent as never) : undefined;
+    diagA('dispatch find=' + (rec ? 'hit(' + rec.scope + ')' : 'miss'));
+    if (!reqAgent || !rec) return next(); // 非本 bot agent → 放行给 GUI/ACP
+    diagA('dispatch -> request()');
     return approvalController!.request(request as never, next as never);
   }) as never);
-  (ctx as unknown as {
+  // 挂到宿主根 ctx(与 Web GUI 审批转发器同层)并 prepend 插链首 —— 保证本 bot 的审批先被 QQ 通道接管
+  const approvalCtx = (((ctx as unknown as { root?: { ctx?: unknown } | unknown }).root) || ctx) as unknown as {
     on(event: string, handler: (...args: unknown[]) => unknown, config?: { prepend?: boolean }): void;
-  }).on('approval/request', makeApprovalListener() as never, { prepend: true });
-  console.log('[qq-approval] ACP-mode listener registered (apply-ctx + prepend)');
+  };
+  approvalCtx.on('approval/request', makeApprovalListener() as never, { prepend: true });
+  console.log('[qq-approval] ACP-mode listener registered (root-ctx + prepend)');
   logger.info(`[im-qqbot] QQ 远程审批接线就绪(${config.enableApprovals ? '已启用' : '默认关闭, Web 设置可热开'})`);
 
   // ── QQ 远程提问(按钮卡片版): ask_user_question → QQ 卡片按钮 ──

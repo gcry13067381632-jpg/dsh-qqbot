@@ -4,6 +4,11 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [0.8.9] - 2026-09-07
+
+### 优化
+- 出站消息纯文本降级: 内容无 markdown 语法/@标签 → 走纯文本通道(msg_type:0), 避开富媒体频控; 含样式/@提及仍用 markdown。
+
 ## [0.8.8] - 2026-09-07
 
 ### 修复
