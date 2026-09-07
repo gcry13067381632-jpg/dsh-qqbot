@@ -98,6 +98,16 @@ class OutboundRouter {
     const record = this.manager.findBySessionId(session.header.id);
     if (record === undefined) return;
 
+    // ── 回合活跃标记(消息聚合用, 2026-09-07 主人定) ──
+    // LLM 回合进行中(turnActive=true): debounce 见忙就把该会话新消息全攒着;
+    // turn/end 复位 false → 攒的消息才批量入站。assistant/tool 事件=回合活跃。
+    if (event.type === 'turn/end') {
+      record.turnActive = false;
+    } else if (event.type === 'assistant/chunk' || event.type === 'assistant/message'
+      || event.type === 'tool/call' || event.type === 'tool/result') {
+      record.turnActive = true;
+    }
+
     // 完全不出站(silent)= 照常思考但所有回复不向 QQ 发(静默潜水; dock/web 仍可见思考流);
     // 完全不思考(nothink)= QQ 入站根本不唤醒 LLM(见 inbound), 这里防御性兜底同样吞。
     const mode = this.config.outboundMode || 'adaptive';

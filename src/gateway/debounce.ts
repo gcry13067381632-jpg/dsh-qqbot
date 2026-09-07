@@ -55,7 +55,12 @@ interface DebounceEntry {
 interface DebounceWindow {
   entries: DebounceEntry[];
   timer: NodeJS.Timeout | null;
+  /** 回合忙聚合起始时间(ms): 忙超过 MAX_BUSY_MS 强制派发, 防 turn/end 丢失导致消息永远攒着 */
+  busySince?: number;
 }
+
+/** 回合忙聚合超时(ms): 超过则不再等回合结束, 强制批量派发(宁丢聚合也不丢消息) */
+const MAX_BUSY_MS = 60_000;
 
 /** 解析消息服务器时间戳(ISO 字符串或 ms 数字; 解析失败回落"到达时刻"兜底) */
 function msgTs(msg: Record<string, unknown>): number {
@@ -122,6 +127,36 @@ export function debounceLayer(
     }
     const fKind = String(f0.msg.kind ?? '');
     const hasMention = pre.some(e => e.wasMentioned);
+
+    // ── LLM 回合中聚合(2026-09-07 主人定): 我正在思考/输出时, 新消息全攒着,
+    //    不派发不入站 —— 等 turn/end(record.turnActive=false)后窗口再批量 flush。──
+    {
+      const recPeer = fKind === 'group'
+        ? String(f0.msg.groupOpenid ?? f0.msg.senderId ?? '')
+        : String(f0.msg.senderId ?? '');
+      if (recPeer) {
+        const busyRec = manager.findByPeer(fKind === 'group' ? 'group' : 'c2c', recPeer);
+        if (busyRec?.turnActive) {
+          const nowMs = Date.now();
+          if (w.busySince === undefined) w.busySince = nowMs;
+          // 忙超过阈值 → 强制派发(防 turn/end 丢失卡死窗口)
+          if (nowMs - w.busySince > MAX_BUSY_MS) {
+            w.busySince = undefined;
+            dbg(`flush 回合忙超 ${Math.round(MAX_BUSY_MS / 1000)}s 强制派发 key=${key} n=${pre.length}`);
+            // 继续往下走正常派发(不再 return)
+          } else {
+            clearTimer(w);
+            w.timer = setTimeout(() => void flush(key, w), 800); // 回合中: 800ms 后重查
+            w.timer.unref?.();
+            dbg(`flush 回合忙 defer(等 turn/end) key=${key} n=${pre.length}`);
+            return; // 窗口保留, 不派发
+          }
+        } else {
+          w.busySince = undefined; // 回合结束/空闲 → 复位忙标记
+        }
+      }
+    }
+
     if (fKind === 'group' && !hasMention) {
       // 群普通消息: 距上次普通派发不足 freeIntervalSec → 冷却中, 窗口保留继续攒
       const gid = String(f0.msg.groupOpenid ?? f0.msg.senderId ?? '');
@@ -227,7 +262,7 @@ export function debounceLayer(
           senderName: cur.senderName,
           timestamp: new Date(cur.ts).toISOString(),
         };
-        const state: Record<string, unknown> = { history: hist };
+        const state: Record<string, unknown> = { history: hist, aggregated: true };
         if (cur.wasMentioned) {
           // current 本身就是 @ 消息 → 走正常 mention, AI 见 (@you)
           state.mention = { wasMentioned: true };
@@ -257,7 +292,7 @@ export function debounceLayer(
           attachments: allAtts.length > 0 ? allAtts : undefined,
         };
         logger.info(`[debounce] flush(c2c ${String(base.senderId ?? '')}) ${entries.length}条 → handleInbound`);
-        await handleInbound(merged, manager, config, logger, undefined);
+        await handleInbound(merged, manager, config, logger, { aggregated: true });
       }
     } catch (err) {
       logger.error(`[debounce] flush 失败: ${err instanceof Error ? err.message : String(err)}`);
@@ -265,10 +300,26 @@ export function debounceLayer(
   }
 
   return async (ctx: MiddlewareContext, next: () => Promise<void>): Promise<void> => {
-    // 完全不思考(nothink, 2026-09-07): QQ 入站不唤醒 LLM —— 消息已由链上 mediaHistoryBuffer
-    // 记录, 这里直接吞掉不派发(不攒窗口不触发 agent); 仅设置页可配, 唤醒走 /outmode 斜杠。
+    // 完全不思考(nothink, 2026-09-07 主人定): QQ 入站不唤醒 LLM, 但消息要照常进入上下文。
+    // 这里直接交 handleInbound —— 它的 nothink 分支会把组装好的 user/message append 进会话
+    // (不 followup 不唤醒), 下次 web/真人唤醒时 AI 看到完整记录。不走下方群冷却/派发链(防丢)。
     const outMode = (config as { outboundMode?: string }).outboundMode || 'adaptive';
-    if (outMode === 'nothink') return; // 吞掉本消息(不调 next, 不进下方任何派发链路)
+    if (outMode === 'nothink') {
+      const nm = ctx.message as unknown as Record<string, unknown>;
+      const kind0 = String(nm.kind ?? '');
+      const content0 = String(nm.content ?? '').trim();
+      // 斜杠命令(/outmode 等)放行 → 走下方 slash 层(逃生通道: 主人可随时唤醒 nothink)
+      if (content0.startsWith('/')) return next();
+      if (kind0 === 'group' || kind0 === 'c2c') {
+        try {
+          await handleInbound(nm, manager, config, logger, ctx.state);
+        } catch (err) {
+          logger.error(`[nothink] handleInbound(append) 异常: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        return; // 吞掉本消息(已 append 记录), 不触发任何回合
+      }
+      return next();
+    }
 
     const c = cfg();
     if (!c.enabled) return next();

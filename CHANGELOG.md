@@ -4,6 +4,14 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [0.9.5] - 2026-09-07
+
+### 变更
+- nothink(完全不思考)语义修正: QQ 入站不再直接吞掉, 而是组装成完整上下文以 user/message append 进会话(不唤醒 LLM); 下次 web/真人唤醒时 AI 能看到完整聊天记录。
+- 回合中消息聚合(主人定): LLM 回合进行中(record.turnActive)QQ 新消息全部攒进 debounce 窗口不派发, turn/end 后整批按时间序入站一次(60s 超时兜底防卡死)——避免每条消息各触发一次思考浪费 token。
+- 聚合投递带系统提示: 标注这些消息发生在 AI 上一次回复之前(思考/输出期间群友所发, 非对 AI 回复的回应), 防止 dsh 队列特性让 AI 误判消息时间顺序。
+- /outmode 切换后 append 模拟用户消息(不唤醒)通知 AI 模式变更; nothink 时斜杠命令放行(逃生通道)。
+
 ## [0.9.4] - 2026-09-07
 
 ### 变更

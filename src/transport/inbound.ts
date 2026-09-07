@@ -58,6 +58,9 @@ interface MiddlewareState {
   mention?: MentionState;
   /** 冷却派发标记：群内非@消息在冷却结束后被派发时由冷却中间件置 true（不打假 @you） */
   batchDispatch?: boolean;
+  /** 聚合投递标记(2026-09-07): 这批消息发生在 AI 上一轮回合进行中、由 debounce 攒到回合结束后
+   *  统一入站 —— 时间上早于 AI 上一次回复, 不是对 AI 回复的回应。AI 读到要明白时间顺序。 */
+  aggregated?: boolean;
   processedAttachments?: ProcessedAttachment[];
   downloadedFiles?: DownloadedFile[];
   [key: string]: unknown;
@@ -93,14 +96,6 @@ export async function handleInbound(
 
   const scope: ChatScope = msg.kind === 'group' ? 'group' : 'c2c';
   const peerId = scope === 'group' ? (msg.groupOpenid ?? msg.senderId) : msg.senderId;
-
-  // 完全不思考(nothink, 2026-09-07 主人定): QQ 入站不唤醒 LLM —— 消息已被链上
-  // mediaHistoryBuffer 记入群历史/上下文, 这里直接吞掉(web 对话/下次触发时 AI 仍能看到记录)。
-  // 本档只能由主人在设置页配置; 唤醒走 /outmode 斜杠命令(SDK 直通不经 LLM)。
-  if ((config as { outboundMode?: string }).outboundMode === 'nothink') {
-    logger.info(`[nothink] 入站不唤醒: scope=${scope} peer=${peerId} body="${String(msg.content ?? '').slice(0, 60)}"`);
-    return;
-  }
 
   const replyTarget: ReplyTarget = {
     scope,
@@ -160,7 +155,7 @@ export async function handleInbound(
     logger.debug(`ensureGroupRules error: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  // ── 构建 UserMessage → followup ──
+  // ── 构建 UserMessage → followup / (nothink) append 不唤醒 ──
   const content: ContentBlock[] = [{ type: 'text' as const, text: agentBody }];
 
   const message = createUserMessage({
@@ -168,7 +163,40 @@ export async function handleInbound(
     source: { kind: 'user' as const },
   });
 
+  // 完全不思考(nothink, 2026-09-07 主人定): QQ 入站不唤醒 LLM, 但消息仍要进入上下文。
+  // 组装好的完整 agentBody(含时间戳/发送者标签/历史)以 user/message append 进会话,
+  // surfaceOp='append' 不唤醒 —— 下次 web 对话或真人消息唤醒时, AI 自然看到这段记录。
+  if ((config as { outboundMode?: string }).outboundMode === 'nothink') {
+    const sess = (record.agent as unknown as {
+      session?: { append?: (type: string, data: unknown, opts?: { surfaceOp?: string }) => unknown };
+    } | undefined)?.session;
+    if (sess && typeof sess.append === 'function') {
+      try {
+        record.lastInboundAt = Date.now();
+        sess.append('user/message', message, { surfaceOp: 'append' });
+        logger.info(`[nothink] 已 append(不唤醒): key=${scope}:${peerId}`);
+        // append 后同样清群历史缓存: 避免下次真人触发时把这段再打包一遍(上下文不重复)
+        if (scope === 'group') {
+          clearGroupHistory(config.appId, msg.groupOpenid ?? msg.senderId);
+        }
+        return;
+      } catch (err) {
+        logger.warn(`[nothink] append 失败, 退回正常 followup: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    } else {
+      logger.warn(`[nothink] 会话无 append 能力, 退回正常 followup: key=${scope}:${peerId}`);
+    }
+    // 无 append 能力 → 兜底照常 followup(保证消息不丢, 但会唤醒; 罕见路径)
+    record.lastInboundAt = Date.now();
+    record.turnActive = true;
+    record.agent.followup(message);
+    logger.info(`→ followup sent(nothink 兜底): key=${scope}:${peerId}`);
+    return;
+  }
+
   record.lastInboundAt = Date.now();
+  // 置回合活跃(消息聚合, 2026-09-07): followup 发出即算回合开始, debounce 见忙攒消息; turn/end 由 outbound 复位
+  record.turnActive = true;
   record.agent.followup(message);
   logger.info(`→ followup sent: key=${scope}:${peerId}`);
 
@@ -201,12 +229,13 @@ function assembleAgentBody(
   const isGroup = scope === 'group';
   const wasMentioned = state.mention?.wasMentioned ?? false;
   const batchDispatch = state.batchDispatch === true;
+  const aggregated = state.aggregated === true;
   const userMessage = buildUserMessage(userContent, quotePart, msg.senderId, msg.senderName, isGroup, wasMentioned);
 
   const dynamicCtx = buildDynamicCtx(msg, state, downloaded);
 
   const base = dynamicCtx ? `${dynamicCtx}${userMessage}` : userMessage;
-  const agentBody = buildAgentBody(base, state.history, isGroup, wasMentioned, batchDispatch);
+  const agentBody = buildAgentBody(base, state.history, isGroup, wasMentioned, batchDispatch, aggregated);
 
   return agentBody;
 }
@@ -348,11 +377,21 @@ function buildAgentBody(
   isGroup: boolean,
   wasMentioned: boolean,
   batchDispatch = false,
+  aggregated = false,
 ): string {
   // 群内：真实 @ 或冷却派发(batchDispatch)时，把累积的群历史打包给 AI（后者不打假 @you 标签）
   const includeHistory = isGroup && (wasMentioned || batchDispatch) && !!history && history.length > 0;
+
+  // 聚合投递提示(2026-09-07 主人定): 这些消息是我上一轮回合进行中群友发的, 攒到回合结束
+  // 才统一入站 —— 时间上早于我的上一次回复, 不是群友在回复我。必须显式说明, 否则 AI 会
+  // 误以为它们是"我回完之后群友接着说的"(dsh 队列特性: 攒的消息看起来像新的一轮)。
+  const aggregatedNote = aggregated
+    ? '[系统提示] 以下消息(含上方历史与当前消息)发生在你上一次回复之前——是你在思考/输出期间，群友陆续发出的消息，由系统攒到你这轮回合结束后统一送入。它们不是对你回复的回应，请不要把它们当成新的一轮对话；请通读后综合回应（如需回应）。\n\n'
+    : '';
+
   if (!includeHistory) {
-    return base;
+    // 私聊等无历史打包场景: 聚合提示直接置于正文前
+    return aggregatedNote + base;
   }
 
   const historyLines = history.map(h => {
@@ -361,13 +400,14 @@ function buildAgentBody(
   });
 
   return [
+    aggregated ? '[系统提示] 以下历史与当前消息发生在你上一次回复之前(你思考/输出期间群友所发, 非对你的回应), 请通读后综合回应。' : '',
     '[Chat history begins]',
     ...historyLines,
     '',
     '[Chat history ends]',
     '[Current message]',
     base,
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }
 
 // ══════════════════════════════════════════════════════════════
