@@ -121,6 +121,7 @@ async function installLiveSettings(ctx: Context, live: ImQQBotConfig, logger: Lo
     groupAdmin: live.groupAdmin,
     enableApprovals: live.enableApprovals,
     approvalTimeoutMs: live.approvalTimeoutMs,
+    outboundMode: live.outboundMode,
   };
   let source: () => EditableConfig = () => entry;
   const sync = (): void => {
@@ -135,6 +136,7 @@ async function installLiveSettings(ctx: Context, live: ImQQBotConfig, logger: Lo
       if (next.groupAdmin) live.groupAdmin = next.groupAdmin;
       if (typeof next.enableApprovals === 'boolean') live.enableApprovals = next.enableApprovals;
       if (typeof next.approvalTimeoutMs === 'number') live.approvalTimeoutMs = next.approvalTimeoutMs;
+      if (next.outboundMode === 'active' || next.outboundMode === 'passive') live.outboundMode = next.outboundMode;
       logger.info('[im-qqbot] 设置已同步(live): behavior/sticker/injectRules/groupPrompt/schedule/groupAdmin/approvals');
     } catch (err) {
       logger.warn?.(`im-qqbot: 设置同步失败: ${err instanceof Error ? err.message : String(err)}`);

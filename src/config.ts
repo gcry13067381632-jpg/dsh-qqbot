@@ -150,6 +150,8 @@ export interface EditableConfig {
   enableApprovals?: boolean;
   /** QQ 权限申请等待时长(ms), 超时自动拒绝 */
   approvalTimeoutMs?: number;
+  /** 出站方式: active=全主动(不带回复 msg_id, 连发不受限; 私聊受 48h 窗), passive=全被动回复(带 msg_id, 连发受 QQ 回复上限) */
+  outboundMode?: 'active' | 'passive';
 }
 
 /**
@@ -294,6 +296,7 @@ export const EditableConfigSchema: Schema<EditableConfig> = Schema.object({
   schedule: scheduleSchema,
   enableApprovals: Schema.boolean().default(false).description('QQ 远程审批: dsh 权限申请发到 QQ, 用 /approve CODE 放行(保存后对新请求生效)'),
   approvalTimeoutMs: Schema.number().default(120000).description('QQ 权限申请等待时长(ms), 超时自动拒绝'),
+  outboundMode: Schema.union(['active','passive']).default('active').description('出站方式: 主动=不带回复 msg_id(连发不受限, 私聊受48h窗); 被动=带 msg_id 回复(连发受QQ上限)'),
 });
 
 export interface ImQQBotConfig {
@@ -351,6 +354,8 @@ export interface ImQQBotConfig {
   approvalTimeoutMs: number;
   /** QQ 远程提问(ask_user_question → QQ 按钮卡片), 默认开; false=交回 Web UI */
   enableUserQuestions?: boolean;
+  /** 出站方式: active=全主动(不带 msg_id) / passive=全被动(带 msg_id 回复) */
+  outboundMode?: 'active' | 'passive';
 }
 
 export const ConfigSchema: Schema<ImQQBotConfig> = Schema.object({
@@ -413,4 +418,5 @@ export const ConfigSchema: Schema<ImQQBotConfig> = Schema.object({
   debug: Schema.boolean().default(false),
   enableApprovals: Schema.boolean().default(false).description('通过 QQ 接收并处理 dsh 一次性权限申请(远程审批: 发起者用 /approve CODE 放行)'),
   approvalTimeoutMs: Schema.number().default(120000).description('QQ 权限申请超时(ms), 超时自动拒绝'),
+  outboundMode: Schema.union(['active','passive']).default('active').description('出站方式: 主动=不携带回复 msg_id(连发不受限, 私聊受48h窗); 被动=携带 msg_id 回复(连发受 QQ 回复同一消息上限)'),
 });

@@ -57,9 +57,11 @@ class OutboundRouter {
     private readonly toolsRegistry: ToolsRegistryLike | undefined,
   ) {}
 
-  /** 出站目标: 群回合内已发过 >=1 条 → 去掉 msg_id 主动发(同面板); 首条/私聊保持被动回复 */
+  /** 出站目标: outboundMode=active → 一律不带 msg_id 主动发(连发不受限; 私聊受48h窗);
+   *  passive → 一律带 msg_id 被动回复(连发受 QQ 回复同一消息上限) */
   private outTarget(record: SessionRecord) {
-    if (this.turnGroupSent > 0 && record.replyTarget.scope === 'group' && record.replyTarget.targetId) {
+    const mode = this.config.outboundMode || 'active';
+    if (mode === 'active' && record.replyTarget.targetId) {
       return { scope: record.replyTarget.scope, targetId: record.replyTarget.targetId } as never;
     }
     return record.replyTarget;

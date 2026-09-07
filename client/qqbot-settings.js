@@ -316,7 +316,7 @@ window.__ModuleLoader__.load({
           NumRow({ label: '群里没人 @ 她时,隔几秒才回一次(0=每条都回)', value: cfg.behavior.freeIntervalSec, onChange: function (v) { setBehavior({ freeIntervalSec: v }) } }),
           NumRow({ label: '有人 @ 她时,两次回复至少隔几秒(0=随叫随到)', value: cfg.behavior.mentionIntervalSec, onChange: function (v) { setBehavior({ mentionIntervalSec: v }) } }),
           NumRow({ label: '私聊里隔几秒回一次(0=不限制)', value: cfg.behavior.directIntervalSec, onChange: function (v) { setBehavior({ directIntervalSec: v }) } }),
-          h('div', { style: { fontSize: 12, color: '#666', margin: '10px 0 2px' } }, '延迟聚合(另一套机制,和上面冷却不冲突): 她收到消息先等一小会儿, 把连发的话攒一起综合回, 免得只回第一句。'),
+          h('div', { style: { fontSize: 12, color: '#666', margin: '10px 0 2px' } }, '出站方式(连发消息 QQ 端丢失时切主动):'),          h('div', { style: { display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' } },            ['active', 'passive'].map(function (m) {              return h('label', { style: { display: 'inline-flex', gap: 5, alignItems: 'center', fontSize: 12, color: '#333', cursor: 'pointer' } },                h('input', { type: 'radio', name: 'qqs-outbound', checked: (cfg.outboundMode || 'active') === m, onChange: function () { setCfg(function (c) { return Object.assign({}, c, { outboundMode: m }) }) } }),                m === 'active' ? '主动(推荐:连发不受限)' : '被动(带回复id,连发受限)')            })),          h('div', { style: { fontSize: 12, color: '#888' } }, '主动=每条独立新消息(同面板,可连发十条; 私聊受48h互动窗); 被动=回复你那条消息(连发约4~5条后被QQ吞)。'),          h('div', { style: { fontSize: 12, color: '#666', margin: '10px 0 2px' } }, '延迟聚合(另一套机制,和上面冷却不冲突): 她收到消息先等一小会儿, 把连发的话攒一起综合回, 免得只回第一句。'),
           BoolRow({ label: '开启延迟聚合(不勾=回到来一条回一条)', value: dbc.enabled !== false, onChange: function (v) { setBehavior({ debounce: { ...dbc, enabled: v } }) } }),
           NumRow({ label: '对方停口几秒后她才开口(默认3;0=不停顿)', value: dbc.silenceSec != null ? dbc.silenceSec : 3, onChange: function (v) { setBehavior({ debounce: { ...dbc, silenceSec: v } }) } }),
           NumRow({ label: '攒满几条立即开口,不等对方停(默认10)', value: dbc.maxMsgs != null ? dbc.maxMsgs : 10, onChange: function (v) { setBehavior({ debounce: { ...dbc, maxMsgs: v } }) } }),
@@ -1700,7 +1700,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
     //   · 群管理(发消息/审批入群/禁言) → 悬浮球点开成操作台
     var DOCK_CSS = "#qqs-dock-wrap{position:fixed;right:18px;bottom:190px;z-index:9997;font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif}#qqs-dock-ball{width:52px;height:52px;border-radius:50%;background:linear-gradient(160deg,#7c6cf0,#5b4fd8);color:#fff;font-size:24px;line-height:52px;text-align:center;cursor:pointer;box-shadow:0 6px 20px rgba(90,70,220,.4);user-select:none;transition:transform .12s,box-shadow .12s;position:relative}#qqs-dock-ball:hover{transform:scale(1.06)}#qqs-dock-badge{position:absolute;top:-4px;right:-4px;min-width:18px;height:18px;border-radius:9px;background:#ff4d4f;color:#fff;font-size:11px;font-weight:700;line-height:18px;padding:0 4px;box-sizing:border-box;text-align:center;display:none}#qqs-dock-panel{position:fixed;right:18px;bottom:190px;z-index:9998;width:min(720px,94vw);max-height:68vh;display:none;flex-direction:column;background:#fff;border:1px solid #d9c6ff;border-radius:16px;box-shadow:0 12px 40px rgba(60,40,140,.25);overflow:hidden;font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif}#qqs-dock-panel .dk-h{display:flex;align-items:center;gap:8px;padding:10px 14px;background:linear-gradient(90deg,#7c6cf01f,#7c6cf008);font-size:14px;font-weight:700;color:#4a3a9f;border-bottom:1px solid #efe8ff}#qqs-dock-panel .dk-b{padding:10px 14px;overflow:auto;font-size:13px;color:#1f2329}#qqs-dock-panel .dk-tab{display:flex;gap:4px;border-bottom:1px solid #eee;margin-bottom:10px}#qqs-dock-panel .dk-tab button{font:inherit;font-size:13px;padding:6px 14px;border:none;background:none;cursor:pointer;color:#666;border-bottom:2px solid transparent}#qqs-dock-panel .dk-tab button.on{color:#4a3a9f;font-weight:700;border-bottom-color:#7c6cf0}#qqs-dock-panel select.qqs-sel,#qqs-dock-panel input.qqs-txt,#qqs-dock-panel textarea.qqs-txt{font:inherit;color:#1f2329;background:#fff;border:1px solid #d0d5dd;border-radius:8px;padding:5px 8px;outline:none}#qqs-dock-panel .dk-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0}#qqs-dock-panel .dk-btn{font:inherit;font-size:13px;padding:5px 12px;border-radius:8px;cursor:pointer;border:1px solid #d9c6ff;background:#f1ecff;color:#4a3a9f}#qqs-dock-panel .dk-btn.ok{background:#e6f7ec;color:#187a3d;border-color:#b8e6c8}#qqs-dock-panel .dk-btn.no{background:#fdeeee;color:#c23131;border-color:#f3c4c4}#qqs-dock-panel .dk-btn:disabled{opacity:.5;cursor:default}#qqs-dock-panel .dk-msg{color:#888;font-size:12px;padding:2px 0}#qqs-dock-panel .dk-list{max-height:34vh;overflow:auto;border:1px solid #f0ecff;border-radius:10px;padding:4px}#qqs-dock-panel .dk-item{display:flex;align-items:center;gap:8px;padding:6px 8px;border-bottom:1px solid #f5f2ff;flex-wrap:wrap;font-size:13px}#qqs-dock-panel .dk-item:last-child{border-bottom:none}#qqs-dock-panel .dk-empty{color:#aaa;text-align:center;padding:18px 0;font-size:12px}"
     // ── 💬 聊天视图样式(dock 追加段, 2026-09-07): QQ 风格气泡, 群友左(bot)右 ──
-    var DOCK_CSS2 = "#qqs-dock-panel .dk-chat-head{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:0 0 6px}#qqs-dock-panel .dk-chat-box{overflow-y:auto;overscroll-behavior:contain;background:#f5f6f8;border:1px solid #e6e8ec;border-radius:10px;padding:10px 12px;box-sizing:border-box;height:min(36vh,300px);min-height:140px;scroll-behavior:auto}#qqs-dock-panel .dk-chat-box::-webkit-scrollbar{width:6px}#qqs-dock-panel .dk-chat-box::-webkit-scrollbar-thumb{background:#d3d7dd;border-radius:3px}#qqs-dock-panel .dk-crow{display:flex;gap:8px;align-items:flex-start;margin:0 0 12px}#qqs-dock-panel .dk-crow.out{flex-direction:row-reverse}#qqs-dock-panel .dk-ava{width:32px;height:32px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;color:#fff;overflow:hidden;user-select:none;background:linear-gradient(150deg,#8fb3e8,#5f8fd9)}#qqs-dock-panel .dk-crow.out .dk-ava{background:linear-gradient(150deg,#5ec7f2,#3b8fe0)}#qqs-dock-panel .dk-cmain{display:flex;flex-direction:column;max-width:calc(100% - 40px);min-width:0}#qqs-dock-panel .dk-crow.in .dk-cmain{align-items:flex-start}#qqs-dock-panel .dk-crow.out .dk-cmain{align-items:flex-end}#qqs-dock-panel .dk-cmeta{font-size:11px;color:#9aa0a8;margin:0 6px 2px;max-width:100%;display:flex;align-items:center;gap:5px;flex-wrap:wrap}#qqs-dock-panel .dk-crow.out .dk-cmeta{flex-direction:row-reverse}#qqs-dock-panel .dk-cbubble{padding:7px 11px;font-size:13px;line-height:1.55;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;box-shadow:0 1px 2px rgba(20,30,60,.06);max-width:100%}#qqs-dock-panel .dk-crow.in .dk-cbubble{background:#fff;border:1px solid #e3e6ea;color:#1f2329;border-radius:3px 10px 10px 10px}#qqs-dock-panel .dk-crow.out .dk-cbubble{background:linear-gradient(180deg,#69a6ff,#3d7df5);color:#fff;border-radius:10px 3px 10px 10px}#qqs-dock-panel .dk-img{display:block;max-width:min(230px,52vw);max-height:200px;border-radius:6px;margin:0 0 3px;object-fit:cover;cursor:zoom-in}#qqs-dock-panel .dk-audio{display:block;max-width:min(260px,60vw);width:100%;height:34px;margin:0 0 2px}#qqs-dock-panel .dk-file{display:inline-flex;align-items:center;gap:5px;max-width:100%;padding:6px 12px;border-radius:8px;background:#f0f6ff;border:1px solid #cfe0fa;color:#2b6bd8;font-size:13px;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#qqs-dock-panel .dk-file:hover{background:#e2edff}#qqs-dock-panel .dk-video{display:block;max-width:min(260px,60vw);max-height:180px;border-radius:6px;margin:0 0 2px}#qqs-dock-panel .dk-ctag{display:inline-block;font-size:10px;color:#5b8ff0;background:#eaf2ff;border:1px solid #d4e3fd;border-radius:8px;padding:0 6px}#qqs-dock-panel .dk-chat-top{text-align:center;color:#b0b4bb;font-size:11px;padding:2px 0 6px;user-select:none}#qqs-dock-panel .dk-chat-bottom{text-align:center;color:#c3c7cd;font-size:11px;padding:6px 0 0}#qqs-dock-panel .dk-composer{margin-top:8px;border:1px solid #e3e6ea;border-radius:10px;background:#fff;overflow:hidden}#qqs-dock-panel .dk-composer textarea{width:100%;box-sizing:border-box;border:none;outline:none;resize:none;font:inherit;font-size:13px;color:#1f2329;background:transparent;padding:8px 10px 4px;line-height:1.5;max-height:120px}#qqs-dock-panel .dk-cbar{display:flex;align-items:center;gap:4px;padding:4px 8px 6px;flex-wrap:wrap}#qqs-dock-panel .dk-cbar .dk-btn{padding:3px 10px;font-size:12px;border-radius:7px}#qqs-dock-panel .dk-cbar .dk-send{background:linear-gradient(180deg,#69a6ff,#3d7df5);color:#fff;border:none;border-radius:8px;padding:5px 18px;font-size:13px;font-weight:600;cursor:pointer}#qqs-dock-panel .dk-cbar .dk-send:disabled{opacity:.5;cursor:default}#qqs-lightbox{position:fixed;inset:0;z-index:2147483000;background:rgba(8,10,18,.82);display:flex;align-items:center;justify-content:center;cursor:zoom-out}#qqs-lightbox img{max-width:92vw;max-height:92vh;border-radius:8px;box-shadow:0 10px 60px rgba(0,0,0,.6)}#qqs-lightbox .lb-x{position:fixed;right:16px;top:10px;color:#fff;font-size:30px;cursor:pointer;line-height:1;padding:6px}#qqs-dock-panel.dk-full{left:0!important;top:0!important;right:0!important;bottom:0!important;width:100vw!important;max-width:100vw!important;height:100vh!important;max-height:100vh!important;border-radius:0;z-index:2147482000;display:flex;flex-direction:column}#qqs-dock-panel.dk-full .dk-h,#qqs-dock-panel.dk-full .dk-detect{flex:none}#qqs-dock-panel.dk-full .dk-b{flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column;padding:8px 14px 6px}#qqs-dock-panel.dk-full .dk-chat-wrap{display:flex;flex-direction:column;flex:1;min-height:0}#qqs-dock-panel.dk-full .dk-chat-head{flex:none}#qqs-dock-panel.dk-full .dk-chat-box{flex:1;height:auto!important;min-height:0!important;max-height:none!important;overflow-y:auto;overscroll-behavior:contain}#qqs-dock-panel.dk-full .dk-composer{flex:none;margin-top:6px}"
+    var DOCK_CSS2 = "#qqs-dock-panel .dk-chat-head{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:0 0 6px}#qqs-dock-panel .dk-chat-box{overflow-y:auto;overscroll-behavior:contain;background:#f5f6f8;border:1px solid #e6e8ec;border-radius:10px;padding:10px 12px;box-sizing:border-box;height:min(36vh,300px);min-height:140px;scroll-behavior:auto}#qqs-dock-panel .dk-chat-box::-webkit-scrollbar{width:6px}#qqs-dock-panel .dk-chat-box::-webkit-scrollbar-thumb{background:#d3d7dd;border-radius:3px}#qqs-dock-panel .dk-crow{display:flex;gap:8px;align-items:flex-start;margin:0 0 12px}#qqs-dock-panel .dk-crow.out{flex-direction:row-reverse}#qqs-dock-panel .dk-ava{width:32px;height:32px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;color:#fff;overflow:hidden;user-select:none;background:linear-gradient(150deg,#8fb3e8,#5f8fd9)}#qqs-dock-panel .dk-crow.out .dk-ava{background:linear-gradient(150deg,#5ec7f2,#3b8fe0)}#qqs-dock-panel .dk-cmain{display:flex;flex-direction:column;max-width:calc(100% - 40px);min-width:0}#qqs-dock-panel .dk-crow.in .dk-cmain{align-items:flex-start}#qqs-dock-panel .dk-crow.out .dk-cmain{align-items:flex-end}#qqs-dock-panel .dk-cmeta{font-size:11px;color:#9aa0a8;margin:0 6px 2px;max-width:100%;display:flex;align-items:center;gap:5px;flex-wrap:wrap}#qqs-dock-panel .dk-crow.out .dk-cmeta{flex-direction:row-reverse}#qqs-dock-panel .dk-cbubble{padding:7px 11px;font-size:13px;line-height:1.55;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;box-shadow:0 1px 2px rgba(20,30,60,.06);max-width:100%}#qqs-dock-panel .dk-crow.in .dk-cbubble{background:#fff;border:1px solid #e3e6ea;color:#1f2329;border-radius:3px 10px 10px 10px}#qqs-dock-panel .dk-crow.out .dk-cbubble{background:linear-gradient(180deg,#69a6ff,#3d7df5);color:#fff;border-radius:10px 3px 10px 10px}#qqs-dock-panel .dk-img{display:block;max-width:min(230px,52vw);max-height:200px;border-radius:6px;margin:0 0 3px;object-fit:cover;cursor:zoom-in}#qqs-dock-panel .dk-audio{display:block;max-width:min(260px,60vw);width:100%;height:34px;margin:0 0 2px}#qqs-dock-panel .dk-file{display:inline-flex;align-items:center;gap:5px;max-width:100%;padding:6px 12px;border-radius:8px;background:#f0f6ff;border:1px solid #cfe0fa;color:#2b6bd8;font-size:13px;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#qqs-dock-panel .dk-file:hover{background:#e2edff}#qqs-dock-panel .dk-video{display:block;max-width:min(260px,60vw);max-height:180px;border-radius:6px;margin:0 0 2px}#qqs-dock-panel .dk-ctag{display:inline-block;font-size:10px;color:#5b8ff0;background:#eaf2ff;border:1px solid #d4e3fd;border-radius:8px;padding:0 6px}#qqs-dock-panel .dk-chat-top{text-align:center;color:#b0b4bb;font-size:11px;padding:2px 0 6px;user-select:none}#qqs-dock-panel .dk-chat-bottom{text-align:center;color:#c3c7cd;font-size:11px;padding:6px 0 0}#qqs-dock-panel .dk-composer{margin-top:8px;border:1px solid #e3e6ea;border-radius:10px;background:#fff;overflow:visible}#qqs-dock-panel .dk-composer textarea{width:100%;box-sizing:border-box;border:none;outline:none;resize:none;font:inherit;font-size:13px;color:#1f2329;background:transparent;padding:8px 10px 4px;line-height:1.5;max-height:120px}#qqs-dock-panel .dk-cbar{display:flex;align-items:center;gap:4px;padding:4px 8px 6px;flex-wrap:wrap}#qqs-dock-panel .dk-cbar .dk-btn{padding:3px 10px;font-size:12px;border-radius:7px}#qqs-dock-panel .dk-cbar .dk-send{background:linear-gradient(180deg,#69a6ff,#3d7df5);color:#fff;border:none;border-radius:8px;padding:5px 18px;font-size:13px;font-weight:600;cursor:pointer}#qqs-dock-panel .dk-cbar .dk-send:disabled{opacity:.5;cursor:default}#qqs-lightbox{position:fixed;inset:0;z-index:2147483000;background:rgba(8,10,18,.82);display:flex;align-items:center;justify-content:center;cursor:zoom-out}#qqs-lightbox img{max-width:92vw;max-height:92vh;border-radius:8px;box-shadow:0 10px 60px rgba(0,0,0,.6)}#qqs-dock-panel .dk-composer{position:relative}#qqs-dock-panel .dk-at-pop{position:absolute;left:6px;bottom:calc(100% - 4px);z-index:30;min-width:200px;max-width:90%;max-height:190px;overflow-y:auto;background:#fff;border:1px solid #e0e4ea;border-radius:10px;box-shadow:0 8px 24px rgba(30,40,80,.16);padding:4px;display:none}#qqs-dock-panel .dk-at-item{display:flex;align-items:center;gap:6px;padding:5px 9px;border-radius:7px;cursor:pointer;font-size:12px;color:#1f2329;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}#qqs-dock-panel .dk-at-item.on,#qqs-dock-panel .dk-at-item:hover{background:#eef3ff;color:#2b5fd0}#qqs-dock-panel .dk-at-empty{color:#aaa;font-size:12px;padding:6px 9px}#qqs-lightbox .lb-x{position:fixed;right:16px;top:10px;color:#fff;font-size:30px;cursor:pointer;line-height:1;padding:6px}#qqs-dock-panel.dk-full{left:0!important;top:0!important;right:0!important;bottom:0!important;width:100vw!important;max-width:100vw!important;height:100vh!important;max-height:100vh!important;border-radius:0;z-index:2147482000;display:flex;flex-direction:column}#qqs-dock-panel.dk-full .dk-h,#qqs-dock-panel.dk-full .dk-detect{flex:none}#qqs-dock-panel.dk-full .dk-b{flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column;padding:8px 14px 6px}#qqs-dock-panel.dk-full .dk-chat-wrap{display:flex;flex-direction:column;flex:1;min-height:0}#qqs-dock-panel.dk-full .dk-chat-head{flex:none}#qqs-dock-panel.dk-full .dk-chat-box{flex:1;height:auto!important;min-height:0!important;max-height:none!important;overflow-y:auto;overscroll-behavior:contain}#qqs-dock-panel.dk-full .dk-composer{flex:none;margin-top:6px}"
     function ensureDockCss2() { try { if (!document.getElementById('qqs-dock-css2')) { var st = document.createElement('style'); st.id = 'qqs-dock-css2'; st.textContent = DOCK_CSS2; document.head.appendChild(st) } } catch (e) {} };
     function ensureDockCss() { try { if (!document.getElementById('qqs-dock-css')) { var st = document.createElement('style'); st.id = 'qqs-dock-css'; st.textContent = DOCK_CSS; document.head.appendChild(st) } } catch (e) {} }
     function startQqDock(sessionsSvc) {
@@ -1887,6 +1887,8 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
       // ── 面板状态(每个实例独立保存, 切回不丢) ──
       var state = { ns: '', accts: [], gid: '', groups: [], tab: 'chat', sendScope: 'group', sendTo: '', sendName: '', sendText: '', insertCtx: true, targetQ: '', c2cs: [], joins: null, mutes: null, members: null, muteSecs: '60', bindGid: '', bindName: '', msg: '', busy: '', wantPeer: null, lookedUp: false, detected: null, detectedHit: null, chatItems: [], chatMore: false, chatBusy: '', chatErr: '', chatOldest: 0, chatText: '', chatIns: true }
       var chatFlash = '' // 发送结果/错误提示(短时展示, 不被列表计数覆盖)
+      // @ mention(输入框敲 @ 弹成员候选): 群聊目标才启用
+      var atM = { members: [], open: false, kw: '', idx: 0, range: null, key: '' }
       function loadAccts() {
         api('accounts').then(function (d) {
           var list = (d && Array.isArray(d.instances) ? d.instances : []).filter(function (a) { return !a.disabled })
@@ -2172,7 +2174,8 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             + '</div>'
           // QQ 风格输入栏: 文本发送; bbcode [MEDIA:图片|路径/链接] 支持本地图与网络图
           body += '<div class="dk-composer">'
-            + '<textarea id="dk-chat-input" rows="2" placeholder="输入文字发送; 点 📷插图/📎文件 把本地路径或网络链接变成 [MEDIA:图片|来源] 放进文本框(可拖拽/粘贴图片)">' + esc(state.chatText) + '</textarea>'
+            + '<div class="dk-at-pop" id="dk-at-pop"></div>'
+            + '<textarea id="dk-chat-input" rows="2" placeholder="输入文字发送(群聊敲 @ 可搜成员); 📷插图/📎文件 把本地路径或网络链接变成 [MEDIA:图片|来源]">' + esc(state.chatText) + '</textarea>'
             + '<div class="dk-cbar">'
             + '<button class="dk-btn" id="dk-chat-ins" title="发送后写一条「用户代你发送」模拟消息进 bot 上下文(web 流可见)">🧠 ' + (state.chatIns ? '记入上下文' : '不记上下文') + '</button>'
             + '<span class="dk-msg" id="dk-chat-cnt" style="color:#b3b7bd">0/2000</span>'
@@ -2266,9 +2269,29 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         }
         var cinput = panel.querySelector('#dk-chat-input')
         if (cinput) {
-          cinput.oninput = function (e) { state.chatText = e.target.value; var n = panel.querySelector('#dk-chat-cnt'); if (n) n.textContent = state.chatText.length + '/2000' }
+          cinput.oninput = function (e) {
+            state.chatText = e.target.value
+            var n = panel.querySelector('#dk-chat-cnt'); if (n) n.textContent = state.chatText.length + '/2000'
+            if (state.sendScope !== 'c2c') chatAtScan() // 输入 @ 弹成员候选
+          }
           cinput.onkeydown = function (e) {
-            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); chatSend('auto') }
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+              if (atM.open) {
+                e.preventDefault()
+                var lst = chatAtList()
+                if (lst.length) { atM.idx = (atM.idx + (e.key === 'ArrowDown' ? 1 : -1) + lst.length) % lst.length; chatAtRender() }
+              }
+              return
+            }
+            if (e.key === 'Enter') {
+              if (atM.open) {
+                var l2 = chatAtList()
+                if (l2.length) { e.preventDefault(); chatAtPick(l2[atM.idx >= l2.length ? 0 : atM.idx].mid); return }
+              }
+              if (!e.shiftKey) { e.preventDefault(); chatSend('auto') }
+              return
+            }
+            if (e.key === 'Escape' && atM.open) { chatAtClose(); return }
           }
           // 粘贴/拖拽图片 → 自动转 [MEDIA:kind|来源] 追加进文本框(有本机路径直用, 否则小文件上传到 dock-uploads)
           cinput.onpaste = function (e) {
@@ -2292,6 +2315,9 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             if (files.length) chatIngestFiles(files)
           }
         }
+        // 群聊目标: 预热 @ 成员表(输入 @ 时已缓存)
+        if (state.sendScope !== 'c2c' && state.gid) chatLoadAtMembers()
+        else chatAtClose()
         var cins = panel.querySelector('#dk-chat-ins')
         if (cins) cins.onclick = function () { state.chatIns = !state.chatIns; cins.textContent = '🧠 ' + (state.chatIns ? '记入上下文' : '不记上下文') }
         var csend = panel.querySelector('#dk-chat-send')
@@ -2606,6 +2632,12 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
       }
       function chatSendText(t) {
         if (state.chatBusy) return // 防重入(媒体后补发文本也要等空闲)
+        // @ mention: 输入框里的 @<32hex> → QQ 高亮 <@openid>(先保护已手输的 <@…>)
+        if (state.sendScope === 'group') {
+          t = String(t || '').replace(/<@([A-Za-z0-9]{32})>/g, '\u0001AT$1\u0001')
+            .replace(/@([A-Za-z0-9]{32})(?![A-Za-z0-9])/g, '<@$1>')
+            .replace(/\u0001AT([A-Za-z0-9]{32})\u0001/g, '<@$1>')
+        }
         state.chatBusy = 'send'
         setSending(true, '发送中…')
         setChatStatus('正在发送文本…')
@@ -2619,6 +2651,84 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           if (d && d.ok) { state.chatText = ''; renderChatInput(); flashStatus(d.msg || '已发送 ✓'); loadChat(true) }
           else flashStatus((d && (d.msg || (d.err && d.err.human) || d.error)) || '发送结果未知', 6000)
         })
+      }
+      // ── @ mention: 输入框敲 @ 自动弹成员候选, 支持继续输入过滤(昵称/ID) ──
+      function chatAtKey() { return (state.ns || '') + ':' + (state.gid || '') }
+      function chatLoadAtMembers() {
+        if (state.sendScope === 'c2c' || !state.gid) { atM.members = []; chatAtClose(); return }
+        var k = chatAtKey()
+        if (atM.key === k && atM.members.length) return
+        atM.key = k
+        var q = 'gid=' + encodeURIComponent(state.gid) + (state.ns ? '&ns=' + encodeURIComponent(state.ns) : '')
+        api('group/members_local', q).then(function (d) {
+          if (atM.key !== chatAtKey()) return
+          atM.members = (d && d.ok && Array.isArray(d.members) ? d.members : []).map(function (m) { return { mid: m.mid, name: m.name || '' } })
+          if (atM.open) chatAtRender()
+        })
+      }
+      // 光标前最近一个 @(到光标为止无空格/换行/@): 返回 {start, kw}
+      function chatAtCtx(text, caret) {
+        var head = String(text || '').slice(0, caret)
+        var m = /@([^\s@]*)$/.exec(head)
+        if (!m) return null
+        return { start: caret - m[0].length, kw: m[1] }
+      }
+      function chatAtScan() {
+        var ta = document.getElementById('dk-chat-input')
+        if (!ta) return
+        var v = ta.value || ''
+        var c = ta.selectionStart == null ? v.length : ta.selectionStart
+        var ctx = chatAtCtx(v, c)
+        if (!ctx) { chatAtClose(); return }
+        if (!atM.members.length) chatLoadAtMembers()
+        atM.open = true
+        atM.kw = String(ctx.kw).toLowerCase()
+        atM.idx = 0
+        atM.range = ctx
+        chatAtRender()
+      }
+      function chatAtList() {
+        if (!atM.open) return []
+        var kw = atM.kw
+        if (!kw) return atM.members
+        return atM.members.filter(function (m) {
+          return (m.name || '').toLowerCase().indexOf(kw) >= 0 || String(m.mid || '').indexOf(kw) >= 0
+        })
+      }
+      function chatAtRender() {
+        var pop = document.getElementById('dk-at-pop')
+        if (!pop) return
+        if (!atM.open) { pop.style.display = 'none'; return }
+        var list = chatAtList()
+        if (!list.length) { pop.style.display = 'block'; pop.innerHTML = '<div class="dk-at-empty">没有匹配的群成员(成员需先发过言)</div>'; return }
+        pop.style.display = 'block'
+        pop.innerHTML = list.map(function (m, i) {
+          return '<div class="dk-at-item' + (i === atM.idx ? ' on' : '') + '" data-mid="' + esc(m.mid) + '">'
+            + '<span>@' + esc(m.name || '(未知名)') + '</span>'
+            + '<span style="color:#99a">' + esc(String(m.mid).slice(0, 6)) + '…</span></div>'
+        }).join('')
+        Array.prototype.forEach.call(pop.querySelectorAll('.dk-at-item'), function (el) {
+          el.onmousedown = function (ev) { ev.preventDefault(); chatAtPick(el.getAttribute('data-mid')) }
+        })
+      }
+      function chatAtPick(mid) {
+        if (mid == null || !atM.range) return
+        var ta = document.getElementById('dk-chat-input')
+        if (!ta) return
+        var v = state.chatText || ''
+        var caret = ta.selectionStart == null ? v.length : ta.selectionStart
+        if (caret < atM.range.start) caret = v.length
+        state.chatText = v.slice(0, atM.range.start) + '@' + mid + ' ' + v.slice(caret)
+        chatAtClose()
+        renderChatInput()
+        ta.focus()
+        var pos = atM.range.start + 1 + String(mid).length + 1
+        try { ta.setSelectionRange(pos, pos) } catch (e) { /* 忽略 */ }
+      }
+      function chatAtClose() {
+        atM.open = false
+        var pop = document.getElementById('dk-at-pop')
+        if (pop) pop.style.display = 'none'
       }
       function chatKindOfFile(f) {
         var t = String((f && f.type) || '').toLowerCase()
