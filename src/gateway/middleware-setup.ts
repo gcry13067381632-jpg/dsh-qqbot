@@ -158,7 +158,22 @@ export function setupMiddlewares(
     const m = /^(\S+)(?:\s+(.*))?$/.exec(body);
     if (!m) return next();
     const name = String(m[1]).toLowerCase();
-    if (name === 'stop' || name === 'bot-stop') return next(); // 打断链路保留给 concurrencyGuard
+    if (name === 'stop' || name === 'bot-stop') {
+      // 真正打断: cancel 当前 peer 的活跃回合(不只是消费消息)
+      try {
+        const isGroup = ctx.message?.kind === 'group';
+        const scope = isGroup ? 'group' : 'c2c';
+        const peerId = isGroup ? ctx.message.groupOpenid : ctx.message.senderId;
+        const rec = peerId ? manager.findByPeer(scope as never, peerId) : undefined;
+        if (rec && rec.agent && typeof rec.agent.cancel === 'function') {
+          rec.agent.cancel({ kind: 'user' });
+          try { await ctx.bot?.sendText(ctx.replyTarget, '⏹ 已停止当前生成'); } catch { /* ignore */ }
+        } else {
+          try { await ctx.bot?.sendText(ctx.replyTarget, '当前没有在生成的回合'); } catch { /* ignore */ }
+        }
+      } catch (e) { /* ignore */ }
+      if (typeof ctx.stop === 'function') { ctx.stop('command:' + name); return; }
+    }
     const cmd = cmdMap.get(name);
     if (!cmd) return next(); // 未知命令放行
     const parsed = { name, args: m[2] ? String(m[2]).split(/\s+/) : [], raw: m[2] ?? '' };
