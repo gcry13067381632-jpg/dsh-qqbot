@@ -301,10 +301,11 @@ export class SessionManager {
     }
 
     // 通道级装配(与 preset 无关)：QQ 会话创建时 provide qqChannel 供通道工具 execute 解析。
-    // ⚠️ 工具注册分层规则(宿主机制, 专家团查明):
-    //   - 有 agent-presets(web): 工具由 preset 的 agent.cordis.yml 声明为插件行, 经 loader 装进 standing 层
-    //     (与 tool-fs 同层) → LLM 可见。此处只 provide qqChannel, 不重复注册。
-    //   - 无 presets(devqq 最小装配): 此处直接注册到 agentCtx(own 层) 兜底。
+    // 工具永久挂载(2026-09-06 主人定): QQ 会话创建/恢复的 setup 事务内一律把 channel-tools 注册到
+    //   agentCtx(own 层, 幂等) → 新会话即刻带工具、重启 resume 也带; 不再依赖 preset 声明
+    //   (任意预设走 QQ 都可用, preset 文件零改动; 账号页预设过滤已放开)。
+    //   standing 层若与 preset 自带装配并存, channel-tools 内部幂等跳过重复, 无副作用。
+    //   安全: setup 只由 QQ 会话管理器(getOrCreate/create/resume)执行, 纯 web 会话不经过 → 不挂。
     const provideChannel =
       this.channelSender === undefined
         ? undefined
@@ -338,15 +339,10 @@ export class SessionManager {
           };
     const channelSetup = (agentCtx: Context) => (async () => {
       provideChannel?.(agentCtx);
-      // 守则/身份 context 注册已移至 ensureGroupRules(每次消息自愈钩子, 幂等)——
-      // setup 只在新建会话执行, 重启恢复的会话不跑, 注册放这里会漏。
-      // 有 presets(standing 装配)时由 preset 插件行装载工具, 不再注册 agentCtx
-      if (!presets) {
-        diagSm('无 agent-presets → agentCtx 直接注册(devqq 路径)');
-        await registerOnAgentCtx?.(agentCtx);
-      } else {
-        diagSm('有 agent-presets → 工具由 preset 装配层提供, 仅 provide qqChannel');
-      }
+      // 守则/身份 context 注册已移至 ensureGroupRules(每次消息自愈钩子, 幂等)。
+      // QQ 工具: setup 事务(create/resume 都执行)内无条件注册到 agentCtx own 层(幂等)——
+      // 有 presets 也注册(此前只 provide、留给 preset 装配; 2026-09-06 改为永久挂载)。
+      await registerOnAgentCtx?.(agentCtx);
     })();
 
     if (!presets) return channelSetup ? { setup: channelSetup } : {};

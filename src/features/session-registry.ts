@@ -100,6 +100,18 @@ export async function getOrCreateByPeerWeb(
   } catch { return undefined; }
 }
 
+const botOnline = new Map<string, boolean>();
+
+/** 标记某实例在线状态(bootstrap bot ready/error/resumed 事件驱动) */
+export function setBotOnline(ns: string, on: boolean): void {
+  if (on) botOnline.set(ns, true);
+  else botOnline.delete(ns);
+}
+/** 某实例是否在线(未注册/未知 = false) */
+export function isBotOnline(ns: string): boolean {
+  return botOnline.get(ns) === true;
+}
+
 /** 是否已注册某 ns(诊断用) */
 export function hasManager(ns: string): boolean {
   return managers.has(ns);

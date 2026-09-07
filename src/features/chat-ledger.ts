@@ -14,8 +14,48 @@
  *
  * ⚠️ 本地手改功能（fork 新增）：维护清单见工作区根《插件改动维护注意事项.md》。
  */
-import { appendFileSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, statSync, writeFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
+
+// 台账自动去重(2026-09-07 主人定): append 照旧(简单并发安全), 文件每攒 COMPACT_EVERY 条自动压缩一次,
+// 按对象(群/人 或 群成员)只保留最新一条 → "一个人只记一条", 文件不随发言膨胀; 读端聚合语义不变。
+const COMPACT_EVERY = 200;
+const NL = String.fromCharCode(10);
+const appendCount = new Map<string, number>();
+function ledgerKeyOf(o: { scope?: string; id?: string; gid?: string; mid?: string }): string {
+  if (o.scope && o.id) return o.scope + ':' + o.id;
+  if (o.gid && o.mid) return o.gid + ':' + o.mid;
+  return '';
+}
+function compactLedgerFile(file: string): void {
+  appendCount.set(file, 0);
+  try {
+    const raw = readFileSync(file, 'utf8');
+    const map = new Map<string, unknown>();
+    for (const l of raw.split(NL)) {
+      const t = l.trim();
+      if (!t) continue;
+      try {
+        const o = JSON.parse(t) as { ts?: number; scope?: string; id?: string; gid?: string; mid?: string };
+        if (typeof o.ts !== 'number') continue;
+        const key = ledgerKeyOf(o);
+        if (!key) continue;
+        const cur = map.get(key) as { ts?: number } | undefined;
+        if (!cur || (o.ts as number) > (cur.ts || 0)) map.set(key, o);
+      } catch { /* 坏行跳过 */ }
+    }
+    if (map.size === 0) return;
+    const out = [...map.values()].sort((a, b) => ((a as { ts: number }).ts) - ((b as { ts: number }).ts)).map((o) => JSON.stringify(o)).join(NL) + NL;
+    const tmp = file + '.tmp-' + Date.now();
+    writeFileSync(tmp, out, 'utf8');
+    renameSync(tmp, file);
+  } catch { /* 压缩失败不影响主链 */ }
+}
+function noteLedgerAppend(file: string): void {
+  const n = (appendCount.get(file) || 0) + 1;
+  appendCount.set(file, n);
+  if (n >= COMPACT_EVERY) compactLedgerFile(file);
+}
 import type { MiddlewareContext } from '@tencent-connect/qqbot-nodejs';
 
 export interface KnownChatLine {
@@ -46,14 +86,16 @@ export function groupMembersPath(dataDir: string): string {
 /** 由 dsh-qqbot 侧写入(中间件); host 侧只读聚合 */
 export function appendLedger(dataDir: string, line: KnownChatLine): void {
   try {
-    appendFileSync(ledgerPath(dataDir), JSON.stringify(line) + '\n', 'utf8');
+    appendFileSync(ledgerPath(dataDir), JSON.stringify(line) + NL, 'utf8');
+    noteLedgerAppend(ledgerPath(dataDir));
   } catch { /* 台账失败不影响主链 */ }
 }
 
 /** 由 dsh-qqbot 侧写入一条"群成员发言"(中间件); host 侧读聚合出可禁言名单 */
 export function appendGroupMember(dataDir: string, line: KnownGroupMember): void {
   try {
-    appendFileSync(groupMembersPath(dataDir), JSON.stringify(line) + '\n', 'utf8');
+    appendFileSync(groupMembersPath(dataDir), JSON.stringify(line) + NL, 'utf8');
+    noteLedgerAppend(groupMembersPath(dataDir));
   } catch { /* 台账失败不影响主链 */ }
 }
 

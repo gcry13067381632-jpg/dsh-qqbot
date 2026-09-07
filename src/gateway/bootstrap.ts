@@ -25,7 +25,7 @@ import { setChannelBridge } from '../channel-tools.js';
 import { QqApprovalController, setApprovalDispatch, makeApprovalListener, registerApprovalController } from '../features/qq-approval.js';
 import { QqUserQuestionsController, registerQuestionController } from '../features/qq-user-questions.js';
 import { handleGroupJoinRequestEvent } from '../features/group-join-request.js';
-import { registerSessionManager } from '../features/session-registry.js';
+import { registerSessionManager, setBotOnline } from '../features/session-registry.js';
 
 /** 从 interaction 事件推出"回复目标"(回执发到按钮所在群/私聊)。scope 由事件 chat_type/scene 推断 */
 function replyTargetOfInteraction(
@@ -343,9 +343,15 @@ export async function bootstrapGateway(
 
   bot.on('error', (err: unknown) => {
     logger.error(`bot error: ${err instanceof Error ? err.message : String(err)}`);
+    setBotOnline(myNs, false);
+  });
+
+  bot.on('resumed', () => {
+    setBotOnline(myNs, true);
   });
 
   bot.on('ready', () => {
+    setBotOnline(myNs, true);
     console.log(`[im-qqbot] Bot ready! appId=${config.appId}`);
   });
 

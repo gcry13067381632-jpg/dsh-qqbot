@@ -9,7 +9,7 @@
  */
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import type { Context } from '@deepseek-ai/cordis';
-import { appendFileSync, existsSync } from 'node:fs';
+import { appendFileSync, existsSync, statSync } from 'node:fs';
 import type { SessionManager } from './session/session-manager.js';
 import type { QQBotSender } from './transport/outbound-buffer.js';
 import { getStickerStore } from './features/sticker-store.js';
@@ -19,6 +19,23 @@ import { getScheduleStore } from './features/schedule-store.js';
 
 /** 诊断日志路径: 默认关闭; 需要排查时设环境变量 QQBOT_DIAG_FILE 指向日志文件 */
 const DIAG_FILE = process.env.QQBOT_DIAG_FILE || '';
+/** 大文件异步发送阈值: 本地文件 >= 5MB 时走后台任务(SDK 分片上传耗时, 避免阻塞 LLM 回合) */
+const FILE_ASYNC_MIN = 5 * 1024 * 1024;
+let bgSeq = 0;
+function fmtMB(n: number): string { return (n / 1048576).toFixed(1) + 'MB'; }
+/** 把后台任务结果作为 user/message 写回会话(不唤醒, 与入群申请通知同款; 失败静默) */
+function notifySession(sess: unknown, text: string): void {
+  try {
+    const session = sess as { append?: (t: string, d: unknown, o?: unknown) => unknown };
+    if (!session || typeof session.append !== 'function') return;
+    session.append('user/message', {
+      id: 'bg-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8),
+      role: 'user',
+      content: [{ type: 'text', text: text }],
+      source: { kind: 'user' },
+    }, { surfaceOp: 'append' });
+  } catch { /* 通知失败不影响发送结果 */ }
+}
 function diag(line: string): void {
   if (!DIAG_FILE) return;
   try { appendFileSync(DIAG_FILE, `${new Date().toISOString()} ${line}\n`); } catch { /* ignore */ }
@@ -143,6 +160,37 @@ export function apply(ctx: Context): void {
         const srcOpt = /^https?:\/\//i.test(args.source)
           ? { url: args.source }
           : { localPath: args.source };
+        // 本地大文件(>=5MB): 走后台任务——SDK 自动分片上传(prepare->parts->complete)耗时较长,
+        // 工具立即返回不阻塞回合; 完成后/失败把系统消息写回会话, LLM 下轮自然知晓。
+        if (srcOpt.localPath && typeof srcOpt.localPath === 'string') {
+          let big = false;
+          try { big = statSync(srcOpt.localPath).size >= FILE_ASYNC_MIN; } catch { big = false; }
+          if (big && typeof srcOpt.localPath === 'string') {
+            const lp = srcOpt.localPath as string;
+            const st = statSync(lp);
+            const fname = (lp.split(String.fromCharCode(92)).pop() || '').split('/').pop() || 'file';
+            const seq = ++bgSeq;
+            const sess = ((rec.agent as { session?: unknown } | undefined)?.session);
+            void ch.sender.sendMedia(rec.replyTarget, args.kind as never, { localPath: lp } as never)
+              .then((r) => {
+                notifySession(sess, '[系统] 后台任务 #' + seq + ' 完成：已发送 ' + fname + '(' + fmtMB(st.size) + ')。');
+                if (r && r.id) {
+                  try {
+                    const store = getStickerStore(ch.manager.stickerDataDir);
+                    const sid = lookupId(store, lp);
+                    if (sid) store.markUsed(sid);
+                  } catch { /* 统计失败不影响发送 */ }
+                }
+                diag('bgSend #' + seq + ' ok ' + fname);
+              })
+              .catch((e) => {
+                const msg = e instanceof Error ? e.message : String(e);
+                notifySession(sess, '[系统] 后台任务 #' + seq + ' 失败：' + msg + '（未发送完成, 可重试或改用小文件）');
+                diag('bgSend #' + seq + ' fail ' + fname + ': ' + msg);
+              });
+            return { ok: true, msg: '📤 大文件 ' + fname + '(' + fmtMB(st.size) + ') 已提交后台任务 #' + seq + '——分片上传耗时较长, 完成/失败后会有系统消息通知' };
+          }
+        }
         const r = await ch.sender.sendMedia(rec.replyTarget, args.kind as never, srcOpt as never);
         // 发送成功且是图库里的本地图 → 标记"用过"(升正式区, 不入滚动清理)
         if (r?.id && srcOpt.localPath) {

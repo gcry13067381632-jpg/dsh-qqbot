@@ -1043,7 +1043,7 @@ window.__ModuleLoader__.load({
       var [msg, setMsg] = useState('')
       var [busyId, setBusyId] = useState('')
       // 名称解析(2026-09-05): 群=活群真名(accounts 已剔除注销群), 私聊=台账昵称+成员表补名
-      var [chatTg, setChatTg] = useState({ group: [], c2c: [] })
+      var [chatTg, setChatTg] = useState(null) // 活群/昵称台账: null=加载中(不判失效), 数组=已加载
       function load() {
         fetch(API_TIMERS + _tmQ).then(function (r) { return r.json() }).then(function (d) {
           if (d && Array.isArray(d.jobs)) setJobs(d.jobs.slice().reverse())
@@ -1052,14 +1052,17 @@ window.__ModuleLoader__.load({
       }
       useEffect(function () {
         load()
-        fetchChatTargets(props.acct).then(function (t) { setChatTg(t) }).catch(function () {})
+        fetchChatTargets(props.acct).then(function (t) { setChatTg(t && t.group ? t : { group: [], c2c: [] }) }).catch(function () { setChatTg({ group: [], c2c: [] }) })
       }, [])
       function nameOf(scope, id) {
+        if (!chatTg) return ''
         var nm = ''
         ;(chatTg[scope] || []).forEach(function (x) { if (x.id === id) nm = x.name || nm })
         return nm
       }
       function isGroupAlive(gid) {
+        // 台账未加载(null)时不判失效——避免每次进页面先闪"群已失效"; 加载完成后按真实台账判定
+        if (!chatTg) return true
         return (chatTg.group || []).some(function (g) { return g.id === gid })
       }
       function act(job, body, okMsg) {
@@ -1242,6 +1245,14 @@ window.__ModuleLoader__.load({
       var [copy, setCopy] = useState(null) // 复制弹层: {sourceId}
       var [copyId, setCopyId] = useState('')
       var [copyName, setCopyName] = useState('')
+      var [collapsed, setCollapsed] = useState({})
+      var [addMenu, setAddMenu] = useState(false)
+      var [editP, setEditP] = useState(null)
+      var [editFiles, setEditFiles] = useState([])
+      var [editFile, setEditFile] = useState('')
+      var [editContent, setEditContent] = useState('')
+      var [editMsg, setEditMsg] = useState('')
+      var [editBusy, setEditBusy] = useState(false)
       var pollRef = React.useRef(null)
       function load(quiet) {
         Promise.all([
@@ -1266,8 +1277,8 @@ window.__ModuleLoader__.load({
       useEffect(function () {
         if (!Array.isArray(presets) || presets.length === 0) return
         if (!Array.isArray(insts) || insts.length === 0) return
-        var know = presets.every(function (p) { return p.hasChannelTools === true || p.hasChannelTools === false })
-        var only = know ? presets.filter(function (p) { return p.hasChannelTools }) : presets
+        // QQ 工具由会话自动挂载(2026-09-06) → 预设不再需要带标, 全部可作候选
+        var only = presets
         if (only.length === 0) return
         var changed = false
         var next = insts.map(function (x) {
@@ -1279,6 +1290,7 @@ window.__ModuleLoader__.load({
       }, [insts, presets])
       useEffect(function () { return function () { if (pollRef.current) clearInterval(pollRef.current) } }, [])
       function upd(i, patch) { setInsts(function (list) { var n = list.slice(); n[i] = Object.assign({}, n[i], patch); return n }) }
+      function toggleCollapse(id) { setCollapsed(function (m) { var n = Object.assign({}, m); n[id] = !n[id]; return n }) }
       function addBlank() {
         var base = 'im-qqbot'
         var used = new Set((insts || []).map(function (x) { return x.id }))
@@ -1301,8 +1313,7 @@ window.__ModuleLoader__.load({
         var blanks = list.filter(function (x) { return !x.appSecret && !x.hasSecret && !x._bound })
         if (blanks.length && !window.confirm('有 ' + blanks.length + ' 个账号没填 appSecret(不填的会被保存为只有骨架的实例, 可能启动就弹扫码)。继续?')) { setBusy(''); return }
         // 保存兜底: preset 仍为空的账号自动填第一个候选(防 effect 未触发/用户未手动选导致保存丢 preset)
-        var knowNow = presets.length > 0 && presets.every(function (p) { return p.hasChannelTools === true || p.hasChannelTools === false })
-        var candNow = knowNow ? presets.filter(function (p) { return p.hasChannelTools }) : presets
+        var candNow = presets
         if (candNow.length > 0) {
           var autoId = candNow[0].id
           list = list.map(function (x) { return x.preset ? x : Object.assign({}, x, { preset: autoId }) })
@@ -1378,31 +1389,76 @@ window.__ModuleLoader__.load({
           .then(function (r) { return r.json() }).then(function (d) { if (d && d.ok) setMsg('已在本机打开文件夹'); else if (d && d.error) setMsg(d.error) })
           .catch(function (e) { setMsg('打开失败: ' + e.message) })
       }
+      // ── 人格编辑器(2026-09-07): 展开/改写预设人格文件(仅带QQ工具标记的副本可写, host 端二次校验) ──
+      function loadEditFile(id, name) {
+        fetch(API_PRESETS + '/file?id=' + encodeURIComponent(id) + '&name=' + encodeURIComponent(name))
+          .then(function (r) { return r.json() }).then(function (d) {
+            if (d && typeof d.content === 'string') { setEditContent(d.content); setEditMsg('') }
+            else { setEditContent(''); setEditMsg('读取失败: ' + ((d && d.error) || '未知')) }
+          }).catch(function (e) { setEditMsg('读取异常: ' + e.message) })
+      }
+      function openPresetEditor(p) {
+        setEditP(p); setEditFiles([]); setEditFile(''); setEditContent(''); setEditMsg('')
+        fetch(API_PRESETS + '/files?id=' + encodeURIComponent(p.id))
+          .then(function (r) { return r.json() }).then(function (d) {
+            if (d && Array.isArray(d.files)) {
+              setEditP(function (prev) { return prev ? Object.assign({}, prev, { writable: !!d.writable }) : prev })
+              setEditFiles(d.files)
+              var def = d.files[0] ? d.files[0].name : ''
+              setEditFile(def)
+              if (def) loadEditFile(p.id, def)
+              else setEditMsg('该预设没有可编辑文本文件')
+            } else setEditMsg('读取失败: ' + ((d && d.error) || '未知'))
+          }).catch(function (e) { setEditMsg('读取异常: ' + e.message) })
+      }
+      function pickEditFile(name) {
+        setEditFile(name); setEditContent(''); setEditMsg('')
+        if (editP) loadEditFile(editP.id, name)
+      }
+      function saveEditFile() {
+        if (!editP || editBusy) return
+        setEditBusy(true); setEditMsg('')
+        fetch(API_PRESETS + '/file', {
+          method: 'PUT', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ id: editP.id, name: editFile, content: editContent }),
+        }).then(function (r) { return r.json() }).then(function (d) {
+          setEditBusy(false)
+          if (d && d.ok) setEditMsg('✅ 已保存 ' + d.name + ' —— 新会话生效')
+          else setEditMsg('保存失败: ' + ((d && d.error) || '未知'))
+        }).catch(function (e) { setEditBusy(false); setEditMsg('保存异常: ' + e.message) })
+      }
       var st = { width: '100%', padding: '5px 8px', boxSizing: 'border-box' }
       return h('div', { style: { maxWidth: 860 } },
-        h('h2', null, '账号与预设'),
+        h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 } },
+          h('h2', { style: { margin: 0 } }, '账号与预设'),
+          h('div', { style: { display: 'flex', gap: 6, alignItems: 'center' } },
+            h('button', { className: 'qqs-btn', title: '保存账号配置(保存后重启生效)', onClick: save, disabled: busy === 'save', style: { fontSize: 16, padding: '4px 12px', lineHeight: '20px' } }, '💾'),
+            h('button', { className: 'qqs-btn', title: '重新读取(放弃未保存的修改)', onClick: function () { load() }, style: { fontSize: 16, padding: '4px 12px', lineHeight: '20px' } }, '🔄'))),
         h('p', { style: { fontSize: 12, color: '#888' } }, '一个 QQ 机器人 = 一个账号实例(AppID/AppSecret)。想同时开几个机器人就加几个实例，每个可以配不同的 agent 预设(人格)与工作目录(各人各数据,不串)。⚠️ appSecret 会明文存在本机 cordis.patch.yml(改前自动备份 .bak)，别把配置文件传上网。'),
         h('div', { style: sectionTitle }, '① 机器人账号(改完点保存, 重启生效)'),
         (insts === null ? h('p', null, '加载中…') : null),
         (insts || []).map(function (it, i) {
-          // 账号可选预设: 有 QQ 工具的优先。容错: host 若还没返回 hasChannelTools(旧版未重启), 则不锁死、照常全列, 保证能选能填;
-          // 一旦 host 给全了该字段, 就只列带 QQ 工具(不带行的选了在 QQ 跑不起来)。
-          var knowChannel = presets.length > 0 && presets.every(function (p) { return p.hasChannelTools === true || p.hasChannelTools === false })
-          var usable = knowChannel ? presets.filter(function (p) { return p.hasChannelTools }) : presets.slice()
+          // QQ 工具由机器人会话自动挂载(2026-09-06) → 预设全列可选, 不再限定"带QQ工具"标记
+          var usable = presets.slice()
           var selInvalid = it.preset && !usable.some(function (p) { return p.id === it.preset })
           var opts = usable.map(function (p) { return { id: p.id, label: p.name + ' (' + p.id + ')' } })
-          if (selInvalid) opts.unshift({ id: it.preset, label: '⚠️ ' + it.preset + '(不带QQ工具, 无法在QQ用)' })
+          if (selInvalid) opts.unshift({ id: it.preset, label: '⚠️ ' + it.preset + '(预设不存在, 请重选)' })
+          // 默认收起: 老账号折叠, 新建(_new/_bound)展开待填; 用户手动切换后以 collapsed 为准
+          var folded = collapsed[it.id] !== undefined ? !!collapsed[it.id] : (!it._new && !it._bound)
           return h('div', { key: it.id, style: { border: '1px solid ' + (it.disabled ? '#ffa94d66' : '#00000026'), borderRadius: 10, padding: '8px 12px', margin: '8px 0', background: 'rgba(255,255,255,.5)' } },
             h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-              h('span', { style: { fontWeight: 800, color: '#171a21' } }, it._bound ? '📱 扫码绑定' : (it._new ? '🆕 新账号' : '🤖 账号')),
+              h('button', { className: 'qqs-btn', title: folded ? '展开设置' : '收起设置', onClick: function () { toggleCollapse(it.id) }, style: { padding: '1px 7px', fontSize: 13, lineHeight: '16px', background: '#0000000d', borderColor: '#00000026' } }, folded ? '▸' : '▾'),
+              h('span', { style: { fontWeight: 800, color: '#171a21', cursor: 'pointer', userSelect: 'none' }, onClick: function () { toggleCollapse(it.id) } }, it._bound ? '📱 扫码绑定' : (it._new ? '🆕 新账号' : '🤖 账号')),
               h('input', { className: 'qqs-inp', style: Object.assign({ width: 170 }, st), value: it.id, disabled: !it._new && !it._bound, onChange: function (e) { upd(i, { id: e.target.value }) }, placeholder: '实例 id(如 im-qqbot-2)' }),
               h('label', { style: { fontSize: 13, whiteSpace: 'nowrap' } },
                 h('input', { className: 'qqs-cb', type: 'checkbox', checked: !it.disabled, onChange: function (e) { upd(i, { disabled: !e.target.checked }) } }), ' 启用'),
+              h('span', { title: it.disabled ? '已停用' : (it.online ? '在线(绿点)' : '离线/未知(灰点)'), style: { width: 10, height: 10, borderRadius: '50%', display: 'inline-block', background: it.disabled ? '#adb5bd' : (it.online ? '#2f9e44' : '#ced4da'), boxShadow: it.online ? '0 0 0 3px rgba(47,158,68,.18)' : 'none', flex: '0 0 auto', marginLeft: 2 } }),
               h('button', { className: 'qqs-btn', onClick: function () { removeInst(i) }, style: { marginLeft: 'auto' } }, '删除')),
-            inputRow('AppID: ', h('input', { className: 'qqs-inp', style: Object.assign({ width: 220 }, st), value: it.appId || '', onChange: function (e) { upd(i, { appId: e.target.value }) }, placeholder: '如 1234567890' })),
+            (folded ? null : h('div', { style: { marginTop: 4 } },
+              inputRow('AppID: ', h('input', { className: 'qqs-inp', style: Object.assign({ width: 220 }, st), value: it.appId || '', onChange: function (e) { upd(i, { appId: e.target.value }) }, placeholder: '如 1234567890' })),
             inputRow('AppSecret: ', h('input', { className: 'qqs-inp', type: 'password', style: Object.assign({ width: 320 }, st), value: (it.appSecret === SECRET_MASK || (!it.appSecret && it.hasSecret)) ? '' : (it.appSecret || ''), onChange: function (e) { upd(i, { appSecret: e.target.value }) }, placeholder: (it.hasSecret && !it._new) ? '已保存(留空/掩码=保留原值; 填新值=更换)' : '扫码绑定会自动填; 也可手动填(两个都要填全才不弹码)' })),
-            inputRow('Agent 预设(人格): ', (function () { if (usable.length === 0 && !selInvalid) {
-                return h('span', { className: 'qqs-inp', style: { display: 'inline-block', verticalAlign: 'middle', padding: '5px 10px', fontSize: 12, color: '#e8590c', background: '#fff5f0', borderRadius: 6 } }, '⚠️ 还没有可用的 Agent 预设——请在下方②复制一个(如 whale-girl / whitegirl), 复制会自动带 QQ 工具。')
+            inputRow('Agent 预设(人格): ', (function () { if (presets.length === 0 && !selInvalid) {
+                return h('span', { className: 'qqs-inp', style: { display: 'inline-block', verticalAlign: 'middle', padding: '5px 10px', fontSize: 12, color: '#e8590c', background: '#fff5f0', borderRadius: 6 } }, '⚠️ 还没有任何 Agent 预设——请在下方②新建/复制一个')
               } return h('select', { className: 'qqs-inp', style: { width: 320, padding: '4px 8px' }, value: it.preset || '', onChange: function (e) { upd(i, { preset: e.target.value }) } }, opts.map(function (o) { return h('option', { key: o.id, value: o.id, style: selInvalid && o.id === it.preset ? { color: '#e03131' } : null }, o.label) })) })()),
             inputRow('工作目录(各账号数据放这, 留空=默认): ', h('input', { className: 'qqs-inp', style: Object.assign({ width: '90%' }, st), value: it.cwd || '', onChange: function (e) { upd(i, { cwd: e.target.value }) }, placeholder: '如 D:\\bots\\二号机' })),
             (function () {
@@ -1414,30 +1470,39 @@ window.__ModuleLoader__.load({
                   return h('button', { key: w.dir, className: 'qqs-btn', style: { fontSize: 11, padding: '1px 8px', margin: '2px 4px 2px 0' }, onClick: function () { upd(i, { cwd: w.path }) } },
                     (w.path.length > 46 ? w.path.slice(0, 43) + '…' : w.path) + ' (' + w.count + ')')
                 }))
-            })())
+           })())))
         }),
-        h('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', margin: '8px 0' } },
-          h('button', { className: 'qqs-btn', onClick: addBlank }, '+ 添加账号(手动填凭据)'),
-          h('button', { className: 'qqs-btn', onClick: startBind, style: { borderColor: '#b197fc99', color: '#171a21' } }, '📱 扫码绑定新机器人(推荐)'),
-          h('span', { style: { flex: 1 } }),
-          h('button', { className: 'qqs-btn', onClick: save, disabled: busy === 'save' }, '保存账号配置'),
-          h('button', { className: 'qqs-btn', onClick: function () { load() } }, '重新读取')),
+        h('div', { style: { position: 'relative', display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', margin: '8px 0' } },
+          h('button', { className: 'qqs-btn', onClick: function () { setAddMenu(!addMenu) }, style: { borderColor: '#b197fc99', color: '#171a21', fontWeight: 700 } }, addMenu ? '✕ 关闭' : '➕ 添加账号'),
+          h('span', { style: { fontSize: 12, color: '#888' } }, '点加号选: 扫码绑定 或 手动填凭据'),
+          (addMenu
+            ? h('div', { style: { position: 'absolute', top: '100%', left: 0, marginTop: 6, zIndex: 60, minWidth: 280, background: '#fff', border: '1px solid #d9c6ff', borderRadius: 10, boxShadow: '0 10px 28px rgba(60,40,140,.18)', padding: 6, display: 'flex', flexDirection: 'column', gap: 4 } },
+                h('button', { className: 'qqs-btn', style: { display: 'flex', alignItems: 'center', gap: 10, textAlign: 'left', padding: '8px 10px', justifyContent: 'flex-start', background: '#f3f0ff', borderColor: '#d0bfff' }, onClick: function () { setAddMenu(false); startBind() } },
+                  h('span', { style: { fontSize: 20 } }, '📱'),
+                  h('span', null,
+                    h('b', { style: { color: '#171a21' } }, '扫码绑定新机器人'),
+                    h('div', { style: { fontSize: 11, color: '#777' } }, '推荐 — 手机 QQ 扫码自动填凭据'))),
+                h('button', { className: 'qqs-btn', style: { display: 'flex', alignItems: 'center', gap: 10, textAlign: 'left', padding: '8px 10px', justifyContent: 'flex-start' }, onClick: function () { setAddMenu(false); addBlank() } },
+                  h('span', { style: { fontSize: 20 } }, '✍️'),
+                  h('span', null,
+                    h('b', { style: { color: '#171a21' } }, '手动新建账号'),
+                    h('div', { style: { fontSize: 11, color: '#777' } }, '自己填写 AppID / AppSecret'))))
+            : null)),
         h('div', { style: { ...sectionTitle, marginTop: 16, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' } },
           '② Agent 预设(人格库)',
           h('button', { className: 'qqs-btn', style: { fontSize: 12, padding: '2px 10px', borderColor: '#2b8a3e99', color: '#171a21' }, onClick: function () { setCopy({ fromStandard: true, sourceId: 'standard' }); setCopyId(''); setCopyName('') } }, '➕ 从标准模式新建(带QQ工具)')),
         h('p', { style: { fontSize: 12, color: '#888' } }, PRESET_HINT),
-        (presets.filter(function (p) { return !p.hasChannelTools }).length > 0
-          ? h('p', { style: { fontSize: 12, color: '#e8590c', background: '#fff5f0', borderRadius: 6, padding: '6px 10px' } }, '💡 选一个预设点「复制」生成的副本会自动带上 QQ 工具(send_media/发图等), 之后就能在①账号里给机器人选用了。复制源无所谓, 只要是能跑的人格。')
-          : null),
+        h('p', { style: { fontSize: 12, color: '#364fc7', background: '#edf2ff', borderRadius: 6, padding: '6px 10px' } }, '💡 QQ 工具(send_media/发图等)现在由机器人会话自动挂载(2026-09-06 起), 不再依赖预设是否带标记——任意预设都能在 QQ 用; 「从标准模式新建」的副本仍会自带标记供识别。'),
         h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(190px,1fr))', gap: 10, margin: '8px 0' } },
           presets.map(function (p) {
             return h('div', { key: p.id, style: { border: '1px solid #00000026', borderRadius: 10, padding: '10px 12px', background: 'rgba(255,255,255,.5)' } },
               h('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } },
                 h('span', { style: { fontWeight: 800, color: '#171a21' } }, p.name),
-                h('span', { style: { fontSize: 10, padding: '1px 6px', borderRadius: 8, color: '#fff', background: p.hasChannelTools ? '#2b8a3e' : '#e8590c' } }, p.hasChannelTools ? 'QQ可用' : '无QQ工具')),
+                h('span', { style: { fontSize: 10, padding: '1px 6px', borderRadius: 8, color: '#fff', background: p.hasChannelTools ? '#2b8a3e' : '#5b9dff' } }, p.hasChannelTools ? 'QQ工具' : '会话自动挂载')),
               h('div', { style: { fontSize: 12, color: '#666', margin: '4px 0' } }, 'id=' + p.id),
               h('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap' } },
                 h('button', { className: 'qqs-btn', style: { padding: '2px 10px', fontSize: 12 }, onClick: function () { setCopy({ sourceId: p.id }); setCopyId(''); setCopyName('') } }, '复制'),
+                h('button', { className: 'qqs-btn', style: { padding: '2px 10px', fontSize: 12, borderColor: '#1971c299' }, onClick: function () { openPresetEditor(p) } }, '✏️ 人格'),
                 h('button', { className: 'qqs-btn', style: { padding: '2px 10px', fontSize: 12 }, onClick: function () { openPreset(p.id) } }, '📂 打开文件夹')))
           })),
         copy ? h('div', { style: { position: 'fixed', inset: 0, background: '#000c', zIndex: 999, display: 'flex', alignItems: 'center', justifyContent: 'center' }, onClick: function () { if (!busy) setCopy(null) } },
@@ -1448,6 +1513,21 @@ window.__ModuleLoader__.load({
             h('div', { style: { textAlign: 'right', marginTop: 10 } },
               h('button', { className: 'qqs-btn', onClick: function () { if (!busy) setCopy(null) }, style: { marginRight: 8 } }, '取消'),
               h('button', { className: 'qqs-btn', onClick: doCopy, disabled: busy === 'copy' }, '生成新预设')))) : null,
+        editP ? h('div', { style: { position: 'fixed', inset: 0, background: '#000c', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }, onClick: function () { if (!editBusy) setEditP(null) } },
+          h('div', { className: 'qqs-modal', style: { background: '#1f232b', color: '#e8e8e8', borderRadius: 12, padding: 14, maxWidth: 760, width: '94%', maxHeight: '88vh', display: 'flex', flexDirection: 'column' }, onClick: function (e) { e.stopPropagation() } },
+            h('h3', { style: { marginTop: 0 } }, '✏️ 人格编辑器 — ' + editP.name + ' (' + editP.id + ')'),
+            h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', margin: '2px 0 6px', flexWrap: 'wrap' } },
+              h('label', { style: { fontSize: 13 } }, '文件: '),
+              h('select', { className: 'qqs-inp', style: { padding: '4px 8px', color: '#1f2329', maxWidth: 360 }, value: editFile, onChange: function (e) { pickEditFile(e.target.value) } },
+                editFiles.map(function (fl) { return h('option', { key: fl.name, value: fl.name }, fl.name + ' (' + Math.max(1, Math.ceil(fl.size / 1024)) + 'KB)') })),
+              h('span', { style: { fontSize: 12, color: editP.writable === false ? '#ffa94d' : '#7fd8a8' } }, editP.writable === false ? '🔒 只读(内置预设, 请先复制一份再改)' : (editP.writable ? '✅ 可编辑(你的副本)' : '⏳ 读取权限中…'))),
+            h('p', { style: { fontSize: 12, color: '#9fb0c9', margin: '2px 0 6px' } }, '提示: agent.cordis.yml 里 persona 插件 config.text 就是人设正文; 直接整文件编辑, 保存后新会话生效。'),
+            h('textarea', { className: 'qqs-inp', style: { width: '100%', boxSizing: 'border-box', flex: 1, minHeight: 300, fontFamily: 'ui-monospace,Consolas,monospace', fontSize: 12, lineHeight: 1.5, color: '#1f2329', whiteSpace: 'pre', resize: 'vertical', background: '#fff' }, value: editContent, readOnly: editP.writable === false, spellCheck: false, onChange: function (e) { setEditContent(e.target.value) } }),
+            (editMsg ? h('p', { style: { fontSize: 12, color: '#ffa94d', margin: '4px 0' } }, editMsg) : null),
+            h('div', { style: { textAlign: 'right', marginTop: 8 } },
+              h('button', { className: 'qqs-btn', onClick: function () { if (!editBusy) setEditP(null) }, style: { marginRight: 8 } }, '关闭'),
+              (editP.writable === false ? null : h('button', { className: 'qqs-btn', onClick: saveEditFile, disabled: editBusy || editP.writable === undefined, style: { borderColor: '#2f9e4499', color: '#171a21' } }, editBusy ? '保存中…' : '💾 保存')))))
+        : null,
         bind ? h('div', { style: { position: 'fixed', inset: 0, background: '#000c', zIndex: 999, display: 'flex', alignItems: 'center', justifyContent: 'center' } },
           h('div', { className: 'qqs-modal', style: { background: '#22252e', color: '#e8e8e8', borderRadius: 12, padding: 14, maxWidth: 620, width: '94%' }, onClick: function (e) { e.stopPropagation() } },
             h('h3', { style: { marginTop: 0 } }, bind.status === 'error' ? '绑定失败' : '扫码绑定 QQ 机器人'),
@@ -1618,10 +1698,17 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
     //   · 审批/提问 → 打断式弹出(#qqs-ap-float 保持)
     //   · 入群申请 → 悬浮球上安静红点(不弹窗)
     //   · 群管理(发消息/审批入群/禁言) → 悬浮球点开成操作台
-    var DOCK_CSS = "#qqs-dock-wrap{position:fixed;right:18px;bottom:190px;z-index:9997;font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif}#qqs-dock-ball{width:52px;height:52px;border-radius:50%;background:linear-gradient(160deg,#7c6cf0,#5b4fd8);color:#fff;font-size:24px;line-height:52px;text-align:center;cursor:pointer;box-shadow:0 6px 20px rgba(90,70,220,.4);user-select:none;transition:transform .12s,box-shadow .12s;position:relative}#qqs-dock-ball:hover{transform:scale(1.06)}#qqs-dock-badge{position:absolute;top:-4px;right:-4px;min-width:18px;height:18px;border-radius:9px;background:#ff4d4f;color:#fff;font-size:11px;font-weight:700;line-height:18px;padding:0 4px;box-sizing:border-box;text-align:center;display:none}#qqs-dock-panel{position:fixed;right:18px;bottom:190px;z-index:9998;width:min(720px,94vw);max-height:68vh;display:none;flex-direction:column;background:#fff;border:1px solid #d9c6ff;border-radius:16px;box-shadow:0 12px 40px rgba(60,40,140,.25);overflow:hidden;font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif}#qqs-dock-panel .dk-h{display:flex;align-items:center;gap:8px;padding:10px 14px;background:linear-gradient(90deg,#7c6cf01f,#7c6cf008);font-size:14px;font-weight:700;color:#4a3a9f;border-bottom:1px solid #efe8ff}#qqs-dock-panel .dk-b{padding:10px 14px;overflow:auto;font-size:13px;color:#1f2329}#qqs-dock-panel .dk-tab{display:flex;gap:4px;border-bottom:1px solid #eee;margin-bottom:10px}#qqs-dock-panel .dk-tab button{font:inherit;font-size:13px;padding:6px 14px;border:none;background:none;cursor:pointer;color:#666;border-bottom:2px solid transparent}#qqs-dock-panel .dk-tab button.on{color:#4a3a9f;font-weight:700;border-bottom-color:#7c6cf0}#qqs-dock-panel select.qqs-sel,#qqs-dock-panel input.qqs-txt,#qqs-dock-panel textarea.qqs-txt{font:inherit;color:#1f2329;background:#fff;border:1px solid #d0d5dd;border-radius:8px;padding:5px 8px;outline:none}#qqs-dock-panel .dk-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0}#qqs-dock-panel .dk-btn{font:inherit;font-size:13px;padding:5px 12px;border-radius:8px;cursor:pointer;border:1px solid #d9c6ff;background:#f1ecff;color:#4a3a9f}#qqs-dock-panel .dk-btn.ok{background:#e6f7ec;color:#187a3d;border-color:#b8e6c8}#qqs-dock-panel .dk-btn.no{background:#fdeeee;color:#c23131;border-color:#f3c4c4}#qqs-dock-panel .dk-btn:disabled{opacity:.5;cursor:default}#qqs-dock-panel .dk-msg{color:#888;font-size:12px;padding:2px 0}#qqs-dock-panel .dk-list{max-height:34vh;overflow:auto;border:1px solid #f0ecff;border-radius:10px;padding:4px}#qqs-dock-panel .dk-item{display:flex;align-items:center;gap:8px;padding:6px 8px;border-bottom:1px solid #f5f2ff;flex-wrap:wrap;font-size:13px}#qqs-dock-panel .dk-item:last-child{border-bottom:none}#qqs-dock-panel .dk-empty{color:#aaa;text-align:center;padding:18px 0;font-size:12px}";
+    var DOCK_CSS = "#qqs-dock-wrap{position:fixed;right:18px;bottom:190px;z-index:9997;font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif}#qqs-dock-ball{width:52px;height:52px;border-radius:50%;background:linear-gradient(160deg,#7c6cf0,#5b4fd8);color:#fff;font-size:24px;line-height:52px;text-align:center;cursor:pointer;box-shadow:0 6px 20px rgba(90,70,220,.4);user-select:none;transition:transform .12s,box-shadow .12s;position:relative}#qqs-dock-ball:hover{transform:scale(1.06)}#qqs-dock-badge{position:absolute;top:-4px;right:-4px;min-width:18px;height:18px;border-radius:9px;background:#ff4d4f;color:#fff;font-size:11px;font-weight:700;line-height:18px;padding:0 4px;box-sizing:border-box;text-align:center;display:none}#qqs-dock-panel{position:fixed;right:18px;bottom:190px;z-index:9998;width:min(720px,94vw);max-height:68vh;display:none;flex-direction:column;background:#fff;border:1px solid #d9c6ff;border-radius:16px;box-shadow:0 12px 40px rgba(60,40,140,.25);overflow:hidden;font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif}#qqs-dock-panel .dk-h{display:flex;align-items:center;gap:8px;padding:10px 14px;background:linear-gradient(90deg,#7c6cf01f,#7c6cf008);font-size:14px;font-weight:700;color:#4a3a9f;border-bottom:1px solid #efe8ff}#qqs-dock-panel .dk-b{padding:10px 14px;overflow:auto;font-size:13px;color:#1f2329}#qqs-dock-panel .dk-tab{display:flex;gap:4px;border-bottom:1px solid #eee;margin-bottom:10px}#qqs-dock-panel .dk-tab button{font:inherit;font-size:13px;padding:6px 14px;border:none;background:none;cursor:pointer;color:#666;border-bottom:2px solid transparent}#qqs-dock-panel .dk-tab button.on{color:#4a3a9f;font-weight:700;border-bottom-color:#7c6cf0}#qqs-dock-panel select.qqs-sel,#qqs-dock-panel input.qqs-txt,#qqs-dock-panel textarea.qqs-txt{font:inherit;color:#1f2329;background:#fff;border:1px solid #d0d5dd;border-radius:8px;padding:5px 8px;outline:none}#qqs-dock-panel .dk-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0}#qqs-dock-panel .dk-btn{font:inherit;font-size:13px;padding:5px 12px;border-radius:8px;cursor:pointer;border:1px solid #d9c6ff;background:#f1ecff;color:#4a3a9f}#qqs-dock-panel .dk-btn.ok{background:#e6f7ec;color:#187a3d;border-color:#b8e6c8}#qqs-dock-panel .dk-btn.no{background:#fdeeee;color:#c23131;border-color:#f3c4c4}#qqs-dock-panel .dk-btn:disabled{opacity:.5;cursor:default}#qqs-dock-panel .dk-msg{color:#888;font-size:12px;padding:2px 0}#qqs-dock-panel .dk-list{max-height:34vh;overflow:auto;border:1px solid #f0ecff;border-radius:10px;padding:4px}#qqs-dock-panel .dk-item{display:flex;align-items:center;gap:8px;padding:6px 8px;border-bottom:1px solid #f5f2ff;flex-wrap:wrap;font-size:13px}#qqs-dock-panel .dk-item:last-child{border-bottom:none}#qqs-dock-panel .dk-empty{color:#aaa;text-align:center;padding:18px 0;font-size:12px}"
+    // ── 💬 聊天视图样式(dock 追加段, 2026-09-07): QQ 风格气泡, 群友左(bot)右 ──
+    var DOCK_CSS2 = "#qqs-dock-panel .dk-chat-head{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:0 0 6px}#qqs-dock-panel .dk-chat-box{overflow-y:auto;overscroll-behavior:contain;background:#f5f6f8;border:1px solid #e6e8ec;border-radius:10px;padding:10px 12px;box-sizing:border-box;height:min(36vh,300px);min-height:140px;scroll-behavior:auto}#qqs-dock-panel .dk-chat-box::-webkit-scrollbar{width:6px}#qqs-dock-panel .dk-chat-box::-webkit-scrollbar-thumb{background:#d3d7dd;border-radius:3px}#qqs-dock-panel .dk-crow{display:flex;gap:8px;align-items:flex-start;margin:0 0 12px}#qqs-dock-panel .dk-crow.out{flex-direction:row-reverse}#qqs-dock-panel .dk-ava{width:32px;height:32px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;color:#fff;overflow:hidden;user-select:none;background:linear-gradient(150deg,#8fb3e8,#5f8fd9)}#qqs-dock-panel .dk-crow.out .dk-ava{background:linear-gradient(150deg,#5ec7f2,#3b8fe0)}#qqs-dock-panel .dk-cmain{display:flex;flex-direction:column;max-width:calc(100% - 40px);min-width:0}#qqs-dock-panel .dk-crow.in .dk-cmain{align-items:flex-start}#qqs-dock-panel .dk-crow.out .dk-cmain{align-items:flex-end}#qqs-dock-panel .dk-cmeta{font-size:11px;color:#9aa0a8;margin:0 6px 2px;max-width:100%;display:flex;align-items:center;gap:5px;flex-wrap:wrap}#qqs-dock-panel .dk-crow.out .dk-cmeta{flex-direction:row-reverse}#qqs-dock-panel .dk-cbubble{padding:7px 11px;font-size:13px;line-height:1.55;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;box-shadow:0 1px 2px rgba(20,30,60,.06);max-width:100%}#qqs-dock-panel .dk-crow.in .dk-cbubble{background:#fff;border:1px solid #e3e6ea;color:#1f2329;border-radius:3px 10px 10px 10px}#qqs-dock-panel .dk-crow.out .dk-cbubble{background:linear-gradient(180deg,#69a6ff,#3d7df5);color:#fff;border-radius:10px 3px 10px 10px}#qqs-dock-panel .dk-img{display:block;max-width:min(230px,52vw);max-height:200px;border-radius:6px;margin:0 0 3px;object-fit:cover;cursor:zoom-in}#qqs-dock-panel .dk-audio{display:block;max-width:min(260px,60vw);width:100%;height:34px;margin:0 0 2px}#qqs-dock-panel .dk-file{display:inline-flex;align-items:center;gap:5px;max-width:100%;padding:6px 12px;border-radius:8px;background:#f0f6ff;border:1px solid #cfe0fa;color:#2b6bd8;font-size:13px;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#qqs-dock-panel .dk-file:hover{background:#e2edff}#qqs-dock-panel .dk-video{display:block;max-width:min(260px,60vw);max-height:180px;border-radius:6px;margin:0 0 2px}#qqs-dock-panel .dk-ctag{display:inline-block;font-size:10px;color:#5b8ff0;background:#eaf2ff;border:1px solid #d4e3fd;border-radius:8px;padding:0 6px}#qqs-dock-panel .dk-chat-top{text-align:center;color:#b0b4bb;font-size:11px;padding:2px 0 6px;user-select:none}#qqs-dock-panel .dk-chat-bottom{text-align:center;color:#c3c7cd;font-size:11px;padding:6px 0 0}#qqs-dock-panel .dk-composer{margin-top:8px;border:1px solid #e3e6ea;border-radius:10px;background:#fff;overflow:hidden}#qqs-dock-panel .dk-composer textarea{width:100%;box-sizing:border-box;border:none;outline:none;resize:none;font:inherit;font-size:13px;color:#1f2329;background:transparent;padding:8px 10px 4px;line-height:1.5;max-height:120px}#qqs-dock-panel .dk-cbar{display:flex;align-items:center;gap:4px;padding:4px 8px 6px;flex-wrap:wrap}#qqs-dock-panel .dk-cbar .dk-btn{padding:3px 10px;font-size:12px;border-radius:7px}#qqs-dock-panel .dk-cbar .dk-send{background:linear-gradient(180deg,#69a6ff,#3d7df5);color:#fff;border:none;border-radius:8px;padding:5px 18px;font-size:13px;font-weight:600;cursor:pointer}#qqs-dock-panel .dk-cbar .dk-send:disabled{opacity:.5;cursor:default}#qqs-lightbox{position:fixed;inset:0;z-index:2147483000;background:rgba(8,10,18,.82);display:flex;align-items:center;justify-content:center;cursor:zoom-out}#qqs-lightbox img{max-width:92vw;max-height:92vh;border-radius:8px;box-shadow:0 10px 60px rgba(0,0,0,.6)}#qqs-lightbox .lb-x{position:fixed;right:16px;top:10px;color:#fff;font-size:30px;cursor:pointer;line-height:1;padding:6px}#qqs-dock-panel.dk-full{left:0!important;top:0!important;right:0!important;bottom:0!important;width:100vw!important;max-width:100vw!important;height:100vh!important;max-height:100vh!important;border-radius:0;z-index:2147482000;display:flex;flex-direction:column}#qqs-dock-panel.dk-full .dk-h,#qqs-dock-panel.dk-full .dk-detect{flex:none}#qqs-dock-panel.dk-full .dk-b{flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column;padding:8px 14px 6px}#qqs-dock-panel.dk-full .dk-chat-wrap{display:flex;flex-direction:column;flex:1;min-height:0}#qqs-dock-panel.dk-full .dk-chat-head{flex:none}#qqs-dock-panel.dk-full .dk-chat-box{flex:1;height:auto!important;min-height:0!important;max-height:none!important;overflow-y:auto;overscroll-behavior:contain}#qqs-dock-panel.dk-full .dk-composer{flex:none;margin-top:6px}"
+    function ensureDockCss2() { try { if (!document.getElementById('qqs-dock-css2')) { var st = document.createElement('style'); st.id = 'qqs-dock-css2'; st.textContent = DOCK_CSS2; document.head.appendChild(st) } } catch (e) {} };
     function ensureDockCss() { try { if (!document.getElementById('qqs-dock-css')) { var st = document.createElement('style'); st.id = 'qqs-dock-css'; st.textContent = DOCK_CSS; document.head.appendChild(st) } } catch (e) {} }
     function startQqDock(sessionsSvc) {
       try { ensureDockCss() } catch (e) { return }
+      try { ensureDockCss2() } catch (e) {}
+      // 幂等(2026-09-07): 宿主重启/client 重连若触发重复初始化, 先移除旧 dock 再建, 保证始终只有一个悬浮球
+      var oldWrap = document.getElementById('qqs-dock-wrap')
+      if (oldWrap) { try { oldWrap.remove() } catch (e) { if (oldWrap.parentNode) oldWrap.parentNode.removeChild(oldWrap) } }
       // 位置记忆(可拖拽)
       var pos = null; try { var raw = localStorage.getItem('qqs-dock-pos'); if (raw) pos = JSON.parse(raw) } catch (e) {}
       var wrap = document.createElement('div')
@@ -1664,10 +1751,22 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
       }
       // ── 面板自适应定位: 按悬浮球屏幕位置翻转展开方向, 边缘 clamp 保证完整可见 ──
       var lastBallRect = null
+      var manualPanelPos = null // 手动拖过面板后固定位置(不再自动贴球)
       function layoutPanel() {
         if (!panel || !open) return
         var vw = window.innerWidth, vh = window.innerHeight
         var pad = 10
+        // 手动拖拽固定位置: 保持并 clamp
+        if (manualPanelPos) {
+          var pw2 = panel.offsetWidth || Math.min(720, vw * 0.94)
+          var ph2 = panel.offsetHeight || Math.round(vh * 0.68)
+          panel.style.left = Math.max(pad, Math.min(manualPanelPos.x, vw - pw2 - pad)) + 'px'
+          panel.style.top = Math.max(pad, Math.min(manualPanelPos.y, vh - ph2 - pad)) + 'px'
+          panel.style.right = 'auto'
+          panel.style.bottom = 'auto'
+          panel.style.maxHeight = Math.round(vh - pad * 2) + 'px'
+          return
+        }
         if (!lastBallRect) { lastBallRect = { left: vw - 70, top: vh - 80, right: vw - 18, bottom: vh - 28, width: 52, height: 52 } }
         var pw = panel.offsetWidth || Math.min(720, vw * 0.94)
         var ph = Math.min(panel.offsetHeight || Math.round(vh * 0.68), vh - pad * 2)
@@ -1689,6 +1788,43 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         panel.style.bottom = 'auto'
         // 面板超高时内部滚动, 头/关闭按钮始终可见
         panel.style.maxHeight = Math.round(vh - pad * 2) + 'px'
+      }
+      // 展开态拖拽: 按住面板头部(.dk-h 非控件区)移动整个 dock 面板
+      function bindPanelDrag() {
+        if (!panel || !open) return
+        var h = panel.querySelector('.dk-h')
+        if (!h) return
+        h.onmousedown = function (e) {
+          if (e.button !== 0) return
+          var t = e.target
+          if (t && t.closest && t.closest('button,select,input,textarea,a,.qqs-sel,.qqs-txt')) return
+          e.preventDefault()
+          var sx = e.clientX, sy = e.clientY
+          var ox = panel.offsetLeft, oy = panel.offsetTop
+          var moved = false
+          var mm = function (ev) {
+            var dx = ev.clientX - sx, dy = ev.clientY - sy
+            if (Math.abs(dx) + Math.abs(dy) > 2) moved = true
+            panel.style.left = (ox + dx) + 'px'
+            panel.style.top = (oy + dy) + 'px'
+            panel.style.right = 'auto'
+            panel.style.bottom = 'auto'
+          }
+          var mu = function () {
+            document.removeEventListener('mousemove', mm)
+            document.removeEventListener('mouseup', mu)
+            if (moved) manualPanelPos = { x: panel.offsetLeft, y: panel.offsetTop }
+          }
+          document.addEventListener('mousemove', mm)
+          document.addEventListener('mouseup', mu)
+        }
+        // 双击头部 → 取消手动固定, 恢复自动贴球定位
+        h.ondblclick = function (e) {
+          var t = e.target
+          if (t && t.closest && t.closest('button,select,input,textarea,a')) return
+          manualPanelPos = null
+          layoutPanel()
+        }
       }
       function closePanel() {
         open = false
@@ -1719,6 +1855,8 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
       document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && open) closePanel() })
       document.addEventListener('mousedown', function (e) {
         if (!open) return
+        // 灯箱(#qqs-lightbox)是浮在 dock 外的全屏层: 点它(关闭放大)不能把 dock 也收走
+        if (e.target && e.target.closest && e.target.closest('#qqs-lightbox')) return
         if (panel && (panel.contains(e.target) || panel === e.target)) return
         if (wrap && (wrap.contains(e.target) || wrap === e.target)) return
         closePanel()
@@ -1747,7 +1885,8 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
       setInterval(refreshBadge, 20000)
 
       // ── 面板状态(每个实例独立保存, 切回不丢) ──
-      var state = { ns: '', accts: [], gid: '', groups: [], tab: 'send', sendScope: 'group', sendTo: '', sendName: '', sendText: '', insertCtx: false, c2cs: [], joins: null, mutes: null, members: null, muteSecs: '60', bindGid: '', bindName: '', msg: '', busy: '', wantPeer: null, lookedUp: false, detected: null, detectedHit: null }
+      var state = { ns: '', accts: [], gid: '', groups: [], tab: 'chat', sendScope: 'group', sendTo: '', sendName: '', sendText: '', insertCtx: true, targetQ: '', c2cs: [], joins: null, mutes: null, members: null, muteSecs: '60', bindGid: '', bindName: '', msg: '', busy: '', wantPeer: null, lookedUp: false, detected: null, detectedHit: null, chatItems: [], chatMore: false, chatBusy: '', chatErr: '', chatOldest: 0, chatText: '', chatIns: true }
+      var chatFlash = '' // 发送结果/错误提示(短时展示, 不被列表计数覆盖)
       function loadAccts() {
         api('accounts').then(function (d) {
           var list = (d && Array.isArray(d.instances) ? d.instances : []).filter(function (a) { return !a.disabled })
@@ -1943,12 +2082,33 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           + '<select class="qqs-sel" id="dk-ns" style="max-width:220px">' + (opts || '<option value="">无账号(去账号页添加)</option>') + '</select>'
           + '<span style="flex:1"></span>'
           + '<span class="dk-msg" id="dk-headmsg" style="color:#888;font-size:12px">直连 QQ 官方 · 面板操作 = 主人直发</span>'
+          + '<button class="dk-btn" id="dk-full" title="全屏/还原">⛶</button>'
           + '<button class="dk-btn" id="dk-close" title="收回成球">➖</button>'
+        var fb = h.querySelector('#dk-full')
+        if (fb) fb.onclick = function (e) { e.stopPropagation(); var fs = panel.classList.toggle('dk-full'); fb.textContent = fs ? '🗗' : '⛶'; setTimeout(layoutPanel, 0) }
         h.querySelector('#dk-close').onclick = function () { closePanel(); ball.style.display = 'block' }
         h.querySelector('#dk-ns').onchange = function (e) {
           state.ns = e.target.value; state.gid = ''; state.sendTo = ''; state.sendName = ''; state.wantPeer = null; state.msg = ''
           refreshAll(); paintHead()
         }
+      }
+      function applyTargetFilter(panel, state) {
+        var q = String(state.targetQ || '').trim().toLowerCase()
+        var scope = state.sendScope
+        var sel = scope === 'c2c' ? panel.querySelector('#dk-c2c') : panel.querySelector('#dk-gid')
+        if (!sel) return
+        var selVal = scope === 'c2c' ? state.sendTo : state.gid
+        var opts = sel.querySelectorAll('option')
+        var shown = 0, total = 0
+        for (var i = 0; i < opts.length; i++) {
+          var o = opts[i]
+          total++
+          var keep = !q || o.textContent.toLowerCase().indexOf(q) >= 0 || o.value === selVal
+          o.hidden = !keep
+          if (keep) shown++
+        }
+        var cnt = panel.querySelector('#dk-target-count')
+        if (cnt) cnt.textContent = q ? ('匹配 ' + shown + '/' + total) : ''
       }
       function paintBody() {
         if (!panel || !open) return
@@ -1966,7 +2126,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           return '<option value="' + esc(c.id) + '"' + (c.id === state.sendTo ? ' selected' : '') + '>' + esc(label) + '</option>'
         }).join('')
         var tabs = '<div class="dk-tab">'
-          + '<button data-t="send" class="' + (state.tab === 'send' ? 'on' : '') + '">✉️ 发消息</button>'
+          + '<button data-t="chat" class="' + (state.tab === 'chat' ? 'on' : '') + '">💬 聊天</button>'
           + '<button data-t="join" class="' + (state.tab === 'join' ? 'on' : '') + '">📥 入群审批<span class="dk-join-badge" style="display:none;background:#ff4d4f;color:#fff;border-radius:8px;font-size:11px;padding:0 5px;margin-left:4px">0</span></button>'
           + '<button data-t="mute" class="' + (state.tab === 'mute' ? 'on' : '') + '">🔇 禁言</button>'
           + '</div>'
@@ -1978,12 +2138,13 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           body += '<div class="dk-row">目标类型: '
             + '<label style="display:inline-flex;align-items:center;gap:4px"><input type="radio" name="dk-scope" value="group"' + (state.sendScope !== 'c2c' ? ' checked' : '') + '> 群聊</label> '
             + '<label style="display:inline-flex;align-items:center;gap:4px"><input type="radio" name="dk-scope" value="c2c"' + (state.sendScope === 'c2c' ? ' checked' : '') + '> 私聊</label></div>'
-          body += '<div class="dk-row" id="dk-target-row">' + (state.sendScope === 'c2c' ? c2cOpts : '') + '</div>'
-          if (state.sendScope === 'c2c') {
-            body = body.replace('id="dk-target-row">', 'id="dk-target-row"><select class="qqs-sel" id="dk-c2c" style="min-width:220px">' + (c2cOpts || '<option value="">暂无私聊对象</option>') + '</select>')
-          } else {
-            body = body.replace('id="dk-target-row">', 'id="dk-target-row">' + groupSelHtml)
-          }
+          body += '<div class="dk-row" style="margin:2px 0 4px">'
+            + '<input class="qqs-txt" id="dk-target-search" placeholder="' + (state.sendScope === 'c2c' ? '🔍 搜私聊对象(昵称/ID)…' : '🔍 搜群(备注/昵称/ID)…') + '" value="' + esc(state.targetQ || '') + '" style="width:100%;box-sizing:border-box;font-size:12px;padding:4px 8px">'
+            + '<span class="dk-msg" id="dk-target-count"></span></div>'
+          var targetSel = state.sendScope === 'c2c'
+            ? '<select class="qqs-sel" id="dk-c2c" style="min-width:220px">' + (c2cOpts || '<option value="">暂无私聊对象</option>') + '</select>'
+            : groupSelHtml
+          body += '<div class="dk-row" id="dk-target-row">' + targetSel + '</div>'
           body += '<textarea class="qqs-txt" id="dk-text" rows="3" style="width:100%;box-sizing:border-box;margin:6px 0" placeholder="输入内容…(@某人 用 &lt;@对方openid&gt; 无斜杠)">' + esc(state.sendText) + '</textarea>'
           body += '<div class="dk-row">'
             + '<label style="display:inline-flex;align-items:center;gap:5px;font-size:12px;color:#666;cursor:pointer" title="发完后往该会话写入一条「用户代你发送: …」的模拟用户消息(web 流可见、不唤醒、不开回合;标记不会发到 QQ)">'
@@ -1991,6 +2152,37 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             + '<span style="flex:1"></span>'
             + '<button class="dk-btn ok" id="dk-send">🚀 发送到 ' + (state.sendScope === 'c2c' ? ('私聊「' + esc(c2cSelName()) + '」') : '群「' + esc(groupSelName()) + '」') + '</button>'
             + '<span class="dk-msg">已输 ' + state.sendText.length + '/2000</span></div>'
+        } else if (state.tab === 'chat') {
+          body += '<div class="dk-row">目标类型: '
+            + '<label style="display:inline-flex;align-items:center;gap:4px"><input type="radio" name="dk-scope" value="group"' + (state.sendScope !== 'c2c' ? ' checked' : '') + '> 群聊</label> '
+            + '<label style="display:inline-flex;align-items:center;gap:4px"><input type="radio" name="dk-scope" value="c2c"' + (state.sendScope === 'c2c' ? ' checked' : '') + '> 私聊</label></div>'
+          body += '<div class="dk-row" style="margin:2px 0 4px">'
+            + '<input class="qqs-txt" id="dk-target-search" placeholder="' + (state.sendScope === 'c2c' ? '🔍 搜私聊对象(昵称/ID)…' : '🔍 搜群(备注/昵称/ID)…') + '" value="' + esc(state.targetQ || '') + '" style="width:100%;box-sizing:border-box;font-size:12px;padding:4px 8px">'
+            + '<span class="dk-msg" id="dk-target-count"></span></div>'
+          var chatTargetSel = state.sendScope === 'c2c'
+            ? '<select class="qqs-sel" id="dk-c2c" style="min-width:220px">' + (c2cOpts || '<option value="">暂无私聊对象</option>') + '</select>'
+            : groupSelHtml
+          body += '<div class="dk-row" id="dk-target-row">' + chatTargetSel + '</div>'
+          body += '<div class="dk-chat-wrap">'
+            + '<div class="dk-chat-head">'
+            + '<button class="dk-btn ok" id="dk-chat-refresh">🔄 刷新</button>'
+            + '<span class="dk-msg" id="dk-chat-status" style="flex:1">QQ 会话记录(注入/系统文本已滤)</span>'
+            + '</div>'
+            + '<div class="dk-chat-box" id="dk-chat-box"></div>'
+            + '</div>'
+          // QQ 风格输入栏: 文本发送; bbcode [MEDIA:图片|路径/链接] 支持本地图与网络图
+          body += '<div class="dk-composer">'
+            + '<textarea id="dk-chat-input" rows="2" placeholder="输入文字发送; 点 📷插图/📎文件 把本地路径或网络链接变成 [MEDIA:图片|来源] 放进文本框(可拖拽/粘贴图片)">' + esc(state.chatText) + '</textarea>'
+            + '<div class="dk-cbar">'
+            + '<button class="dk-btn" id="dk-chat-ins" title="发送后写一条「用户代你发送」模拟消息进 bot 上下文(web 流可见)">🧠 ' + (state.chatIns ? '记入上下文' : '不记上下文') + '</button>'
+            + '<span class="dk-msg" id="dk-chat-cnt" style="color:#b3b7bd">0/2000</span>'
+            + '<span style="flex:1"></span>'
+            + '<input type="file" id="dk-chat-file" multiple hidden>'
+            + '<button class="dk-btn" id="dk-chat-add-file" title="选择本机文件(小文件自动上传, 大文件请直接输入本机路径)">📎 文件</button>'
+            + '<button class="dk-btn" id="dk-chat-add-img" title="插入图片: 弹窗输入本机路径或网络图片地址 → 自动变成 [MEDIA:图片|来源]">📷 插图</button>'
+            + '<button class="dk-send" id="dk-chat-send">发送</button>'
+            + '</div>'
+            + '</div>'
         } else if (state.tab === 'join') {
           body += '<div class="dk-row">目标群: ' + groupSelHtml
             + '<button class="dk-btn" id="dk-refresh-join">🔄 刷新</button>'
@@ -2012,8 +2204,13 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           + '<button class="dk-btn" id="dk-bind">绑定</button></div>'
         b.innerHTML = body
         bindBodyEvents()
+        bindPanelDrag()
+        if (state.tab === 'send') applyTargetFilter(panel, state)
+        if (state.tab === 'chat') renderChatList()
         if (state.tab === 'join') renderJoinList()
         if (state.tab === 'mute') { renderMemberList(); renderMuteList() }
+        // 首次进入聊天 tab 自动拉最新一页
+        if (state.tab === 'chat' && !state.chatItems.length && !state.chatBusy) loadChat(true)
         setTimeout(layoutPanel, 0)
       }
       function bindBodyEvents() {
@@ -2022,6 +2219,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           btn.onclick = function () {
             state.tab = btn.getAttribute('data-t'); state.msg = ''
             if (state.tab === 'join') loadJoins(); else if (state.tab === 'mute') loadMutes()
+            else if (state.tab === 'chat') { state.chatItems = []; state.chatErr = ''; }
             paintBody()
           }
         })
@@ -2029,6 +2227,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         if (gsel) gsel.onchange = function (e) {
           state.gid = e.target.value; state.msg = ''
           if (state.tab === 'join') loadJoins(); else if (state.tab === 'mute') loadMutes()
+          else if (state.tab === 'chat') { state.chatItems = []; state.chatErr = ''; state.chatBusy = ''; paintBody(); loadChat(true) }
           else paintBody()
         }
         var rads = panel.querySelectorAll('input[name="dk-scope"]')
@@ -2036,11 +2235,18 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           r.onchange = function () {
             state.sendScope = r.value; state.msg = ''
             if (r.value !== 'c2c') state.sendTo = ''
-            paintBody()
+            if (state.tab === 'chat') { state.chatItems = []; state.chatErr = ''; state.chatBusy = ''; paintBody(); loadChat(true) }
+            else paintBody()
           }
         })
         var c2c = panel.querySelector('#dk-c2c')
-        if (c2c) c2c.onchange = function (e) { state.sendTo = e.target.value; paintBody() }
+        if (c2c) c2c.onchange = function (e) {
+          state.sendTo = e.target.value; state.msg = ''
+          if (state.tab === 'chat') { state.chatItems = []; state.chatErr = ''; state.chatBusy = ''; paintBody(); loadChat(true) }
+          else paintBody()
+        }
+        var srch = panel.querySelector('#dk-target-search')
+        if (srch) srch.oninput = function (e) { state.targetQ = e.target.value; applyTargetFilter(panel, state) }
         var txt = panel.querySelector('#dk-text')
         if (txt) { txt.oninput = function (e) { state.sendText = e.target.value; var n = panel.querySelector('.dk-msg'); if (n) n.textContent = '已输 ' + state.sendText.length + '/2000' } }
         var ins = panel.querySelector('#dk-insctx')
@@ -2051,8 +2257,427 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         if (rj) rj.onclick = loadJoins
         var rm = panel.querySelector('#dk-refresh-mute')
         if (rm) rm.onclick = loadMutes
+        var crf = panel.querySelector('#dk-chat-refresh')
+        if (crf) crf.onclick = function () { state.chatItems = []; state.chatErr = ''; state.chatBusy = ''; loadChat(true) }
+        var cbox = panel.querySelector('#dk-chat-box')
+        if (cbox) cbox.onscroll = function () {
+          if (state.tab !== 'chat' || !state.chatMore || state.chatBusy) return
+          if (cbox.scrollTop <= 4) loadChat(false) // 顶部 → 加载更早
+        }
+        var cinput = panel.querySelector('#dk-chat-input')
+        if (cinput) {
+          cinput.oninput = function (e) { state.chatText = e.target.value; var n = panel.querySelector('#dk-chat-cnt'); if (n) n.textContent = state.chatText.length + '/2000' }
+          cinput.onkeydown = function (e) {
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); chatSend('auto') }
+          }
+          // 粘贴/拖拽图片 → 自动转 [MEDIA:kind|来源] 追加进文本框(有本机路径直用, 否则小文件上传到 dock-uploads)
+          cinput.onpaste = function (e) {
+            var files = (e.clipboardData && e.clipboardData.files) ? Array.from(e.clipboardData.files) : []
+            // 截图/复制位图时 clipboardData.files 常为空 → 从 items 里捞图片
+            if (!files.length && e.clipboardData && e.clipboardData.items) {
+              for (var i = 0; i < e.clipboardData.items.length; i++) {
+                var it = e.clipboardData.items[i]
+                if (it.kind === 'file' || String(it.type).indexOf('image/') === 0) {
+                  var f = (it.getAsFile && it.getAsFile()) || null
+                  if (f) files.push(f)
+                }
+              }
+            }
+            if (files.length) { e.preventDefault(); chatIngestFiles(files) }
+          }
+          cinput.addEventListener('dragover', function (e) { e.preventDefault() })
+          cinput.ondrop = function (e) {
+            e.preventDefault()
+            var files = (e.dataTransfer && e.dataTransfer.files) ? Array.from(e.dataTransfer.files) : []
+            if (files.length) chatIngestFiles(files)
+          }
+        }
+        var cins = panel.querySelector('#dk-chat-ins')
+        if (cins) cins.onclick = function () { state.chatIns = !state.chatIns; cins.textContent = '🧠 ' + (state.chatIns ? '记入上下文' : '不记上下文') }
+        var csend = panel.querySelector('#dk-chat-send')
+        if (csend) csend.onclick = function () { chatSend('auto') }
+        var fadd = panel.querySelector('#dk-chat-add-file')
+        var fpick = panel.querySelector('#dk-chat-file')
+        if (fadd && fpick) fadd.onclick = function () { fpick.value = ''; fpick.click() }
+        if (fpick) fpick.onchange = function () { var files = Array.from(fpick.files || []); if (files.length) chatIngestFiles(files, true) }
+        var iadd = panel.querySelector('#dk-chat-add-img')
+        if (iadd) iadd.onclick = function () {
+          // 弹小窗输入本机路径或网络图片 → 插入 [MEDIA:image|src](追加, 不清空已有文本)
+          var src = window.prompt('输入图片来源: 本机绝对路径(D:\\xxx\\a.jpg) 或 http(s) 图片地址', '')
+          if (src === null) return
+          src = String(src || '').trim()
+          if (!src) return
+          chatInsertMedia('image', src)
+        }
         var bd = panel.querySelector('#dk-bind')
         if (bd) bd.onclick = function () { state.bindGid = (panel.querySelector('#dk-bindgid') || {}).value || ''; state.bindName = (panel.querySelector('#dk-bindname') || {}).value || ''; doBind() }
+      }
+      // ── 💬 聊天视图: 数据拉取 / QQ 风格气泡渲染 / 顶部滚动分页 ──
+      function chatPeerReady() {
+        return state.sendScope === 'c2c' ? !!state.sendTo : !!state.gid
+      }
+      function chatPeerName() {
+        return state.sendScope === 'c2c'
+          ? ('私聊「' + (c2cSelName()) + '」')
+          : ('群「' + (groupSelName()) + '」')
+      }
+      // 剥 Markdown 语法(移植自 gal-view transcript.mjs, 保留正文)让气泡像 QQ 纯文本
+      function mdPlain(t) {
+        if (typeof t !== 'string') return ''
+        return t
+          .replace(/^```[^\n]*$/gm, '')
+          .replace(/!\[[^\]\n]*\]\([^)\n]*\)/g, '')
+          .replace(/\[([^\]\n]+)\]\([^)\n]*\)/g, '$1')
+          .replace(/\*\*([^*\n]+)\*\*/g, '$1')
+          .replace(/~~([^~\n]+)~~/g, '$1')
+          .replace(/(^|[^*\w])\*([^*\n]+?)\*(?!\*)(?![*\w])/g, '$1$2')
+          .replace(/`([^`\n]+)`/g, '$1')
+          .replace(/^#{1,6}[ \t]+/gm, '')
+          .replace(/^>[ \t]?/gm, '')
+          .replace(/^[ \t]*(?:-{3,}|\*{3,}|_{3,})[ \t]*$/gm, '')
+          .replace(/^[-*+][ \t]+/gm, '')
+          .replace(/^\d+\.[ \t]+/gm, '')
+          .replace(/\r\n?/g, '\n')
+          .replace(/\n{3,}/g, '\n\n')
+          .trim()
+      }
+      function chatTime(ts) {
+        if (!ts) return ''
+        var d = new Date(ts)
+        if (isNaN(d.getTime())) return ''
+        var p2 = function (n) { return String(n).padStart(2, '0') }
+        var hm = p2(d.getHours()) + ':' + p2(d.getMinutes())
+        var now = new Date()
+        if (d.toDateString() === now.toDateString()) return hm
+        return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + hm
+      }
+      // reset=true 拉最新一页(清空重载); reset=false 用 chatOldest 加载更早并保持视口
+      function loadChat(reset) {
+        if (!state.ns) { renderChatList(); return }
+        if (!chatPeerReady()) { state.chatItems = []; state.chatMore = false; state.chatErr = '先选一个群/私聊目标'; renderChatList(); return }
+        if (state.chatBusy) return
+        var mode = reset ? 'chat' : 'more'
+        state.chatBusy = mode
+        if (reset) { state.chatItems = []; state.chatOldest = 0 }
+        var box = document.getElementById('dk-chat-box')
+        var keep = 0
+        if (box && mode === 'more') keep = box.scrollHeight - box.scrollTop
+        renderChatList() // 立即显示加载态
+        var peerId = state.sendScope === 'c2c' ? state.sendTo : state.gid
+        var q = 'ns=' + encodeURIComponent(state.ns) + '&scope=' + state.sendScope + '&peerId=' + encodeURIComponent(peerId) + '&limit=50'
+        if (mode === 'more' && state.chatOldest > 0) q += '&beforeSeq=' + state.chatOldest
+        api('chat/history', q).then(function (d) {
+          state.chatBusy = ''
+          if (!d || !d.ok) { state.chatErr = (d && (d.error || d.msg)) || '加载失败'; renderChatList(); return }
+          var list = (Array.isArray(d.items) ? d.items : []).filter(function (it) {
+            return it && ((typeof it.text === 'string' && it.text) || (Array.isArray(it.images) && it.images.length))
+          })
+          if (mode === 'more') {
+            var have = {}
+            state.chatItems.forEach(function (x) { have[x.seq] = 1 })
+            state.chatItems = list.filter(function (x) { return !have[x.seq] }).concat(state.chatItems)
+          } else {
+            state.chatItems = list
+          }
+          state.chatMore = d.hasMore === true
+          state.chatErr = ''
+          state.chatOldest = state.chatItems.length ? state.chatItems[0].seq : 0
+          renderChatList(mode === 'more' ? keep : null)
+        }).catch(function () {
+          state.chatBusy = ''
+          state.chatErr = '网络错误'
+          renderChatList()
+        })
+      }
+      function renderChatList(keepScrollOffset) {
+        var box = document.getElementById('dk-chat-box')
+        if (!box) return
+        var st = document.getElementById('dk-chat-status')
+        if (st) {
+          if (state.chatBusy === 'send') st.textContent = '发送中…'
+          else if (chatFlash) st.textContent = chatFlash
+          else if (state.chatBusy) st.textContent = state.chatBusy === 'chat' ? '加载中…' : '加载更早…'
+          else if (state.chatErr) st.textContent = state.chatErr
+          else if (!state.chatItems.length) st.textContent = '暂无记录 —— 机器人和该目标聊过后会显示在这里'
+          else st.textContent = '共 ' + state.chatItems.length + ' 条 · ' + chatPeerName() + (state.chatMore ? ' · 上滑加载更早' : ' · 已到最早')
+        }
+        if (!state.chatItems.length) {
+          var emptyTxt = state.chatErr || (!chatPeerReady() ? '先选一个群/私聊目标' : '还没有聊天记录(该目标暂无活跃会话)')
+          box.innerHTML = '<div class="dk-empty" style="padding:26px 0">' + esc(emptyTxt) + '</div>'
+          return
+        }
+        var html = ''
+        if (state.chatMore) html += '<div class="dk-chat-top">↑ 上滑加载更早消息</div>'
+        html += state.chatItems.map(function (it) {
+          var isOut = it.dir === 'out'
+          var who = isOut ? '我' : (it.sender || (state.sendScope === 'c2c' ? c2cSelName() : '群友'))
+          var ava = isOut ? '🐳' : chatAvaOf(who)
+          var meta = '<span>' + esc(who) + '</span>'
+            + (it.tag ? '<span class="dk-ctag">' + esc(it.tag) + '</span>' : '')
+            + '<span>' + esc(chatTime(it.time)) + '</span>'
+          var imgs = (Array.isArray(it.images) ? it.images : []).map(function (m) {
+            var u = typeof m === 'string' ? m : (m && m.url)
+            var k = typeof m === 'string' ? 'image' : ((m && m.kind) || 'image')
+            if (!u) return ''
+            if (k === 'file') return '<a class="dk-file" href="' + esc(u) + '" target="_blank" rel="noopener" title="' + esc(u) + '">📎 ' + esc((m && m.name) || '文件') + '</a>'
+            if (k === 'voice') return '<audio class="dk-audio" controls preload="metadata" src="' + esc(u) + '"></audio>'
+            if (k === 'video') return '<video class="dk-video" controls preload="metadata" src="' + esc(u) + '"></video>'
+            return '<img class="dk-img" loading="lazy" data-lb="' + esc(u) + '" src="' + esc(u) + '" referrerpolicy="no-referrer" alt="[图片]" onerror="this.outerHTML=\'<span style=color:#888>[图加载失败]</span>\'">'
+          }).join('')
+          var txt = it.text ? '<div>' + esc(mdPlain(it.text)) + '</div>' : ''
+          return '<div class="dk-crow ' + (isOut ? 'out' : 'in') + '">'
+            + '<div class="dk-ava">' + ava + '</div>'
+            + '<div class="dk-cmain">'
+            + '<div class="dk-cmeta">' + meta + '</div>'
+            + '<div class="dk-cbubble">' + imgs + txt + '</div>'
+            + '</div>'
+            + '</div>'
+        }).join('')
+        html += '<div class="dk-chat-bottom">—— 会话尾部 · ' + esc(chatPeerName()) + ' ——</div>'
+        box.innerHTML = html
+        // 图片: 单击/右键 → 灯箱放大(右键不再弹浏览器菜单, 避免误触发 onerror 变加载失败)
+        box.querySelectorAll('img.dk-img').forEach(function (img) {
+          var lb = img.getAttribute('data-lb') || img.src
+          img.onclick = function (e) { e.preventDefault(); e.stopPropagation(); openLightbox(lb) }
+          img.oncontextmenu = function (e) { e.preventDefault(); e.stopPropagation(); openLightbox(lb) }
+        })
+        // 滚动: 刷新/切目标 → 滚到底; 上滚加载更早 → 保持视口
+        if (keepScrollOffset == null) box.scrollTop = box.scrollHeight
+        else box.scrollTop = box.scrollHeight - keepScrollOffset
+      }
+      // 头像字符: 群友取昵称首字; 私聊/无名兜底
+      function chatAvaOf(who) {
+        var s = String(who || '').trim()
+        if (!s) return '?'
+        try { return Array.from(s)[0] } catch (e) { return s[0] || '?' }
+      }
+      function setChatStatus(msg) {
+        var st = document.getElementById('dk-chat-status')
+        if (st) st.textContent = msg
+      }
+      // 结果提示: 短暂保留(列表刷新/计数不覆盖), 到期自动还原
+      function flashStatus(msg, ms) {
+        chatFlash = msg
+        setChatStatus(msg)
+        var hold = ms || 3500
+        setTimeout(function () {
+          if (chatFlash === msg) {
+            chatFlash = ''
+            var st = document.getElementById('dk-chat-status')
+            if (st && st.textContent === msg) renderChatList()
+          }
+        }, hold)
+      }
+      function closeLightbox() {
+        var ov = document.getElementById('qqs-lightbox')
+        if (ov) ov.remove()
+      }
+      function openLightbox(url) {
+        closeLightbox()
+        var ov = document.createElement('div')
+        ov.id = 'qqs-lightbox'
+        ov.innerHTML = '<span class="lb-x">✕</span><img src="' + esc(url) + '" referrerpolicy="no-referrer" alt="图片">'
+        document.body.appendChild(ov)
+        ov.onclick = closeLightbox
+        var x = ov.querySelector('.lb-x')
+        if (x) x.onclick = function (e) { e.stopPropagation(); closeLightbox() }
+        window.addEventListener('keydown', function h(e) { if (e.key === 'Escape') { closeLightbox(); window.removeEventListener('keydown', h) } })
+      }
+      function chatUrls(text) {
+        var out = []
+        var re = /https?:\/\/[^\s]+/g
+        var m
+        while ((m = re.exec(String(text || ''))) !== null) {
+          var u = m[0].replace(/[，。、；：,.;:!！?？)\]】》>」』]+$/, '')
+          if (u) out.push(u)
+        }
+        return out
+      }
+      function chatKindOfMedia(fullText) {
+        if (/\.(jpe?g|png|gif|webp|bmp)(\?|$)/i.test(fullText) || /\[(图片|img):/i.test(fullText)) return 'image'
+        if (/\.(mp4|webm|mov|avi)(\?|$)/i.test(fullText) || /\[(视频|video):/i.test(fullText)) return 'video'
+        if (/\.(mp3|wav|amr|silk|m4a|ogg)(\?|$)/i.test(fullText) || /\[(语音|voice|音频):/i.test(fullText)) return 'voice'
+        return 'file'
+      }
+      function chatKindLbl(kind) {
+        return kind === 'image' ? '图片' : kind === 'video' ? '视频' : kind === 'voice' ? '语音' : '文件'
+      }
+      // 把文本框里的 [MEDIA:kind|src] 拆出来(src 可为 http 链接或本机路径), 其余为纯文本段
+      function chatSplitBbcode(t) {
+        var medias = []
+        var texts = []
+        var re = /\[MEDIA:([^\]|]+)\|([^\]]+)\]/gi
+        var m
+        var last = 0
+        while ((m = re.exec(String(t || ''))) !== null) {
+          var pre = t.slice(last, m.index).trim()
+          if (pre) texts.push(pre)
+          medias.push({ kind: String(m[1]).toLowerCase(), src: String(m[2]).trim() })
+          last = m.index + m[0].length
+        }
+        var tail = t.slice(last).trim()
+        if (tail) texts.push(tail)
+        // kind 中文兼容: [MEDIA:图片|…]
+        medias.forEach(function (x) {
+          if (x.kind === '图片' || x.kind === 'img') x.kind = 'image'
+          else if (x.kind === '视频' || x.kind === 'video') x.kind = 'video'
+          else if (x.kind === '语音' || x.kind === 'voice' || x.kind === '音频') x.kind = 'voice'
+          else if (x.kind === '文件' || x.kind === 'file') x.kind = 'file'
+          if (x.kind !== 'image' && x.kind !== 'video' && x.kind !== 'voice' && x.kind !== 'file') x.kind = 'file'
+        })
+        return { medias: medias, texts: texts }
+      }
+      // 发送单条媒体: src 支持 http(s) 或本机绝对路径; 勾了🧠记入上下文时 host 写「用户代发」模拟消息
+      function chatSendMediaOne(kind, src) {
+        var body = { ns: state.ns || undefined, scope: state.sendScope, kind: kind }
+        var peerId = state.sendScope === 'c2c' ? state.sendTo : state.gid
+        if (!peerId) return Promise.resolve({ ok: false, msg: '未选目标' })
+        body.peerId = peerId
+        if (/^https?:\/\//i.test(src)) body.url = src
+        else body.localPath = src
+        body.insertContext = state.chatIns === true
+        body.relayText = src // 完整来源(路径/URL)进「用户代发」上下文, dock 可渲染/可读
+        return apiPost('chat/media', body)
+      }
+      // 媒体来源的短描述(记入上下文用): 取文件名/链接尾
+      function chatMediaDesc(src) {
+        var s = String(src || '')
+        var i = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'))
+        var base = i >= 0 ? s.slice(i + 1) : s
+        base = base.replace(/[?&#].*$/, '')
+        return base || '媒体'
+      }
+      // 发送中 UI: 禁用发送按钮/输入框(防连点重复发送), 按钮显示进度
+      function setSending(on, label) {
+        var btn = document.getElementById('dk-chat-send')
+        if (btn) { btn.disabled = !!on; btn.textContent = on ? (label || '发送中…') : '发送' }
+        var ta = document.getElementById('dk-chat-input')
+        if (ta) ta.disabled = !!on
+      }
+      // 依次发送媒体列表, 全部成功后清空输入并刷新; 部分失败即停并提示
+      function chatSendMediaSeq(list, onDone) {
+        if (!list.length) { if (onDone) onDone(); return }
+        if (state.chatBusy) return // 防重入
+        state.chatBusy = 'send'
+        setSending(true, '发送中…')
+        setChatStatus('正在发送 ' + list.length + ' 个媒体…')
+        renderChatList()
+        var i = 0
+        var step = function () {
+          setSending(true, '发送中 ' + (i + 1) + '/' + list.length)
+          setChatStatus('正在发送' + chatKindLbl(list[i].kind) + ' ' + (i + 1) + '/' + list.length + '…(完成前勿再点发送)')
+          chatSendMediaOne(list[i].kind, list[i].src).then(function (d) {
+            if (!d || !d.ok) {
+              state.chatBusy = ''; setSending(false)
+              flashStatus('发送失败: ' + ((d && (d.msg || d.error)) || '未知') + '(输入已保留, 可改后重发)', 6000)
+              return
+            }
+            i++
+            if (i >= list.length) {
+              state.chatText = ''; renderChatInput(); state.chatBusy = ''; setSending(false)
+              flashStatus('已发送 ' + chatKindLbl(list[0].kind) + (list.length > 1 ? ' ×' + list.length : '') + ' ✓')
+              loadChat(true)
+              if (onDone) onDone()
+            } else step()
+          })
+        }
+        step()
+      }
+      // 发送入口(kindArg 保留兼容): 有 [MEDIA:…] → 逐条发媒体 + 剩余文字; 否则 纯链接自动判 / 纯文本
+      function chatSend(kindArg) {
+        if (state.chatBusy) { setChatStatus('正在发送中, 请稍候…'); return }
+        if (!state.ns) { setChatStatus('先选账号实例(头部下拉)'); return }
+        if (!chatPeerReady()) { setChatStatus('先选一个群/私聊目标'); return }
+        var t = (state.chatText || '').trim()
+        if (!t) { setChatStatus('先输入内容, 或用 📷插图/📎文件 加入媒体'); return }
+        var blk = chatSplitBbcode(t)
+        if (blk.medias.length) {
+          chatSendMediaSeq(blk.medias, function () {
+            if (blk.texts.length && !state.chatBusy) chatSendText(blk.texts.join('\n'))
+          })
+          return
+        }
+        var urls = chatUrls(t)
+        if (!urls.length) { chatSendText(t); return }
+        var kind = chatKindOfMedia(t)
+        // 纯链接: 自动当媒体发; 若有残留描述文字(去掉链接后), 媒体成功后补发
+        var clean = t.replace(/https?:\/\/[^\s]+/g, '').replace(/\[(图片|附件|文件|语音|视频|音频):\s*\]/g, '').replace(/\[Attachment:[^\]]*\]/g, '').trim()
+        chatSendMediaSeq([{ kind: kind, src: urls[0] }], function () { if (clean && !state.chatBusy) chatSendText(clean) })
+      }
+      function chatSendText(t) {
+        if (state.chatBusy) return // 防重入(媒体后补发文本也要等空闲)
+        state.chatBusy = 'send'
+        setSending(true, '发送中…')
+        setChatStatus('正在发送文本…')
+        renderChatList()
+        var body = { text: t, ns: state.ns || undefined, insertContext: state.chatIns === true }
+        if (state.sendScope === 'c2c') body.openid = state.sendTo
+        else body.gid = state.gid
+        apiPost(state.sendScope === 'c2c' ? 'chat/send' : 'group/send', body).then(function (d) {
+          state.chatBusy = ''
+          setSending(false)
+          if (d && d.ok) { state.chatText = ''; renderChatInput(); flashStatus(d.msg || '已发送 ✓'); loadChat(true) }
+          else flashStatus((d && (d.msg || (d.err && d.err.human) || d.error)) || '发送结果未知', 6000)
+        })
+      }
+      function chatKindOfFile(f) {
+        var t = String((f && f.type) || '').toLowerCase()
+        var n = String((f && f.name) || '').toLowerCase()
+        if (t.indexOf('image/') === 0 || /\.(jpe?g|png|gif|webp|bmp)$/.test(n)) return 'image'
+        if (t.indexOf('video/') === 0 || /\.(mp4|webm|mov|avi)$/.test(n)) return 'video'
+        if (t.indexOf('audio/') === 0 || /\.(mp3|wav|amr|silk|m4a|ogg)$/.test(n)) return 'voice'
+        return 'file'
+      }
+      function chatFileExt(f) {
+        var n = String((f && f.name) || '')
+        var i = n.lastIndexOf('.')
+        var e = i >= 0 ? n.slice(i + 1).toLowerCase() : ''
+        if (/^[a-z0-9]{1,6}$/.test(e)) return e
+        return 'bin'
+      }
+      // 把 [MEDIA:kind|src] 追加进文本框(不清空已有内容)
+      function chatInsertMedia(kind, src) {
+        var cur = state.chatText || ''
+        if (cur && !/\n$/.test(cur)) cur += '\n'
+        state.chatText = cur + '[MEDIA:' + chatKindLbl(kind) + '|' + src + ']'
+        renderChatInput()
+        var ta = document.getElementById('dk-chat-input')
+        if (ta) { ta.focus(); ta.scrollTop = ta.scrollHeight }
+        setChatStatus('已插入 ' + chatKindLbl(kind) + ', 点发送即可发出')
+      }
+      // 处理选中的文件: 有本机路径(Electron 场景)直接用; 否则 base64 上传到 bot 临时目录拿路径
+      function chatIngestFiles(files, fromPicker) {
+        var list = Array.isArray(files) ? files : []
+        if (!list.length) return
+        var total = list.length
+        var done = 0
+        var finish = function () { done++; if (fromPicker && done >= total) { var fp = document.getElementById('dk-chat-file'); if (fp) fp.value = '' } }
+        list.forEach(function (f) {
+          var kind = chatKindOfFile(f)
+          var directPath = ''
+          try { if (f.path && /^[a-zA-Z]:[\\/]/.test(String(f.path))) directPath = String(f.path) } catch (e) { directPath = '' }
+          if (directPath) { chatInsertMedia(kind, directPath); finish(); return }
+          if (f.size > 300 * 1024 * 1024) { setChatStatus('「' + (f.name || '文件') + '」超过 300MB 上限, 请手动输入本机路径'); finish(); return }
+          // 一律走流式上传(不限 ~5MB): 浏览器把 File 直接当 body 传, host 写盘后返回本机路径
+          var ext = chatFileExt(f)
+          setChatStatus('正在上传 ' + (f.name || '文件') + '…')
+          var q = 'ns=' + encodeURIComponent(state.ns || '') + '&ext=' + encodeURIComponent(ext)
+          fetch('/api/qqbot-settings/chat/upload-raw?' + q, {
+            method: 'POST',
+            headers: { 'content-type': 'application/octet-stream' },
+            body: f,
+          }).then(function (r) { return r.json().catch(function () { return null }) }).then(function (d) {
+            if (d && d.ok && d.path) { chatInsertMedia(kind, d.path); setChatStatus('已上传 ' + (f.name || '文件') + ', 点发送即可发出') }
+            else setChatStatus('上传失败: ' + ((d && (d.error || d.msg)) || '未知'))
+            finish()
+          }).catch(function () { setChatStatus('上传失败(网络错误)'); finish() })
+        })
+      }
+      function renderChatInput() {
+        var ta = document.getElementById('dk-chat-input')
+        if (ta) ta.value = state.chatText || ''
+        var n = document.getElementById('dk-chat-cnt')
+        if (n) n.textContent = (state.chatText || '').length + '/2000'
       }
       function renderJoinList() {
         var box = panel.querySelector('#dk-join-list')
