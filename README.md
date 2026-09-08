@@ -266,15 +266,21 @@ npx @deepseek-ai/dsh web --patch /path/to/dsh-qqbot/cordis.dev.yml
 
 ## 用户扩展(自定义斜杠命令 / QQ 工具)(v0.9.8+)
 
-> 给"用户自己 + AI 自己"写扩展用的。写在**账号工作目录的扩展区**, 不碰插件本体——
+> 给"用户自己 + AI 自己"写扩展用的。写在**账号数据目录的扩展区**(默认=账号工作目录 cwd;
+> 若账号配置了 `dataRoot`, 则在 `{dataRoot}/.qqbot-extensions`), 不碰插件本体——
 > 以后升级插件(换 node_modules)不会覆盖你的扩展。扩展=可执行 JS, 只在你自己的机器上跑。
+> 查看当前目录: dock 账号列表会显示该账号的"数据目录"。
 
-### 目录结构(每账号独立, 在账号的 cwd 下)
+### 目录结构(每账号独立)
 ```
-.qqbot-extensions/
-├── commands/    # 自定义斜杠命令(重启后生效)
-└── tools/       # 自定义 QQ 通道工具(AI 可调; 写完用 /tools-reload 或让 AI 调 tools_reload 热刷)
+<数据目录>/
+├── 表情包/                 # 图库(若配置了 dataRoot, 如 cwd/dshqqbot/表情包)
+├── .qqbot/                 # 台账/定时/审批(如 cwd/dshqqbot/.qqbot)
+└── .qqbot-extensions/
+    ├── commands/    # 自定义斜杠命令(重启后生效)
+    └── tools/       # 自定义 QQ 通道工具(AI 可调; 写完用 /tools-reload 或让 AI 调 tools_reload 热刷)
 ```
+数据目录 = `dataRoot`(已配置, 例 `D:\...\鲸鱼娘\dshqqbot`)或账号 cwd(未配置时, 向后兼容)。
 
 ### 自定义斜杠命令: .qqbot-extensions/commands/xxx.mjs
 ```js
@@ -305,7 +311,7 @@ export default {
 写完在 QQ 里发 `/tools-reload`(或直接让 AI 调 `tools_reload` 工具)即可用, 无需重启。
 
 ### 给 AI 的要点(让 AI 帮用户写扩展时照此办)
-1. 命令/工具文件都放账号 cwd 的 `.qqbot-extensions/` 下, 别放插件包内。
+1. 命令/工具文件都放**账号数据目录**的 `.qqbot-extensions/` 下(dataRoot 优先, 无则 cwd), 别放插件包内。
 2. 工具入参 schema 用 JSON Schema 风格; **可选参数不带 required 字段**。
 3. 写完后告知用户: 命令需重启, 工具发 `/tools-reload` 或调 tools_reload。
 4. 返回统一 `{ ok, msg }`(工具)或纯文本(命令)。
