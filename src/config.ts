@@ -157,6 +157,8 @@ export interface BotplayEventConfig {
   maxClicks?: number;
   /** 发卡后有效期(秒): 超时按钮不再受理 */
   expireSec?: number;
+  /** 每行几个按钮(Phase2: 1~5, 默认1=竖排; QQ 上限 5行×5钮) */
+  buttonsPerRow?: number;
   /** 权限自定义(默认 all; triggerer=仅触发者本人) */
   perm?: {
     type: BotplayPermType;
@@ -362,10 +364,12 @@ const botplayEventSchema = Schema.object({
   maxClicks: Schema.number().default(0).description('接受点击数: 0=不限; N=单次触发最多点N次(点满失效)'),
   expireSec: Schema.number().default(600).description('发卡后有效期(秒), 超时按钮失效'),
   perm: botplayPermSchema,
+  buttonsPerRow: Schema.number().min(1).max(5).default(1).description('每行几个按钮(1~5, 默认1竖排; QQ 上限 5行×5钮)'),
   buttons: Schema.array(botplayButtonSchema).default([]).description('按钮列表(QQ限制: 最多5行)'),
 }).default({
   id: '', name: '', maxClicks: 0, expireSec: 600,
   perm: { type: 'all', userIds: [] },
+  buttonsPerRow: 1,
   buttons: [],
 }).description('botplay 互动事件');
 

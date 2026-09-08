@@ -2262,8 +2262,10 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           state.bpEvents.forEach(function (ev, i) {
             var sel = state.bpSel === i
             var btnN = (ev.buttons || []).length
+            var rowc = bpRowCount(ev)
+            var overL = rowc.rows > 5
             body += '<div class="dk-item" style="cursor:pointer;background:' + (sel ? '#f1ecff' : 'transparent') + '" data-bpidx="' + i + '">'
-              + '<span style="flex:1"><b>' + esc(ev.name || '(未命名)') + '</b> <span style="color:#888;font-size:11px">/ ' + esc(ev.id || '?') + ' · ' + btnN + ' 按钮 · ' + (ev.perm && ev.perm.type ? esc(ev.perm.type) : 'all') + ' · ' + (ev.expireSec || 600) + 's</span></span>'
+              + '<span style="flex:1"><b>' + esc(ev.name || '(未命名)') + '</b> <span style="color:#888;font-size:11px">/ ' + esc(ev.id || '?') + ' · ' + btnN + ' 按钮·每行' + rowc.per + ' → ' + rowc.rows + '行' + (overL ? ' <b style="color:#e03131">⚠超限</b>' : '') + ' · ' + (ev.perm && ev.perm.type ? esc(ev.perm.type) : 'all') + ' · ' + (ev.expireSec || 600) + 's</span></span>'
               + '<button class="dk-btn no" data-bpdel="' + i + '">🗑</button></div>'
           })
           body += '</div>'
@@ -2282,8 +2284,10 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
                 ? '<input class="qqs-txt" id="dk-bp-users" value="' + esc(((D.perm.userIds) || []).join(', ')) + '" placeholder="指定 openid(逗号分隔)" style="flex:1;min-width:160px">'
                 : '')
               + '<label style="font-size:12px;color:#555">有效期(s)</label><input class="qqs-txt" id="dk-bp-expire" type="number" min="30" value="' + (D.expireSec || 600) + '" style="width:70px">'
-              + '<label style="font-size:12px;color:#555">总次数(0不限)</label><input class="qqs-txt" id="dk-bp-max" type="number" min="0" value="' + (D.maxClicks || 0) + '" style="width:60px"></div>'
-            body += '<div style="font-weight:700;font-size:12px;margin:6px 0 2px;color:#4a3a9f">按钮(最多 5 个)</div>'
+              + '<label style="font-size:12px;color:#555">总次数(0不限)</label><input class="qqs-txt" id="dk-bp-max" type="number" min="0" value="' + (D.maxClicks || 0) + '" style="width:60px">'
+              + '<label style="font-size:12px;color:#555">每行按钮</label><input class="qqs-txt" id="dk-bp-perrow" type="number" min="1" max="5" value="' + (D.buttonsPerRow || 1) + '" style="width:50px" title="每行几个按钮(1~5); QQ 键盘≤5行×每行≤5, 行数=按钮数÷每行"></div>'
+            var rowc2 = bpRowCount(D)
+            body += '<div style="font-weight:700;font-size:12px;margin:6px 0 2px;color:#4a3a9f">按钮 <span id="dk-bp-layout" style="font-weight:400;color:' + (rowc2.rows > 5 ? '#e03131' : '#2f9e44') + '">共 ' + rowc2.n + ' 个 · 每行 ' + rowc2.per + ' 个 → ' + rowc2.rows + ' 行' + (rowc2.rows > 5 ? '(超 QQ 上限 5 行, 发卡会报错!)' : '(≤5 行 ✅)') + '</span></div>'
             ;(D.buttons || []).forEach(function (b, bi) {
               var bt = (b.botAction && b.botAction.type) || 'reply_text'
               var md = (b.llmEffect && b.llmEffect.mode) || 'no_append'
@@ -2297,7 +2301,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
                 + '<input class="qqs-txt" data-bpctx="' + bi + '" value="' + esc(ctx) + '" placeholder="(记录/唤醒AI时)对AI说的话, 支持 {name} 事件名 {label} 按钮名; 空=默认" style="width:calc(100% - 8px);box-sizing:border-box;margin:0 0 4px 4px">'
             })
             body += '<div class="dk-row"><button class="dk-btn" id="dk-bp-addbtn">➕ 加按钮</button>'
-              + '<span class="dk-msg">按钮上限 5 个(QQ 键盘限制)</span></div>'
+              + '<span class="dk-msg" id="dk-bp-addmsg">每行 ' + rowc2.per + ' 个 × 最多 5 行 = 上限 ' + (rowc2.per * 5) + ' 个(QQ 键盘: ≤5行 × 每行≤5)</span></div>'
             body += '</div>'
           }
         }
@@ -2465,7 +2469,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         var bpNew = panel.querySelector('#dk-bp-new')
         if (bpNew) bpNew.onclick = function () {
           state.bpSel = null
-          state.bpDraft = { id: '', name: '', maxClicks: 0, expireSec: 600, perm: { type: 'all', userIds: [] }, buttons: [{ id: 'b1', label: '按钮', botAction: { type: 'reply_text', text: '' }, llmEffect: { mode: 'no_append', contextText: '' } }] }
+          state.bpDraft = { id: '', name: '', maxClicks: 0, expireSec: 600, buttonsPerRow: 1, perm: { type: 'all', userIds: [] }, buttons: [{ id: 'b1', label: '按钮', botAction: { type: 'reply_text', text: '' }, llmEffect: { mode: 'no_append', contextText: '' } }] }
           paintBody()
         }
         // 编辑器字段(名称/id/有效期/总次数/权限)
@@ -2488,6 +2492,8 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         if (bpExpire) bpExpire.oninput = function (e) { state.bpDraft.expireSec = Math.max(30, Number(e.target.value) || 600) }
         var bpMax = panel.querySelector('#dk-bp-max')
         if (bpMax) bpMax.oninput = function (e) { state.bpDraft.maxClicks = Math.max(0, Number(e.target.value) || 0) }
+        var bpPerRow = panel.querySelector('#dk-bp-perrow')
+        if (bpPerRow) bpPerRow.oninput = function (e) { state.bpDraft.buttonsPerRow = Math.max(1, Math.min(5, Math.round(Number(e.target.value)) || 1)); bpLayoutHint() }
         // 按钮行编辑(label/botAction.type/llmEffect.mode/删除/回复文本/对AI说的话)
         var bpBtns = panel.querySelectorAll('[data-bplabel]')
         bpBtns.forEach(function (inp) {
@@ -2538,12 +2544,29 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         })
         var bpAddBtn = panel.querySelector('#dk-bp-addbtn')
         if (bpAddBtn) bpAddBtn.onclick = function () {
-          if (state.bpDraft.buttons.length >= 5) return
+          var cap = Math.max(1, Math.min(5, Math.round(Number(state.bpDraft.buttonsPerRow)) || 1)) * 5
+          if (state.bpDraft.buttons.length >= cap) return
           state.bpDraft.buttons.push({ id: 'b' + (state.bpDraft.buttons.length + 1), label: '按钮', botAction: { type: 'reply_text', text: '' }, llmEffect: { mode: 'no_append', contextText: '' } })
           paintBody()
         }
         var bpSave = panel.querySelector('#dk-bp-save')
         if (bpSave) bpSave.onclick = saveBotplay
+      }
+      // QQ 键盘布局限制(官方 API): 键盘最多 5 行 × 每行最多 5 个按钮 → 行数=ceil(按钮数/每行数)≤5 才合法
+      function bpRowCount(ev) {
+        var per = Math.max(1, Math.min(5, Math.round(Number(ev.buttonsPerRow)) || 1))
+        var n = (ev.buttons || []).length
+        return { n: n, per: per, rows: Math.ceil(n / per) }
+      }
+      // 编辑器内实时刷新布局提示(改「每行按钮」时调用, 不重建 DOM 保输入焦点)
+      function bpLayoutHint() {
+        if (!state.bpDraft || !panel) return
+        var el = panel.querySelector('#dk-bp-layout')
+        if (!el) return
+        var c = bpRowCount(state.bpDraft)
+        var over = c.rows > 5
+        el.textContent = '共 ' + c.n + ' 个 · 每行 ' + c.per + ' 个 → ' + c.rows + ' 行' + (over ? '(超 QQ 上限 5 行, 发卡会报错!)' : '(≤5 行 ✅)')
+        el.style.color = over ? '#e03131' : '#2f9e44'
       }
       // 🎮 互动事件装配器: 读/存(全量 patch 只带 botplayEvents; settings.update 部分合并 + revision 乐观锁)
       function loadBotplay() {
@@ -2569,9 +2592,14 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           var dupId = false
           state.bpEvents.forEach(function (ev, i) { if (ev.id === draft.id && i !== state.bpSel) dupId = true })
           if (dupId) { ok('⚠️ 事件 id 重复: ' + draft.id); return }
+          var draftRow = bpRowCount(draft)
+          if (draftRow.rows > 5) { ok('⚠️ 「' + draft.name + '」按钮布局超限: ' + draftRow.n + ' 个按钮 × 每行 ' + draftRow.per + ' 个 = ' + draftRow.rows + ' 行(QQ 键盘最多 5 行)'); return }
           if (state.bpSel !== null && state.bpEvents[state.bpSel]) state.bpEvents[state.bpSel] = JSON.parse(JSON.stringify(draft))
           else { state.bpEvents.push(JSON.parse(JSON.stringify(draft))); state.bpSel = state.bpEvents.length - 1 }
         }
+        var badEv = null
+        state.bpEvents.forEach(function (ev) { var c = bpRowCount(ev); if (c.rows > 5 && !badEv) badEv = { name: ev.name, per: c.per, rows: c.rows } })
+        if (badEv) { ok('⚠️ 事件「' + badEv.name + '」每行 ' + badEv.per + ' 个 → ' + badEv.rows + ' 行, 超 QQ 5 行上限, 未保存'); return }
         if (hint) hint.textContent = '保存中…'
         var trySave = function (curVal, curRev) {
           var patch = Object.assign({}, curVal || {}, { botplayEvents: state.bpEvents })

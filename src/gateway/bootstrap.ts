@@ -371,6 +371,8 @@ export async function bootstrapGateway(
       message: { kind: target.scope === 'group' ? 'group' : 'c2c', senderId: '', groupOpenid: target.scope === 'group' ? target.targetId : undefined },
       replyTarget: target,
       command: { name: cmdName, args: [], raw: '' },
+      // 部分命令(如 /bot-help)直接经 cmdCtx.bot.sendMarkdown 分段发消息 → 桥到真实 sender
+      bot: { sendMarkdown: async (t: unknown, c: string) => sender.sendMarkdown((t as Parameters<typeof sender.sendMarkdown>[0]) || target, c) },
     } as never;
     const result = await cmd.handler(fakeCtx as never);
     if (typeof result === 'string') return result;

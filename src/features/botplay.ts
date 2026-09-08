@@ -67,12 +67,13 @@ function renderContext(tpl: string | undefined, eventName: string, buttonLabel: 
 
 /**
  * 构造事件卡片 keyboard(官方 msg_type=2 + keyboard)。
- * QQ 限制: rows ≤5 行 × 5 按钮/行; 这里采用每行 1 个(竖排, 字宽不截断)。
+ * QQ 限制: rows ≤5 行 × 5 按钮/行; 默认每行1个(竖排, 字宽不截断),
+ * 事件 buttonsPerRow(1~5)可设每行多个(Phase2)。
  * permission: 按事件 perm 决定 —— all→type2所有人 / triggerer→type0 指定触发者 /
  * owner→type0 主人白名单 / users→type0 指定 openid。
  * 按钮 action.type 按 botAction 区分(Phase2):
- *   reply_text/callback → 1 回调按钮(点击回后台, data=bp:card:btn)
- *   jump_url            → 0 跳转按钮(data=http(s) 链接, 点击直接跳不走回调)
+ *   reply_text/callback/command → 1 回调按钮(点击回后台, data=bp:card:btn)
+ *   jump_url                      → 0 跳转按钮(data=http(s) 链接, 点击直接跳不走回调)
  */
 export function botplayKeyboard(
   cardId: string,
@@ -80,37 +81,41 @@ export function botplayKeyboard(
   perm: NonNullable<BotplayEventConfig['perm']>,
   ownerIds: string[],
   triggererId?: string,
+  buttonsPerRow = 1,
 ): { content: { rows: unknown[] } } {
-  const shown = buttons.slice(0, 5); // QQ 行上限=5(每行1按钮)
+  const perRow = Math.max(1, Math.min(5, Math.round(buttonsPerRow) || 1));
+  const shown = buttons.slice(0, 5 * perRow); // QQ 上限 5行×每行按钮数
   let permission: Record<string, unknown>;
   const specify: string[] = [];
   if (perm.type === 'triggerer' && triggererId) specify.push(triggererId);
   else if (perm.type === 'owner') specify.push(...ownerIds);
   else if (perm.type === 'users') specify.push(...(perm.userIds ?? []));
   permission = specify.length > 0 ? { type: 0, specify_user_ids: specify } : { type: 2 };
-  const rows = shown.map((b) => {
+  const mk = (b: BotplayButtonConfig) => {
     const isJump = (b.botAction?.type ?? 'reply_text') === 'jump_url';
     const url = String(b.botAction?.url ?? '').trim();
     const data = isJump
       ? (url || 'https://example.com') // type=0 跳转: data 放链接
       : `${BTN_PREFIX}${cardId}:${b.id}`; // type=1 回调: 编码 card::btn
     return {
-      buttons: [{
-        id: `${BTN_PREFIX}${cardId}:${b.id}`,
-        render_data: {
-          label: String(b.label ?? '').slice(0, 20),
-          visited_label: String(b.visitedLabel || b.label || '').slice(0, 20),
-          style: b.style === 0 ? 0 : 1,
-        },
-        action: {
-          type: isJump ? 0 : 1, // 0跳转 1回调
-          permission,
-          data,
-          unsupport_tips: '请在支持的客户端点击按钮',
-        },
-      }],
+      id: `${BTN_PREFIX}${cardId}:${b.id}`,
+      render_data: {
+        label: String(b.label ?? '').slice(0, 20),
+        visited_label: String(b.visitedLabel || b.label || '').slice(0, 20),
+        style: b.style === 0 ? 0 : 1,
+      },
+      action: {
+        type: isJump ? 0 : 1, // 0跳转 1回调
+        permission,
+        data,
+        unsupport_tips: '请在支持的客户端点击按钮',
+      },
     };
-  });
+  };
+  const rows: Array<{ buttons: unknown[] }> = [];
+  for (let i = 0; i < shown.length; i += perRow) {
+    rows.push({ buttons: shown.slice(i, i + perRow).map(mk) });
+  }
   return { content: { rows } };
 }
 
@@ -126,8 +131,10 @@ export function parseBotplayButton(data: string | undefined): { cardId: string; 
 // ── 事件目录页(Phase2, 2026-09-08): /botplay 无参出翻页卡片, 点事件名直接触发 ──
 // 编码: bpc:<page>:<key> —— key=事件id(触发该事件) | prev(上一页) | next(下一页) | close(关闭/忽略)
 const CAT_PREFIX = 'bpc:';
-/** 每页最多事件数(QQ 行上限 5, 留 1 行给翻页按钮) */
-const CAT_PER_PAGE = 4;
+/** 目录卡每行事件按钮数(QQ 每行上限5) */
+const CAT_COLS = 2;
+/** 每页事件数 = 事件最多4行×2列, 第5行留给翻页导航(QQ 行上限5) */
+const CAT_PER_PAGE = 8;
 
 export function parseCatalogButton(data: string | undefined): { page: number; key: string } | null {
   if (!data || !data.startsWith(CAT_PREFIX)) return null;
@@ -144,30 +151,33 @@ function catalogPages(events: BotplayEventConfig[]): number {
   return Math.max(1, Math.ceil(events.length / CAT_PER_PAGE));
 }
 
-/** 构造事件目录卡 keyboard: 事件按钮(点击即触发) + 上一页/下一页 */
+/** 构造事件目录卡 keyboard: 事件按钮(每行2个, 点击即触发) + 上一页/下一页 */
 function catalogKeyboard(page: number, events: BotplayEventConfig[]): { content: { rows: unknown[] } } {
   const pages = catalogPages(events);
   const safePage = Math.min(page, pages - 1);
   const start = safePage * CAT_PER_PAGE;
   const pageEvents = events.slice(start, start + CAT_PER_PAGE);
   const btn = (label: string, key: string, style: number) => ({
-    buttons: [{
-      id: `${CAT_PREFIX}${safePage}:${key}`,
-      render_data: { label: String(label).slice(0, 20), visited_label: String(label).slice(0, 20), style },
-      action: {
-        type: 1,
-        permission: { type: 2 },
-        data: `${CAT_PREFIX}${safePage}:${key}`,
-        unsupport_tips: '请在支持的客户端点击',
-      },
-    }],
+    id: `${CAT_PREFIX}${safePage}:${key}`,
+    render_data: { label: String(label).slice(0, 20), visited_label: String(label).slice(0, 20), style },
+    action: {
+      type: 1,
+      permission: { type: 2 },
+      data: `${CAT_PREFIX}${safePage}:${key}`,
+      unsupport_tips: '请在支持的客户端点击',
+    },
   });
-  const rows: Array<{ buttons: unknown[] }> = pageEvents.map((ev) => btn(`🎮 ${ev.name}`, ev.id, 1));
+  const rows: Array<{ buttons: unknown[] }> = [];
+  // 事件按钮: 每行 CAT_COLS 个(最多4行, 第5行留给翻页导航 → 合计≤5行)
+  const maxRows = 4;
+  for (let i = 0; i < pageEvents.length && rows.length < maxRows; i += CAT_COLS) {
+    rows.push({ buttons: pageEvents.slice(i, i + CAT_COLS).map((ev) => btn(`🎮${ev.name}`, ev.id, 1)) });
+  }
   // 翻页行: 上一页 + 页码 + 下一页
-  const nav: Array<{ buttons: unknown[] }> = [];
-  if (safePage > 0) nav.push(...[btn('◀ 上一页', 'prev', 0)]);
-  if (safePage < pages - 1) nav.push(...[btn('下一页 ▶', 'next', 0)]);
-  if (nav.length > 0) rows.push(...nav);
+  const navBtns: Array<ReturnType<typeof btn>> = [];
+  if (safePage > 0) navBtns.push(btn('◀ 上一页', 'prev', 0));
+  if (safePage < pages - 1) navBtns.push(btn('下一页 ▶', 'next', 0));
+  if (navBtns.length > 0) rows.push({ buttons: navBtns });
   return { content: { rows } };
 }
 
@@ -232,7 +242,7 @@ export class BotplayController {
       expireAt: Date.now() + expireSec * 1000,
     });
 
-    const kb = botplayKeyboard(cardId, ev.buttons, perm, ownerIds, triggererId);
+    const kb = botplayKeyboard(cardId, ev.buttons, perm, ownerIds, triggererId, Number(ev.buttonsPerRow ?? 1) || 1);
     const prompt = [
       `## 🎮 ${ev.name}`,
       '',
@@ -258,18 +268,16 @@ export class BotplayController {
     const pages = catalogPages(events);
     const safePage = Math.max(0, Math.min(page, pages - 1));
     const kb = catalogKeyboard(safePage, events);
-    const start = safePage * CAT_PER_PAGE;
-    const names = events.slice(start, start + CAT_PER_PAGE).map((e) => `- ${e.name}`).join('\n');
     const prompt = [
       '### 🎮 互动事件',
       '',
-      names,
+      `共 ${events.length} 个 · 第 ${safePage + 1}/${pages} 页`,
       '',
-      `📄 第 ${safePage + 1}/${pages} 页 — 点下方事件名直接触发 👇`,
+      '点下方事件名直接触发 👇',
     ].join('\n');
     try {
       await this.sender.sendMarkdownWithKeyboard(target, prompt, kb);
-      this.logger.info(`[botplay] 目录卡 page=${safePage + 1}/${pages} target=${target.scope}:${target.targetId}`);
+      this.logger.info(`[botplay] 目录卡 page=${safePage + 1}/${pages}(共${events.length}) target=${target.scope}:${target.targetId}`);
       return { ok: true, msg: '' }; // 目录卡已发, 不追加文本
     } catch (err) {
       return { ok: false, msg: `目录卡发送失败: ${err instanceof Error ? err.message : String(err)}` };
