@@ -344,7 +344,7 @@ export async function apply(ctx: Context): Promise<void> {
 
   const tagStickerTool = defineTool({
     name: 'sticker_tag',
-    description: '给表情包打标/收藏一条龙。sticker=要处理的图:群消息里那张图的图片URL(自动匹配库里),或本地绝对路径,或list_stickers返回的路径。图已在库→直接更新它的标签/描述;图不在库→若vision=true(默认)会先自动识图生成草稿并收藏入库,然后应用你给的tags/desc(给了就覆盖草稿)。tags=逗号分隔中文短标签(内容/情绪/用途);desc=一句中文描述(画面+情绪+适合场合)。想跳过识图(省视觉额度)可传vision=false,只在图已在库时打标。',
+    description: '(主动维护,别等用户开口!)看到"值得留"的图就调它收藏+打标: 群友发来有梗/好看/以后想用到的图(不管你这轮要不要发), 当场用 sticker_tag(传群消息里那张图的URL 或本地路径)收藏入库并给中文短标签+一句描述——图库越好用, 以后 list_stickers 越搜得到。已在库的图可改标签/描述; 缺标签或缺介绍的图(见 sticker_untagged)也用它补。tags=逗号分隔中文短标签(内容/情绪/用途, 如 爆笑,元气,打招呼); desc=一句"画面+情绪+适合场合"。想省视觉额度可传 vision=false(仅对已在库的图打标)。打标的意义: 你的表情包弹药库靠它养成, 不整理=好图烂在库里永远搜不到。',
     parameters: {
       sticker: { type: 'string', required: true, description: '图片URL 或 本地绝对路径(也可传 list_stickers 返回的路径)' },
       tags: { type: 'string', description: '逗号分隔中文标签,如 开心,元气,打招呼' },
@@ -494,7 +494,7 @@ export async function apply(ctx: Context): Promise<void> {
 
   const statsStickerTool = defineTool({
     name: 'sticker_stats',
-    description: '查看表情包库概况(共多少张/各分区数量/没打标的/占多少空间),需要了解库存或整理时用。',
+    description: '查看表情包库概况(总数/各分区/未打标数/占用)。想了解库存或准备整理时用: 若"未打标"数大于0, 接着用 sticker_untagged 翻出未整理图并 sticker_tag 补标, 保持弹药库好用。',
     parameters: {},
     output: {
       schema: {
@@ -519,7 +519,7 @@ export async function apply(ctx: Context): Promise<void> {
 
   const untaggedStickerTool = defineTool({
     name: 'sticker_untagged',
-    description: '查看表情包里"还没整理完"的图(缺标签或缺介绍)。参数 a: 1=全部(候选+收藏), 2=只看收藏(正式文件夹)。可选 limit(每批条数, 默认20, 上限100)、offset(跳过前N条, 翻页用)。返回清单, 供你挑几张用 sticker_tag 补标签/写介绍, 把库整理干净。',
+    description: '(日常整理巡检,AI应主动做)列出表情包库里还没整理完的图(缺标签或缺介绍)。群里没活/或想维护图库时先调它(也可先 sticker_stats 看有没有未打标), 发现有图就逐张用 sticker_tag 补标签和一句描述; 库越干净, list_stickers 搜图越准。参数 a: 1=全部(候选+收藏) 2=只看收藏(正式文件夹)。可选 limit(每批条数, 默认20, 上限100)、offset(跳过前N条, 翻页用)。',
     parameters: {
       a: { type: 'integer', enum: [1, 2], required: true, description: '1=查全部 2=只查收藏文件夹(正式)' },
       limit: { type: 'integer', description: '每批返回条数(1-100, 默认20)' },
