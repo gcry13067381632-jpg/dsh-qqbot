@@ -110,7 +110,8 @@ export async function downloadFileAttachments(
   for (const file of files) {
     const safeName = sanitizeFilename(file.filename);
     const localPath = join(dir, safeName);
-    const displayPath = `.qqbot/${messageId}/${safeName}`;
+    // 展示/供 AI 读取统一用绝对路径(数据根可能≠agent cwd, 相对路径会读错)
+    const displayPath = localPath;
 
     if (file.size > MAX_DOWNLOAD_BYTES) {
       logger.debug(`im-qqbot: skip download (${file.size}B too large): ${file.filename}`);

@@ -17,6 +17,7 @@ import { buildUserAgent } from '../shared/index.js';
 import type { ImQQBotConfig } from '../config.js';
 import type { Logger } from '../types.js';
 import { setupMiddlewares } from './middleware-setup.js';
+import { dataRootOf, migrateLegacyData, stickerDirOf } from './data-root.js';
 import { configureStickerStore } from '../features/sticker-store.js';
 import { initStickerGate, bindStickerGates, flushStickerGate, getStickerGate, StickerGateDenied } from '../features/sticker-gate.js';
 import { startScheduler } from '../features/scheduler.js';
@@ -51,6 +52,9 @@ export async function bootstrapGateway(
   logger: Logger,
 ): Promise<void> {
   const manager = new SessionManager(ctx, agents, config, logger);
+  // ── dataRoot 启动迁移: 若配置了 dataRoot(如 cwd/dshqqbot), 先把 cwd 下的旧数据目录
+  //    搬进去(幂等, 不覆盖); 必须在任何数据目录初始化/写入之前执行。──
+  migrateLegacyData(config, logger);
   // QQ 远程审批控制器(enableApprovals 时创建; 定义在 sender 就绪后, 此处先声明供入站回调引用)
   let approvalController: QqApprovalController | undefined;
   let questionController: QqUserQuestionsController | undefined;
@@ -58,9 +62,9 @@ export async function bootstrapGateway(
   let botplayController: BotplayController | undefined;
 
   // ── 表情包图库单例预初始化(防目录分裂) ──
-  // ⚠️ 单例时序坑：谁先 getStickerStore 谁定路径。必须在启动早期按 config.cwd
+  // ⚠️ 单例时序坑：谁先 getStickerStore 谁定路径。必须在启动早期按数据根
   //    初始化，否则 list_stickers(无参)会以 process.cwd 建错目录(线上踩坑:C盘幽灵库)。
-  const stickerDataDir = config.sticker.dataDir || join(config.cwd || process.cwd(), '表情包');
+  const stickerDataDir = stickerDirOf(config);
   const stickerStore = configureStickerStore(stickerDataDir, logger);
   // 启动维护: 清理损坏/空文件 + 物理清除超30天回收站条目
   try {
@@ -78,7 +82,7 @@ export async function bootstrapGateway(
 
   // ── 会话自设定时任务单例预初始化(schedule_timer 工具用) ──
   // 落盘 {cwd}/.qqbot/timers.json; 与图库同策略: 启动早期按 config.cwd 定路径防分裂。
-  const scheduleDataDir = join(config.cwd || process.cwd(), '.qqbot');
+  const scheduleDataDir = join(dataRootOf(config), '.qqbot');
   configureScheduleStore(scheduleDataDir, logger);
 
   // ── 初始化 QQ Bot SDK ──

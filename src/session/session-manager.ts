@@ -17,6 +17,7 @@ import { SessionId } from '@deepseek-ai/dsh-session';
 import type { Context } from '@deepseek-ai/cordis';
 import type { ChatScope, Logger, ReplyTarget } from '../types.js';
 import type { ImQQBotConfig } from '../config.js';
+import { dataRootOf, stickerDirOf } from '../gateway/data-root.js';
 import { ModelResolver } from '../model/model-resolver.js';
 import type { ModelRoute, ModelEntry } from '../model/types.js';
 import { IdleEvictor } from './idle-evictor.js';
@@ -69,14 +70,19 @@ export class SessionManager {
     return this.config.cwd || process.cwd();
   }
 
-  /** 本实例图库目录(多账号: 每实例 cwd 独立; config.sticker.dataDir 可覆盖) */
-  public get stickerDataDir(): string {
-    return this.config.sticker?.dataDir || join(this.config.cwd || process.cwd(), '表情包');
+  /** 插件数据根(表情包/.qqbot/扩展统一挂其下; config.dataRoot 缺省=cwd) */
+  public get dataRoot(): string {
+    return dataRootOf(this.config);
   }
 
-  /** 本实例定时任务目录(多账号: 每实例 cwd 独立) */
+  /** 本实例图库目录(多账号: 每实例数据根独立; config.sticker.dataDir 可覆盖) */
+  public get stickerDataDir(): string {
+    return stickerDirOf(this.config);
+  }
+
+  /** 本实例定时任务目录(多账号: 每实例数据根独立) */
   public get scheduleDataDir(): string {
-    return join(this.config.cwd || process.cwd(), '.qqbot');
+    return join(dataRootOf(this.config), '.qqbot');
   }
 
   /** 本实例群管理客户端(懒建; groupAdmin.enabled=false 时 undefined) */

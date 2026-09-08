@@ -256,7 +256,8 @@ export function apply(ctx) {
   function parsePatch() {
     const hasFile = existsSync(PATCH_FILE);
     const raw = hasFile ? readFileSync(PATCH_FILE, 'utf8') : '';
-    const lines = raw.split('\n');
+    // 行尾容错: 兼容 CRLF(2026-09-08 曾因 patch 被写成 CRLF 导致整段解析失败)
+    const lines = raw.split(/\r?\n/);
     const bots = [];
     let i = 0;
     while (i < lines.length) {
@@ -397,6 +398,7 @@ export function apply(ctx) {
         hasFile,
         instances: bots.map((b) => {
           const cwd = b.cfg?.cwd || '';
+          const droot = b.cfg?.dataRoot || cwd;
           return {
             id: b.id,
             ns: b.id, // settings 命名空间 = 实例 id(主 im-qqbot; 非主实例 render 已写 settingsNs=id)
@@ -408,8 +410,8 @@ export function apply(ctx) {
             disabled: !!b.disabled,
             online: typeof reg.isBotOnline === 'function' ? reg.isBotOnline(b.id) : false, // 在线状态(bot ws ready 事件驱动)
             // 账号数据目录(各号各库各定时): 图库={cwd}/表情包, 定时={cwd}/.qqbot
-            dataDir: cwd ? join(cwd, '表情包') : '',
-            schedDir: cwd ? join(cwd, '.qqbot') : '',
+            dataDir: droot ? join(droot, '表情包') : '',
+            schedDir: droot ? join(droot, '.qqbot') : '',
           };
         }),
       });
@@ -814,7 +816,8 @@ export function apply(ctx) {
     if (!b) return null;
     const appId = b.cfg?.appId || '';
     const appSecret = b.cfg?.appSecret || '';
-    const cwd = b.cfg?.cwd || '';
+    // 数据根: dataRoot(新) > cwd(旧); nsBot 的 cwd 字段按数据根返回(全为数据目录用途)
+    const cwd = (b.cfg?.dataRoot || b.cfg?.cwd || '');
     if (!appId || !appSecret) return null;
     return { id, appId, appSecret, cwd, ns: id };
   }
@@ -878,7 +881,7 @@ export function apply(ctx) {
       for (const bot of bots) {
         if (bot.disabled || !bot.cfg?.appId || !bot.cfg?.cwd) continue;
         const appId = bot.cfg.appId;
-        const cwd = bot.cfg.cwd;
+        const cwd = bot.cfg.dataRoot || bot.cfg.cwd;
         const ns = bot.id;
         const ledger = chatLedgerNames(join(cwd, '表情包'));
         // 群: 注册表 + 台账

@@ -7,12 +7,13 @@
 import type { MiddlewareContext } from '@tencent-connect/qqbot-nodejs';
 import { downloadFileAttachments } from '../transport/attachment.js';
 import type { ImQQBotConfig } from '../config.js';
+import { dataRootOf } from '../gateway/data-root.js';
 import type { Logger, RawAttachment } from '../types.js';
 
 export function attachmentProcessor(config: ImQQBotConfig, logger: Logger) {
   return async (ctx: MiddlewareContext, next: () => Promise<void>): Promise<void> => {
     const msg = ctx.message as { attachments?: RawAttachment[]; messageId?: string };
-    const cwd = config.cwd || process.cwd();
+    const cwd = dataRootOf(config); // 附件缓存落数据根(dataRoot || cwd)
     const messageId = msg.messageId ?? 'unknown';
 
     try {

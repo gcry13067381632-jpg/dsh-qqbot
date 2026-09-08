@@ -22,6 +22,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ImQQBotConfig, ScheduleTargetConfig } from '../config.js';
+import { dataRootOf } from '../gateway/data-root.js';
 import type { Logger } from '../types.js';
 import type { SessionManager } from '../session/index.js';
 import { handleInbound } from '../transport/inbound.js';
@@ -53,7 +54,7 @@ export function startScheduler(
   config: ImQQBotConfig,
   logger: Logger,
 ): () => void {
-  const stateFile = join(config.cwd || process.cwd(), 'schedule-state.json');
+  const stateFile = join(dataRootOf(config), 'schedule-state.json');
   const state: ScheduleState = { lastRun: {} };
   try {
     const raw = readFileSync(stateFile, 'utf8');

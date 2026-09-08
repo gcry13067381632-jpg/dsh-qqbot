@@ -980,14 +980,21 @@ export async function apply(ctx: Context): Promise<void> {
     const qqCh = (() => {
       try { return (ctx as unknown as { get?: (n: string) => unknown }).get?.('qqChannel') as QQChannel | undefined; } catch { return undefined; }
     })();
-    // cwd 解析: ①agent ctx qqChannel; ②全局桥(热刷/自愈路径 ctx 可能无 qqChannel); ③ctx.cwd; ④进程 cwd
+    // 扫描根解析: 扩展目录挂在插件数据根(dataRoot=config.dataRoot||cwd), 与工作区其他文件分离。
+    //  ①agent ctx qqChannel; ②全局桥(热刷/自愈路径 ctx 可能无 qqChannel); ③ctx.cwd; ④进程 cwd
     const bridgeCh = channelBridges.length ? channelBridges[channelBridges.length - 1] : undefined;
-    const extCwd = (qqCh?.manager?.cwd as string | undefined)
+    const extRoot = (qqCh?.manager?.dataRoot as string | undefined)
+      || (bridgeCh?.manager?.dataRoot as string | undefined)
+      || (qqCh?.manager?.cwd as string | undefined)
       || (bridgeCh?.manager?.cwd as string | undefined)
       || (ctx as { cwd?: string }).cwd
       || process.cwd();
-    const defs = await loadExtensionTools(extCwd, (ctx.logger ?? console) as Parameters<typeof loadExtensionTools>[1]);
-    extDiag(`apply extCwd=${extCwd} defs=${defs.length} qqCh=${!!qqCh} bridge=${!!bridgeCh}`);
+    const workCwd = (qqCh?.manager?.cwd as string | undefined)
+      || (bridgeCh?.manager?.cwd as string | undefined)
+      || (ctx as { cwd?: string }).cwd
+      || process.cwd();
+    const defs = await loadExtensionTools(extRoot, (ctx.logger ?? console) as Parameters<typeof loadExtensionTools>[1]);
+    extDiag(`apply extRoot=${extRoot} defs=${defs.length} qqCh=${!!qqCh} bridge=${!!bridgeCh}`);
     for (const def of defs) {
       try {
         const tool = defineTool({
@@ -1004,7 +1011,7 @@ export async function apply(ctx: Context): Promise<void> {
           async execute(args, exec) {
             const sess = findSessionRec(channelOf(exec as never), exec as never);
             const env: Record<string, unknown> = {
-              cwd: extCwd,
+              cwd: workCwd, // 注入给扩展工具的工作目录保持 agent cwd(扫描根已用数据根)
               manager: sess?.ch.manager,
               sender: sess?.ch.sender,
               replyTarget: sess?.rec.replyTarget,

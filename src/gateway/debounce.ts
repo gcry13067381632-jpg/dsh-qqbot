@@ -27,6 +27,7 @@
  */
 import type { Middleware, MiddlewareContext, HistoryEntry } from '@tencent-connect/qqbot-nodejs';
 import type { ImQQBotConfig } from '../config.js';
+import { dataRootOf } from './data-root.js';
 import type { SessionManager } from '../session/index.js';
 import type { Logger } from '../types.js';
 import { handleInbound } from '../transport/inbound.js';
@@ -92,8 +93,8 @@ export function debounceLayer(
 ): Middleware {
   const windows = new Map<string, DebounceWindow>();
 
-  /** 调序调试日志(临时, 定位官方帧序用; 排查完删除): {cwd}/.qqbot/debounce-dbg.log */
-  const dbgFile = join(config.cwd || process.cwd(), '.qqbot', 'debounce-dbg.log');
+  /** 调序调试日志(临时, 定位官方帧序用; 排查完删除): {dataRoot}/.qqbot/debounce-dbg.log */
+  const dbgFile = join(dataRootOf(config), '.qqbot', 'debounce-dbg.log');
   function dbg(line: string): void {
     try {
       appendFileSync(dbgFile, `${new Date().toISOString()} ${line}\n`, 'utf8');

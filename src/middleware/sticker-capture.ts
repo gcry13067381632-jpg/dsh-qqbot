@@ -12,8 +12,8 @@
  */
 import type { MiddlewareContext } from '@tencent-connect/qqbot-nodejs';
 import type { ImQQBotConfig } from '../config.js';
+import { stickerDirOf } from '../gateway/data-root.js';
 import type { Logger, RawAttachment } from '../types.js';
-import { join } from 'node:path';
 import { getStickerStore } from '../features/sticker-store.js';
 import { autoTagImage } from '../features/sticker-tagger.js';
 
@@ -47,7 +47,7 @@ function scheduleCapture(
   if (inflight >= MAX_INFLIGHT) return;
   inflight += 1;
   const msg = ctx.message as { attachments?: RawAttachment[]; senderId?: string; senderName?: string; groupOpenid?: string; content?: string };
-  const dataDir = config.sticker.dataDir || join(config.cwd || process.cwd(), '表情包');
+  const dataDir = stickerDirOf(config);
   const store = getStickerStore(dataDir, logger);
   const senderId = msg.senderId;
   const senderName = msg.senderName;

@@ -124,6 +124,7 @@ export async function apply(ctx: Context, config: ImQQBotConfig): Promise<void> 
 async function installLiveSettings(ctx: Context, live: ImQQBotConfig, logger: Logger, nsOverride?: string): Promise<void> {
   const ns = nsOverride || (live.settingsNs ?? '').trim() || 'im-qqbot';
   const entry: EditableConfig = {
+    dataRoot: live.dataRoot,
     behavior: live.behavior,
     sticker: {
       gates: live.sticker.gates,
@@ -146,6 +147,7 @@ async function installLiveSettings(ctx: Context, live: ImQQBotConfig, logger: Lo
       if (!next) return;
       if (next.behavior) live.behavior = next.behavior;
       if (next.sticker) live.sticker = { ...live.sticker, ...next.sticker };
+      if (typeof next.dataRoot === 'string') live.dataRoot = next.dataRoot; // 数据根(重启后 bootstrap 迁移/落盘用它)
       if (Array.isArray(next.injectRules)) live.injectRules = next.injectRules;
       if (typeof next.groupPrompt === 'string') live.groupPrompt = next.groupPrompt;
       if (next.schedule) live.schedule = next.schedule;
@@ -156,7 +158,7 @@ async function installLiveSettings(ctx: Context, live: ImQQBotConfig, logger: Lo
       if (next.outboundMode === 'adaptive' || next.outboundMode === 'passive' || next.outboundMode === 'silent' || next.outboundMode === 'nothink') live.outboundMode = next.outboundMode;
       else if (next.outboundMode === 'active') live.outboundMode = 'adaptive';
       if (Array.isArray(next.botplayEvents)) live.botplayEvents = next.botplayEvents;
-      logger.info('[im-qqbot] 设置已同步(live): behavior/sticker/injectRules/groupPrompt/schedule/groupAdmin/approvals/botplayEvents');
+      logger.info('[im-qqbot] 设置已同步(live): dataRoot/behavior/sticker/injectRules/groupPrompt/schedule/groupAdmin/approvals/botplayEvents');
     } catch (err) {
       logger.warn?.(`im-qqbot: 设置同步失败: ${err instanceof Error ? err.message : String(err)}`);
     }

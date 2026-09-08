@@ -190,6 +190,8 @@ export interface GroupAdminConfig {
 
 /** Web 设置可编辑子集(不含 appId/appSecret 等敏感/底层字段) */
 export interface EditableConfig {
+  /** 插件数据根目录(可选; 缺省=cwd): 表情包/.qqbot/.qqbot-extensions 统一挂其下, 与工作区其他文件分离 */
+  dataRoot?: string;
   behavior: BehaviorConfig;
   groupAdmin: GroupAdminConfig;
   sticker: {
@@ -423,6 +425,7 @@ const groupAdminSchema = Schema.object({
 
 /** Web 设置页可编辑项的 schema(behavior/sticker.gates/injectRules/groupPrompt/schedule) */
 export const EditableConfigSchema: Schema<EditableConfig> = Schema.object({
+  dataRoot: Schema.string().description('插件数据根目录(可选; 缺省=cwd): 表情包/.qqbot/.qqbot-extensions 统一挂其下, 与工作区其他文件分离'),
   behavior: behaviorSchema,
   groupAdmin: groupAdminSchema,
   sticker: Schema.object({
@@ -452,6 +455,8 @@ export interface ImQQBotConfig {
   preset?: string;
   /** Agent 工作目录（缺省回落到进程 cwd） */
   cwd?: string;
+  /** 插件数据根目录(可选): 表情包/.qqbot/扩展等数据统一挂其下, 不混进 cwd; 缺省=用 cwd(向后兼容)。设 cwd 下子目录(如 cwd/dshqqbot)即可把插件数据与工作区其他文件分开 */
+  dataRoot?: string;
   /** Web 设置命名空间(多账号时每个实例唯一, 默认 im-qqbot; 同进程多实例必须互不相同) */
   settingsNs?: string;
   /** 是否启用群消息 @mention 门控 */
@@ -507,6 +512,7 @@ export const ConfigSchema: Schema<ImQQBotConfig> = Schema.object({
   model: Schema.string().description('Model name'),
   preset: Schema.string().description('Agent preset id'),
   cwd: Schema.string().description('Agent working directory'),
+  dataRoot: Schema.string().description('插件数据根目录(可选; 缺省=cwd): 表情包/.qqbot/.qqbot-extensions 统一挂其下, 与工作区其他文件分离'),
   settingsNs: Schema.string().description('Web 设置命名空间(多账号时每实例唯一, 默认 im-qqbot)'),
   requireMention: Schema.boolean().default(true).description('群聊是否需要@bot触发'),
   groupPrompt: Schema.string().default(DEFAULT_GROUP_PROMPT).description('群聊常驻守则(默认表情包礼仪, 可清空关闭)'),

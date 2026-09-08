@@ -18,6 +18,7 @@ import {
   envelopeFormatter,
 } from '@tencent-connect/qqbot-nodejs';
 import type { ImQQBotConfig } from '../config.js';
+import { dataRootOf, stickerDirOf } from './data-root.js';
 import type { SessionManager } from '../session/index.js';
 import type { Logger } from '../types.js';
 import { buildCommandList } from '../commands/index.js';
@@ -30,7 +31,6 @@ import { stickerActivityRecorder } from '../features/sticker-gate.js';
 import { chatLedgerRecorder } from '../features/chat-ledger.js';
 import { debounceLayer } from './debounce.js';
 import { faceTagResolver } from '../features/face-tags.js';
-import { join } from 'node:path';
 
 export async function setupMiddlewares(
   bot: QQBot,
@@ -40,7 +40,7 @@ export async function setupMiddlewares(
 ): Promise<void> {
   // 0. 用户扩展命令(P4.1): 加载插件包外扩展目录的命令, 并入下方 cmdList/slash,
   //    群聊前置解析 cmdMap 与 SDK slash 双通道自然覆盖 → /扩展命令 重启后即用。
-  const extensionCommands = await loadExtensionCommands(config.cwd, logger);
+  const extensionCommands = await loadExtensionCommands(dataRootOf(config), logger);
   if (extensionCommands.length > 0) {
     logger.info(`[im-qqbot] 用户扩展命令已加载: ${extensionCommands.length} 个`);
   }
@@ -111,11 +111,11 @@ export async function setupMiddlewares(
   // 4.6. 表情包闸门活性计数（P1）：记录所有群消息时间戳 → RingBuffer，供"热闹才发"判定。
   //     ⚠️ 必须在 mentionGate(第5步) 之前：未@消息被门控截断也照样计数。
   //     多账号: 每实例传自己 dataDir(各号各闸门状态)。
-  bot.use(stickerActivityRecorder(config.sticker.dataDir || join(config.cwd || process.cwd(), '表情包')));
+  bot.use(stickerActivityRecorder(stickerDirOf(config)));
 
   // 4.7. 聊天台账（M3）：记录机器人见过的群/私聊(带昵称) → known-chats.jsonl，
   //     供 Web ④区定时唤醒"点选聊天对象"(不用抄 openid)。也在 mentionGate 之前。
-  const ledgerDataDir = config.sticker.dataDir || join(config.cwd || process.cwd(), '表情包');
+  const ledgerDataDir = stickerDirOf(config);
   bot.use(chatLedgerRecorder(ledgerDataDir));
 
   // 5. 群聊 @bot 门控
