@@ -2292,13 +2292,18 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
               var bt = (b.botAction && b.botAction.type) || 'reply_text'
               var md = (b.llmEffect && b.llmEffect.mode) || 'no_append'
               var ctx = (b.llmEffect && b.llmEffect.contextText) || ''
-              body += '<div class="dk-item" style="border:1px solid #f0ecff;border-radius:8px;margin:3px 0;padding:4px 6px">'
+              // 视觉隔离: 每加一个按钮, 与上一个之间加一条虚线 + 按钮序号, 一眼分清几组配置
+              body += '<div style="font-size:11px;color:#8b7cc7;margin:' + (bi > 0 ? '6px 0 0' : '2px 0 0') + '">── 按钮 ' + (bi + 1) + '</div>'
+              body += '<div class="dk-item" style="border:1px solid #f0ecff;border-radius:8px;margin:1px 0;padding:4px 6px">'
                 + '<input class="qqs-txt" data-bplabel="' + bi + '" value="' + esc(b.label) + '" placeholder="按钮文字" style="flex:1;min-width:90px">'
                 + '<select class="qqs-sel" data-bpact="' + bi + '">' + ['reply_text','jump_url','callback','command'].map(function (t) { return '<option value="' + t + '"' + (bt === t ? ' selected' : '') + '>' + ({ reply_text: '回文本', jump_url: '跳链接', callback: '仅结算', command: '执行命令' }[t]) + '</option>' }).join('') + '</select>'
                 + '<select class="qqs-sel" data-bpmode="' + bi + '">' + ['no_append','append_silent','append_wake'].map(function (m) { return '<option value="' + m + '"' + (md === m ? ' selected' : '') + '>' + ({ no_append: '不影响AI', append_silent: '记录不唤醒', append_wake: '记录并唤醒AI' }[m]) + '</option>' }).join('') + '</select>'
                 + '<button class="dk-btn no" data-bpdelbtn="' + bi + '">✕</button></div>'
-                + '<input class="qqs-txt" data-bpacttext="' + bi + '" value="' + esc((b.botAction && b.botAction.text) || '') + '" placeholder="回文本=回复内容 / 执行命令=命令名(如 bot-status, 不带/)" style="width:calc(100% - 8px);box-sizing:border-box;margin:0 0 4px 4px">'
-                + '<input class="qqs-txt" data-bpctx="' + bi + '" value="' + esc(ctx) + '" placeholder="(记录/唤醒AI时)对AI说的话, 支持 {name} 事件名 {label} 按钮名; 空=默认" style="width:calc(100% - 8px);box-sizing:border-box;margin:0 0 4px 4px">'
+                // 动作参数行: 按类型给出对应输入(jump_url → 链接 URL; command → 命令名; 其余 → 回复文本)
+                + (bt === 'jump_url'
+                  ? '<input class="qqs-txt" data-bpurl="' + bi + '" value="' + esc((b.botAction && b.botAction.url) || '') + '" placeholder="🔗 链接地址, 如 https://www.baidu.com(QQ 点按钮直接跳转)" style="width:calc(100% - 8px);box-sizing:border-box;margin:0 0 4px 4px">'
+                  : '<input class="qqs-txt" data-bpacttext="' + bi + '" value="' + esc((b.botAction && b.botAction.text) || '') + '" placeholder="' + ({ reply_text: '点按钮后 bot 回复的内容', command: '执行的命令名(如 bot-status, 不带/)', callback: '(仅结算, 无需文本)' }[bt] || '') + '" style="width:calc(100% - 8px);box-sizing:border-box;margin:0 0 4px 4px">')
+                + '<input class="qqs-txt" data-bpctx="' + bi + '" value="' + esc(ctx) + '" placeholder="(记录/唤醒AI时)对AI说的话, 支持 {name} 事件名 {label} 按钮名; 空=默认" style="width:calc(100% - 8px);box-sizing:border-box;margin:0 0 2px 4px">'
             })
             body += '<div class="dk-row"><button class="dk-btn" id="dk-bp-addbtn">➕ 加按钮</button>'
               + '<span class="dk-msg" id="dk-bp-addmsg">每行 ' + rowc2.per + ' 个 × 最多 5 行 = 上限 ' + (rowc2.per * 5) + ' 个(QQ 键盘: ≤5行 × 每行≤5)</span></div>'
@@ -2525,6 +2530,15 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           inp.oninput = function (e) {
             state.bpDraft.buttons[bi].botAction = state.bpDraft.buttons[bi].botAction || {}
             state.bpDraft.buttons[bi].botAction.text = e.target.value
+          }
+        })
+        // 跳链接按钮的 URL 输入
+        var bpUrls = panel.querySelectorAll('[data-bpurl]')
+        bpUrls.forEach(function (inp) {
+          var bi = Number(inp.getAttribute('data-bpurl'))
+          inp.oninput = function (e) {
+            state.bpDraft.buttons[bi].botAction = state.bpDraft.buttons[bi].botAction || {}
+            state.bpDraft.buttons[bi].botAction.url = e.target.value
           }
         })
         var bpCtxs = panel.querySelectorAll('[data-bpctx]')

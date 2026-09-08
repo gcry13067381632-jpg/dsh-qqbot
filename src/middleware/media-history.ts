@@ -21,6 +21,8 @@ export interface MediaHistoryOptions {
   recordOnSkip: boolean;
   /** 群 key 推导（带 appId 前缀） */
   groupKey: (ctx: MiddlewareContext) => string | undefined;
+  /** 命中此条件的消息不进群历史(但仍放行下游)。用于斜杠命令——命令无需喂给 AI */
+  skipWhen?: (ctx: MiddlewareContext) => boolean;
 }
 
 /** 消息最小形状（只读所需字段，避免依赖 SDK 完整类型） */
@@ -51,7 +53,7 @@ function foldMedia(msg: FoldableMsg): string {
  *   2. 向下游暴露 ctx.state.history = 已缓冲历史（不含当前消息，旧→新）。
  */
 export function mediaHistoryBuffer(options: MediaHistoryOptions): Middleware {
-  const { limit, store, recordOnSkip, groupKey } = options;
+  const { limit, store, recordOnSkip, groupKey, skipWhen } = options;
   return async (ctx: MiddlewareContext, next: () => Promise<void>) => {
     const key = groupKey(ctx);
     if (!key) {
@@ -60,6 +62,11 @@ export function mediaHistoryBuffer(options: MediaHistoryOptions): Middleware {
     }
     const buffered = await store.list(key, limit);
     ctx.state.history = buffered;
+    // 命中 skipWhen(如已知斜杠命令) → 不进 AI 历史, 直接放行下游由命令层处理
+    if (skipWhen && skipWhen(ctx)) {
+      await next();
+      return;
+    }
     const raw = ctx.message as unknown as FoldableMsg;
     const entry: HistoryEntry = {
       senderId: ctx.message.senderId,

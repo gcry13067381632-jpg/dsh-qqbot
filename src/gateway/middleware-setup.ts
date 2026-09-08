@@ -44,6 +44,27 @@ export async function setupMiddlewares(
   if (extensionCommands.length > 0) {
     logger.info(`[im-qqbot] 用户扩展命令已加载: ${extensionCommands.length} 个`);
   }
+  // ── 命令表提前构建(2026-09-08): 供"历史缓冲跳过命令消息"(命令不进 AI 上下文) + 第8步命令执行复用 ──
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const cmdList = [...buildCommandList({ manager, config }), ...extensionCommands];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const cmdMap = new Map<string, any>();
+  for (const c of cmdList) {
+    const names = Array.isArray(c.name) ? c.name : [c.name];
+    for (const n of names) cmdMap.set(String(n).toLowerCase(), c);
+  }
+  /** 斜杠开头且命中真实命令(含 stop/bot-stop)→ 返回命令名小写; 未知命令/纯文本 → null(放行) */
+  const knownCmdName = (content: string | undefined): string | null => {
+    const t = String(content ?? '').trim();
+    if (!t || !t.startsWith('/')) return null;
+    const cleaned = t.replace(/<@!?[^>]+>\s*/g, '').trim();
+    if (!cleaned.startsWith('/')) return null;
+    const m = /^(\S+)/.exec(cleaned.slice(1));
+    if (!m) return null;
+    const name = String(m[1]).toLowerCase();
+    if (name === 'stop' || name === 'bot-stop') return name;
+    return cmdMap.has(name) ? name : null;
+  };
   // 1. 错误兜底（最外层洋葱皮）
   bot.use(errorHandler());
 
@@ -103,6 +124,8 @@ export async function setupMiddlewares(
       if (ctx.message.kind !== 'group' || !gid) return undefined;
       return historyGroupKey(config.appId, gid);
     },
+    // 斜杠命令不入 AI 历史(命令由下方命令层执行, 无需当聊天喂给 AI)
+    skipWhen: (ctx) => knownCmdName((ctx.message as { content?: string }).content) !== null,
   }));
 
   // 4.5. 表情包自动收藏（P0）：群图片 → 本地图库（fire-and-forget，不阻塞主链）
@@ -138,16 +161,9 @@ export async function setupMiddlewares(
   bot.use(debounceLayer(config, manager, logger, lastDispatchAt));
 
   // 8. 斜杠命令（在 concurrencyGuard 之前，命令匹配后不排队直接响应）
-  //    基础命令 + 用户扩展命令(P4.1)合并 → cmdMap 与 SDK slash 双通道覆盖
-  const cmdList = [...buildCommandList({ manager, config }), ...extensionCommands];
-  // 群聊放开"必须 @bot"限制(SDK 硬性要求 @ 才触发, 导致直发 /cmd 变文本):
-  // 前置解析已知命令(除 stop/bot-stop——保留给下方 concurrencyGuard 的 urgent 打断链路)。类型宽松以适配 SDK ctx。
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const cmdMap = new Map<string, any>();
-  for (const c of cmdList) {
-    const names = Array.isArray(c.name) ? c.name : [c.name];
-    for (const n of names) cmdMap.set(String(n).toLowerCase(), c);
-  }
+  //    基础命令 + 用户扩展命令(P4.1)已在上方合并为 cmdList/cmdMap(同时供历史缓冲跳过命令);
+  //    群聊放开"必须 @bot"限制(SDK 硬性要求 @ 才触发, 导致直发 /cmd 变文本):
+  //    前置解析已知命令(除 stop/bot-stop——保留给下方 concurrencyGuard 的 urgent 打断链路)。类型宽松以适配 SDK ctx。
   const sendCmdResult = async (ctx: any, result: unknown): Promise<void> => {
     if (result === undefined || result === null) return;
     if (typeof result === 'string') { if (result) await ctx.bot?.sendText(ctx.replyTarget, result); return; }
