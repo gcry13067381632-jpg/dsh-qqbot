@@ -26,7 +26,8 @@ import { QqApprovalController, setApprovalDispatch, makeApprovalListener, regist
 import { QqUserQuestionsController, registerQuestionController } from '../features/qq-user-questions.js';
 import { handleGroupJoinRequestEvent } from '../features/group-join-request.js';
 import { registerSessionManager, setBotOnline } from '../features/session-registry.js';
-import { BotplayController, registerBotplayController, setBotplayTriggerImpl } from '../features/botplay.js';
+import { BotplayController, registerBotplayController, setBotplayTriggerImpl, setBotplayCatalogImpl } from '../features/botplay.js';
+import { buildCommandList } from '../commands/index.js';
 
 /** 从 interaction 事件推出"回复目标"(回执发到按钮所在群/私聊)。scope 由事件 chat_type/scene 推断 */
 function replyTargetOfInteraction(
@@ -359,7 +360,27 @@ export async function bootstrapGateway(
   );
   registerBotplayController(myNs, botplayController);
   setBotplayTriggerImpl((target, eventId, triggererId) => botplayController!.trigger(target, eventId, triggererId));
-  logger.info('[im-qqbot] botplay 互动事件接线就绪(/botplay 触发发卡, dock🎮装配, 保存即热更)');
+  setBotplayCatalogImpl((target, page) => botplayController!.sendCatalog(target, page));
+  // 指令型按钮(Phase2): 点击后执行斜杠命令(不经 AI)。复用 buildCommandList 的 handler,
+  // 模拟一个最小命令 ctx(command 名称/空参 + 消息壳), 返回 handler 结果文本。
+  botplayController.setCommandExecutor(async (cmdName, target) => {
+    const cmdList = buildCommandList({ manager, config });
+    const cmd = cmdList.find((c) => (Array.isArray(c.name) ? c.name : [c.name]).map(String).includes(cmdName));
+    if (!cmd) return `未知指令「${cmdName}」(指令型按钮可用的: ${cmdList.filter((c) => !(c as { hidden?: boolean }).hidden).map((c) => (Array.isArray(c.name) ? c.name[0] : c.name)).join(', ')})`;
+    const fakeCtx = {
+      message: { kind: target.scope === 'group' ? 'group' : 'c2c', senderId: '', groupOpenid: target.scope === 'group' ? target.targetId : undefined },
+      replyTarget: target,
+      command: { name: cmdName, args: [], raw: '' },
+    } as never;
+    const result = await cmd.handler(fakeCtx as never);
+    if (typeof result === 'string') return result;
+    if (result && typeof result === 'object') {
+      const r = result as { kind?: string; content?: string };
+      if (r.kind === 'text' && r.content) return r.content;
+    }
+    return '';
+  });
+  logger.info('[im-qqbot] botplay 互动事件接线就绪(/botplay 触发发卡, dock🎮装配, 保存即热更; 指令型按钮已接命令层)');
 
   // ── 按钮回调(INTERACTION_CREATE, type=11): 审批/提问卡片共用分发 ──
   // SDK 事件: bot.on('interaction', (ctx, event) => …); 需 PUT /interactions/{id} 回应防 loading。
@@ -477,18 +498,26 @@ export async function bootstrapGateway(
       scheduleTicker.unref?.();
       logger.info(`[schedule] ticker 启动 (30s, dataDir=${scheduleDataDir})`);
 
+      // botplay 过期卡定期清理(Phase2): 60s 扫一次, 防内存积压(卡默认最长 600s 存活)
+      const botplaySweeper = setInterval(() => {
+        try { botplayController?.sweepExpired(); } catch { /* ignore */ }
+      }, 60_000);
+      botplaySweeper.unref?.();
+
       return async () => {
         logger.info('Shutting down');
         registerApprovalController(myNs, undefined);
         registerQuestionController(myNs, undefined);
         registerBotplayController(myNs, undefined);
         setBotplayTriggerImpl(undefined);
+        setBotplayCatalogImpl(undefined);
         registerSessionManager(myNs, undefined);
         approvalController?.dispose();
         questionController?.dispose();
         botplayController?.clear();
         stopScheduler?.();
         if (scheduleTicker) { clearInterval(scheduleTicker); scheduleTicker = undefined; }
+        clearInterval(botplaySweeper);
         flushStickerGate();
         await manager.disposeAll();
         bot.stop();

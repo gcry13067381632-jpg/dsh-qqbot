@@ -123,6 +123,21 @@ export class ModelResolver {
     this.prefs.clearSessionCfg(sessionKey);
   }
 
+  /** 读会话 preset 覆盖(/new <preset> 指定) */
+  getSessionPreset(sessionKey: string): string | undefined {
+    return this.prefs.getSessionPreset(sessionKey);
+  }
+
+  /** 记会话 preset 覆盖 */
+  setSessionPreset(sessionKey: string, preset: string): void {
+    this.prefs.setSessionPreset(sessionKey, preset);
+  }
+
+  /** 清会话 preset 覆盖 */
+  clearSessionPreset(sessionKey: string): void {
+    this.prefs.clearSessionPreset(sessionKey);
+  }
+
   /**
    * 解析默认模型路由（不含 per-peer 偏好）
    *

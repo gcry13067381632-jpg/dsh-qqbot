@@ -4,6 +4,22 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [0.9.9] - 2026-09-08
+
+### 新增
+- **权限档位切换 `/perm`**(别名 `/permission`/`/权限`): QQ 里直接切宿主 sandbox 档(只读/工作区写/全权), 支持中文参数与简写, 即时生效(经 permissionPresets 服务)。
+- **人格切换 `/new <preset>` + `/presets`**: QQ 里按会话 fork 开新档切换 preset(会话级记住, 重启恢复), 旧会话存档可回看。
+- **botplay Phase2**:
+  - `jump_url` 跳转按钮落地(官方 action.type=0, dock 填 URL 即发跳转卡)。
+  - **指令型按钮** `command`: 点击后 host 直接执行斜杠命令(不经 AI 文本), dock 行为选「执行命令」填命令名即可。
+  - `/botplay` 无参改为**事件目录卡**: 每页最多 4 事件按钮(点击直接触发)+ 上一页/下一页翻页, 免打字。
+  - **事件快照版本化**: 发卡时固化按钮/权限, 配置热改不影响已发卡; 过期卡 60s 自动清理。
+- 审批卡片直接印验证码(不再只提示不给码; /approve CODE 放行保留)。
+
+### 修复
+- /bot-new 假实现: 与 /bot-reset 相同(只 remove)→ 重构为真 fork(旧会话存档可回看)。
+- cwd 配置变更生效(上游 issue #43): 会话级 cwd 指纹; 活跃会话变更时 fork 热迁移继承历史。
+
 ## [0.9.8] - 2026-09-08
 
 ### 新增

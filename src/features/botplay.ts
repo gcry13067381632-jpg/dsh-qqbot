@@ -26,10 +26,16 @@ import { readGroupMembers, readLedger } from './chat-ledger.js';
 /** 按钮回调数据前缀 + 编码: bp:<cardId>:<buttonId>(button_data 是回调唯一凭证) */
 const BTN_PREFIX = 'bp:';
 
-/** 单次发卡的实例记录(防刷/过期/归属校验用) */
+/** 单次发卡的实例记录(防刷/过期/归属校验用; Phase2 加事件快照: 配置热改不影响已发卡) */
 interface ActiveCard {
   cardId: string;
   eventId: string;
+  /** 发卡时的事件名快照(回调回复/提示用, 防改名漂移) */
+  eventName: string;
+  /** 发卡时的按钮定义快照(回调按快照执行, 配置热改后旧卡仍按旧配置走) */
+  buttons: BotplayButtonConfig[];
+  /** 发卡时的权限快照(防热改放权绕过; all/triggerer/owner/users) */
+  perm: NonNullable<BotplayEventConfig['perm']>;
   /** triggerer=仅触发者本人时, 记录触发者 openid */
   triggererId?: string;
   /** maxClicks>0 时的剩余可点击数(点一次扣一) */
@@ -64,6 +70,9 @@ function renderContext(tpl: string | undefined, eventName: string, buttonLabel: 
  * QQ 限制: rows ≤5 行 × 5 按钮/行; 这里采用每行 1 个(竖排, 字宽不截断)。
  * permission: 按事件 perm 决定 —— all→type2所有人 / triggerer→type0 指定触发者 /
  * owner→type0 主人白名单 / users→type0 指定 openid。
+ * 按钮 action.type 按 botAction 区分(Phase2):
+ *   reply_text/callback → 1 回调按钮(点击回后台, data=bp:card:btn)
+ *   jump_url            → 0 跳转按钮(data=http(s) 链接, 点击直接跳不走回调)
  */
 export function botplayKeyboard(
   cardId: string,
@@ -79,22 +88,29 @@ export function botplayKeyboard(
   else if (perm.type === 'owner') specify.push(...ownerIds);
   else if (perm.type === 'users') specify.push(...(perm.userIds ?? []));
   permission = specify.length > 0 ? { type: 0, specify_user_ids: specify } : { type: 2 };
-  const rows = shown.map((b) => ({
-    buttons: [{
-      id: `${BTN_PREFIX}${cardId}:${b.id}`,
-      render_data: {
-        label: String(b.label ?? '').slice(0, 20),
-        visited_label: String(b.visitedLabel || b.label || '').slice(0, 20),
-        style: b.style === 0 ? 0 : 1,
-      },
-      action: {
-        type: 1, // 回调
-        permission,
-        data: `${BTN_PREFIX}${cardId}:${b.id}`,
-        unsupport_tips: '请在支持的客户端点击按钮',
-      },
-    }],
-  }));
+  const rows = shown.map((b) => {
+    const isJump = (b.botAction?.type ?? 'reply_text') === 'jump_url';
+    const url = String(b.botAction?.url ?? '').trim();
+    const data = isJump
+      ? (url || 'https://example.com') // type=0 跳转: data 放链接
+      : `${BTN_PREFIX}${cardId}:${b.id}`; // type=1 回调: 编码 card::btn
+    return {
+      buttons: [{
+        id: `${BTN_PREFIX}${cardId}:${b.id}`,
+        render_data: {
+          label: String(b.label ?? '').slice(0, 20),
+          visited_label: String(b.visitedLabel || b.label || '').slice(0, 20),
+          style: b.style === 0 ? 0 : 1,
+        },
+        action: {
+          type: isJump ? 0 : 1, // 0跳转 1回调
+          permission,
+          data,
+          unsupport_tips: '请在支持的客户端点击按钮',
+        },
+      }],
+    };
+  });
   return { content: { rows } };
 }
 
@@ -105,6 +121,54 @@ export function parseBotplayButton(data: string | undefined): { cardId: string; 
   const idx = rest.indexOf(':');
   if (idx <= 0 || idx >= rest.length - 1) return null;
   return { cardId: rest.slice(0, idx), buttonId: rest.slice(idx + 1) };
+}
+
+// ── 事件目录页(Phase2, 2026-09-08): /botplay 无参出翻页卡片, 点事件名直接触发 ──
+// 编码: bpc:<page>:<key> —— key=事件id(触发该事件) | prev(上一页) | next(下一页) | close(关闭/忽略)
+const CAT_PREFIX = 'bpc:';
+/** 每页最多事件数(QQ 行上限 5, 留 1 行给翻页按钮) */
+const CAT_PER_PAGE = 4;
+
+export function parseCatalogButton(data: string | undefined): { page: number; key: string } | null {
+  if (!data || !data.startsWith(CAT_PREFIX)) return null;
+  const rest = data.slice(CAT_PREFIX.length);
+  const idx = rest.indexOf(':');
+  if (idx <= 0 || idx >= rest.length - 1) return null;
+  const page = Number(rest.slice(0, idx));
+  if (!Number.isFinite(page) || page < 0) return null;
+  return { page, key: rest.slice(idx + 1) };
+}
+
+/** 目录页总数(0=无事件) */
+function catalogPages(events: BotplayEventConfig[]): number {
+  return Math.max(1, Math.ceil(events.length / CAT_PER_PAGE));
+}
+
+/** 构造事件目录卡 keyboard: 事件按钮(点击即触发) + 上一页/下一页 */
+function catalogKeyboard(page: number, events: BotplayEventConfig[]): { content: { rows: unknown[] } } {
+  const pages = catalogPages(events);
+  const safePage = Math.min(page, pages - 1);
+  const start = safePage * CAT_PER_PAGE;
+  const pageEvents = events.slice(start, start + CAT_PER_PAGE);
+  const btn = (label: string, key: string, style: number) => ({
+    buttons: [{
+      id: `${CAT_PREFIX}${safePage}:${key}`,
+      render_data: { label: String(label).slice(0, 20), visited_label: String(label).slice(0, 20), style },
+      action: {
+        type: 1,
+        permission: { type: 2 },
+        data: `${CAT_PREFIX}${safePage}:${key}`,
+        unsupport_tips: '请在支持的客户端点击',
+      },
+    }],
+  });
+  const rows: Array<{ buttons: unknown[] }> = pageEvents.map((ev) => btn(`🎮 ${ev.name}`, ev.id, 1));
+  // 翻页行: 上一页 + 页码 + 下一页
+  const nav: Array<{ buttons: unknown[] }> = [];
+  if (safePage > 0) nav.push(...[btn('◀ 上一页', 'prev', 0)]);
+  if (safePage < pages - 1) nav.push(...[btn('下一页 ▶', 'next', 0)]);
+  if (nav.length > 0) rows.push(...nav);
+  return { content: { rows } };
 }
 
 export class BotplayController {
@@ -121,6 +185,12 @@ export class BotplayController {
     /** 台账 dataDir getter(表情包目录; 点击人昵称反查, 与 dock 禁言面板同源) */
     private readonly ledgerDataDirGetter: () => string,
   ) {}
+
+  /** 指令型按钮执行器(bootstrap 注入: 执行斜杠命令并返回文本) */
+  private commandExecutor: ((cmdName: string, target: ReplyTarget) => Promise<string>) | undefined;
+  setCommandExecutor(fn: ((cmdName: string, target: ReplyTarget) => Promise<string>) | undefined): void {
+    this.commandExecutor = fn;
+  }
 
   /** 列出所有事件(公开, dock/命令共用) */
   listEvents(): BotplayEventConfig[] {
@@ -154,6 +224,9 @@ export class BotplayController {
     this.cards.set(cardId, {
       cardId,
       eventId: ev.id,
+      eventName: ev.name,
+      buttons: JSON.parse(JSON.stringify(ev.buttons)),
+      perm: JSON.parse(JSON.stringify(perm)),
       triggererId: perm.type === 'triggerer' ? triggererId : undefined,
       remainClicks: maxClicks > 0 ? maxClicks : 0,
       expireAt: Date.now() + expireSec * 1000,
@@ -178,6 +251,31 @@ export class BotplayController {
     }
   }
 
+  /** 发送事件目录卡(/botplay 无参 或 目录卡翻页; 点事件名按钮 → handleInteraction 直接触发) */
+  async sendCatalog(target: ReplyTarget, page = 0): Promise<BotplayTriggerResult> {
+    const events = this.listEvents();
+    if (events.length === 0) return { ok: false, msg: '🎮 还没有装配任何互动事件——到 dock「🎮 互动事件」装配保存后即可。' };
+    const pages = catalogPages(events);
+    const safePage = Math.max(0, Math.min(page, pages - 1));
+    const kb = catalogKeyboard(safePage, events);
+    const start = safePage * CAT_PER_PAGE;
+    const names = events.slice(start, start + CAT_PER_PAGE).map((e) => `- ${e.name}`).join('\n');
+    const prompt = [
+      '### 🎮 互动事件',
+      '',
+      names,
+      '',
+      `📄 第 ${safePage + 1}/${pages} 页 — 点下方事件名直接触发 👇`,
+    ].join('\n');
+    try {
+      await this.sender.sendMarkdownWithKeyboard(target, prompt, kb);
+      this.logger.info(`[botplay] 目录卡 page=${safePage + 1}/${pages} target=${target.scope}:${target.targetId}`);
+      return { ok: true, msg: '' }; // 目录卡已发, 不追加文本
+    } catch (err) {
+      return { ok: false, msg: `目录卡发送失败: ${err instanceof Error ? err.message : String(err)}` };
+    }
+  }
+
   /**
    * interaction 回调结算(bootstrap interaction 分发转发; type=11 消息按钮)。
    * 流程: 解析 bp:<cardId>:<buttonId> → 查卡(过期/点满) → 查事件配置(live)
@@ -191,6 +289,18 @@ export class BotplayController {
       user_openid?: string;
     };
     if (e?.data?.type !== 11) return false;
+    // 目录卡按钮(Phase2): bpc:<page>:<key> —— key=事件id直接触发 / prev|next 翻页
+    const cat = parseCatalogButton(e.data.resolved?.button_data);
+    if (cat) {
+      const presserId = e.group_member_openid ?? e.user_openid ?? '';
+      if (cat.key === 'prev') { await this.sendCatalog(replyTarget, cat.page - 1); return true; }
+      if (cat.key === 'next') { await this.sendCatalog(replyTarget, cat.page + 1); return true; }
+      // 事件 id → 直接触发发卡(点击者本人为 triggerer, 权限由事件 perm 决定)
+      const ev = this.findEvent(cat.key);
+      if (!ev) { await this.safeReply(replyTarget, '该事件已被删除, 请刷新目录~'); return true; }
+      await this.trigger(replyTarget, ev.id, presserId);
+      return true;
+    }
     const parsed = parseBotplayButton(e.data.resolved?.button_data);
     if (!parsed) return false;
 
@@ -206,22 +316,23 @@ export class BotplayController {
       await this.safeReply(replyTarget, '这张互动卡片已超时失效, 请重新发 /botplay~');
       return true;
     }
+    // 事件仍存在才受理(删除后旧卡失效提示重配); 按钮/权限/名称一律走【发卡时快照】,
+    // 配置热改不会让已发卡"漂移"(Phase2 版本化语义)。
     const ev = this.findEvent(card.eventId);
     if (!ev) {
       this.cards.delete(parsed.cardId);
       await this.safeReply(replyTarget, '该互动事件已被删除, 请让管理员重新配置~');
       return true;
     }
-    const btn = (Array.isArray(ev.buttons) ? ev.buttons : []).find((b) => b.id === parsed.buttonId);
+    const btn = card.buttons.find((b) => b.id === parsed.buttonId);
     if (!btn) {
       await this.safeReply(replyTarget, '按钮配置已更新, 请重新触发这张卡片~');
       return true;
     }
 
-    // 点击人权限校验(与发卡 permission 双保险; 群看 member_openid, c2c 看 user_openid)
+    // 点击人权限校验(与发卡 permission 双保险; 按快照 perm, 群看 member_openid, c2c 看 user_openid)
     const presser = e.group_member_openid ?? e.user_openid ?? '';
-    const perm = ev.perm ?? { type: 'all' };
-    const allowed = this.checkPerm(perm, card, presser);
+    const allowed = this.checkPerm(card.perm, card, presser);
     if (!allowed) {
       await this.safeReply(replyTarget, '这个按钮只有指定的人能点哦~');
       return true;
@@ -235,7 +346,7 @@ export class BotplayController {
       }
     }
 
-    // ① bot(非LLM)行为
+    // ① bot(非LLM)行为(按快照)
     const actionType = btn.botAction?.type ?? 'reply_text';
     if (actionType === 'reply_text') {
       const text = String(btn.botAction?.text ?? '').trim();
@@ -247,16 +358,33 @@ export class BotplayController {
         }
       }
     } else if (actionType === 'jump_url') {
-      // Phase2: 官方 action.type=0 跳转; Phase1 不落地, 仅提示
-      await this.safeReply(replyTarget, '跳转行为在 Phase2 开放~');
+      // jump_url 是官方 type=0 跳转按钮 → 点击时客户端直接跳, 不会走到回调;
+      // 若仍收到回调(降级/不可跳)则提示用户直接点链接。
+      const url = String(btn.botAction?.url ?? '').trim();
+      await this.safeReply(replyTarget, url ? `跳转按钮: ${url}(如未自动跳转请手动打开)` : '该按钮是跳转按钮, 请在支持跳转的客户端点击');
+    } else if (actionType === 'command') {
+      // command 指令型(Phase2): 点击 → host 直接执行斜杠命令(不经 AI 文本)。
+      // 命令名存 botAction.text(不带 /); 由 bootstrap 注入的 executor 执行并把结果发回。
+      const cmdName = String(btn.botAction?.text ?? '').trim().replace(/^\//, '');
+      if (cmdName && this.commandExecutor) {
+        try {
+          const text = await this.commandExecutor(cmdName, replyTarget);
+          if (text && text.trim()) await this.safeReply(replyTarget, text);
+        } catch (err) {
+          this.logger.warn(`[botplay] command 执行失败 ${cmdName}: ${err instanceof Error ? err.message : String(err)}`);
+          await this.safeReply(replyTarget, `指令执行失败: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      } else {
+        await this.safeReply(replyTarget, cmdName ? '指令执行器未就绪, 请稍后再试~' : '这个按钮没配置要执行的命令');
+      }
     }
     // callback=仅结算, 无 bot 回复
 
-    // ② LLM 影响三档(注入文本带点击人身份: 昵称(openid), 台账/会话历史反查)
+    // ② LLM 影响三档(按快照; 注入文本带点击人身份: 昵称(openid), 台账/会话历史反查)
     const mode = btn.llmEffect?.mode ?? 'no_append';
     if (mode !== 'no_append') {
       const clicker = this.clickerLabel(replyTarget, presser);
-      const text = renderContext(btn.llmEffect?.contextText, ev.name, btn.label ?? '', clicker);
+      const text = renderContext(btn.llmEffect?.contextText, card.eventName, btn.label ?? '', clicker);
       await this.applyEffect(mode, replyTarget, text, presser);
     }
     return true;
@@ -376,6 +504,22 @@ export class BotplayController {
   clear(): void {
     this.cards.clear();
   }
+
+  /** 扫掉过期卡(Phase2: 定期/触发时调用, 防内存积压) */
+  sweepExpired(): number {
+    const now = Date.now();
+    let n = 0;
+    for (const [id, c] of this.cards) {
+      if (now > c.expireAt) { this.cards.delete(id); n += 1; }
+    }
+    if (n > 0) this.logger.info(`[botplay] 清理过期卡 ${n} 张(剩 ${this.cards.size})`);
+    return n;
+  }
+
+  /** 活动卡数量(诊断用) */
+  get cardCount(): number {
+    return this.cards.size;
+  }
 }
 
 // ── 按实例(ns)注册表 + 命令/触发共用入口(仿 outbound-mode-switch / qq-approval) ──
@@ -398,6 +542,20 @@ export function setBotplayTriggerImpl(fn: TriggerFn | undefined): void {
 export async function triggerBotplay(target: ReplyTarget, eventId: string, triggererId: string): Promise<BotplayTriggerResult> {
   if (!triggerImpl) return { ok: false, msg: 'botplay 未就绪(插件未启动)' };
   return triggerImpl(target, eventId, triggererId);
+}
+
+/** 事件目录卡入口: bootstrap 注册实现(带 sender/manager); /botplay 无参调用 */
+type CatalogFn = (target: ReplyTarget, page: number) => Promise<BotplayTriggerResult>;
+
+let catalogImpl: CatalogFn | undefined;
+
+export function setBotplayCatalogImpl(fn: CatalogFn | undefined): void {
+  catalogImpl = fn;
+}
+
+export async function botplayCatalog(target: ReplyTarget, page = 0): Promise<BotplayTriggerResult> {
+  if (!catalogImpl) return { ok: false, msg: 'botplay 未就绪(插件未启动)' };
+  return catalogImpl(target, page);
 }
 
 /** 取某 ns 的事件列表(dock 装配器读; settings value 里其实已有, 此出口备用) */

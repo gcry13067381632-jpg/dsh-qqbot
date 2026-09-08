@@ -11,38 +11,31 @@
  */
 import type { SlashCommand } from '@tencent-connect/qqbot-nodejs';
 import type { CommandDeps } from './types.js';
-import { triggerBotplay, resolveCommandTarget } from '../features/botplay.js';
+import { triggerBotplay, botplayCatalog, resolveCommandTarget } from '../features/botplay.js';
 
 export function botplayCommand({ config }: CommandDeps): SlashCommand {
   return {
     name: 'botplay',
-    description: '互动事件: /botplay 列出; /botplay 事件名 触发发卡',
+    description: '互动事件: /botplay 出目录卡片(点事件直接触发); /botplay 事件名 直接触发',
     usage: '/botplay [事件名]',
     handler: async (cmdCtx) => {
       const args = String((cmdCtx.command?.raw ?? '').trim());
       const events = Array.isArray(config.botplayEvents) ? config.botplayEvents : [];
-      // 无参 → 列表
+      const { target, triggererId } = resolveCommandTarget(cmdCtx as never);
+      // 无参 → 发事件目录卡(点按钮直接触发; 事件多自动翻页)
       if (!args) {
         if (events.length === 0) {
           return '🎮 还没有装配任何互动事件——到 dock「🎮 互动事件」或 Web 设置里装配后保存即可。';
         }
-        const lines = ['### 🎮 互动事件', '', '发 `/botplay 事件名` 触发发卡:'];
-        for (const ev of events) {
-          const btnN = Array.isArray(ev.buttons) ? ev.buttons.length : 0;
-          const expire = Number(ev.expireSec ?? 600) || 600;
-          const maxC = Number(ev.maxClicks ?? 0) || 0;
-          lines.push(
-            `- **${ev.name}** \`${ev.id}\`(${btnN} 个按钮, ${expire}s${maxC > 0 ? `, 最多${maxC}次` : ''})`,
-          );
-        }
-        return lines.join('\n');
+        if (!target.targetId) return '无法定位当前会话, 请稍后再试~';
+        const r = await botplayCatalog(target, 0);
+        return r.msg; // 成功时为空串(卡片已发); 失败才返回错误文本
       }
       // 精确匹配: 先 id 后 name(整串, 不模糊)
       const hit = events.find((e) => e.id === args || e.name === args);
       if (!hit) {
-        return `找不到事件「${args}」——发 /botplay 看列表(只支持精确名字或id)。`;
+        return `找不到事件「${args}」——发 /botplay 看目录卡片(或精确名字/id)。`;
       }
-      const { target, triggererId } = resolveCommandTarget(cmdCtx as never);
       if (!target.targetId || !triggererId) {
         return '无法定位当前会话, 请稍后再试~';
       }

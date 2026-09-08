@@ -256,7 +256,9 @@ npx @deepseek-ai/dsh web --patch /path/to/dsh-qqbot/cordis.dev.yml
 | `/bot-version` | 查看版本与当前模型 |
 | `/bot-stop` | 中止当前正在生成的内容 |
 | `/bot-restart` | 自重启 dsh 宿主(约4秒, 期间短暂离线, 自动拉起) |
-| `/botplay` | 互动事件: 列出所有已装配事件; `/botplay 事件名` 触发发卡(如 `/botplay 签到`) |
+| `/botplay` | 出互动事件目录卡(点事件直接触发, 自动翻页); `/botplay 事件名` 直接触发(如 `/botplay 签到`) |
+| `/perm` | 切换权限档: `/perm` 查看; `/perm 只读\|工作区\|全权` 切换(即时生效) |
+| `/new [preset]` | 以指定人格开新会话(旧会话存档可回看); `/presets` 看可用人格 |
 | `/bot-help` | 查看所有指令 |
 | `/tools-reload` | 热刷新 QQ 通道工具(开发用, 新工具无需重启即可用) |
 

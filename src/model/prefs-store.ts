@@ -30,6 +30,8 @@ interface PrefsFile {
   sessionIds: Record<string, string>;
   /** sessionKey → 该会话创建时的 cwd/preset 指纹(判断配置变更, 变了就不 resume 旧会话) */
   sessionCfg?: Record<string, SessionCfgFingerprint>;
+  /** sessionKey → 该会话的 preset 覆盖(/new <preset> 指定, 重启后按此恢复) */
+  sessionPresets?: Record<string, string>;
 }
 
 export class PrefsStore {
@@ -39,6 +41,8 @@ export class PrefsStore {
   private sessionIds = new Map<string, string>();
   /** per-peer 会话配置指纹（内存态） */
   private sessionCfg = new Map<string, SessionCfgFingerprint>();
+  /** per-peer 会话 preset 覆盖（内存态, /new <preset> 用） */
+  private sessionPresets = new Map<string, string>();
   /** 隔离偏好文件路径 */
   private readonly prefsPath: string;
   private readonly debugLog?: DebugFn;
@@ -105,6 +109,23 @@ export class PrefsStore {
     return deleted;
   }
 
+  // ── 会话 preset 覆盖操作(/new <preset> 2026-09-08) ──
+
+  getSessionPreset(sessionKey: string): string | undefined {
+    return this.sessionPresets.get(sessionKey);
+  }
+
+  setSessionPreset(sessionKey: string, preset: string): void {
+    this.sessionPresets.set(sessionKey, preset);
+    this.write();
+  }
+
+  clearSessionPreset(sessionKey: string): boolean {
+    const deleted = this.sessionPresets.delete(sessionKey);
+    if (deleted) this.write();
+    return deleted;
+  }
+
   // ── 私有方法 ──
 
   private load(): void {
@@ -133,6 +154,11 @@ export class PrefsStore {
           }
         }
       }
+      if (data.sessionPresets && typeof data.sessionPresets === 'object') {
+        for (const [key, preset] of Object.entries(data.sessionPresets)) {
+          if (typeof preset === 'string' && preset) this.sessionPresets.set(key, preset);
+        }
+      }
     } catch (err) {
       // 2026-09-06 (PR #41): 解析失败不静默 —— 损坏文件改名 .corrupt-<ts> 保留取证, 空偏好继续。
       // 旧行为只在 debug 时打一行日志然后以空偏好继续, 坏文件会被下次 write 覆盖, 无法事后排查。
@@ -156,6 +182,7 @@ export class PrefsStore {
         overrides: Object.fromEntries(this.overrides.entries()),
         sessionIds: Object.fromEntries(this.sessionIds.entries()),
         ...(this.sessionCfg.size > 0 ? { sessionCfg: Object.fromEntries(this.sessionCfg.entries()) } : {}),
+        ...(this.sessionPresets.size > 0 ? { sessionPresets: Object.fromEntries(this.sessionPresets.entries()) } : {}),
       };
       // 2026-09-06 (PR #41): 原子写入 —— 先写 .tmp 再 renameSync 覆盖(同卷 rename 原子, OS 保证)。
       // 旧行为 writeFileSync 就地全量覆盖, 写盘瞬间进程被 kill → 留下半截 JSON, 下次 load 静默重置。

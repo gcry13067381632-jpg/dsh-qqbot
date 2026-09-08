@@ -168,7 +168,9 @@ export class QqApprovalController {
       reason ? `原因：${reason}` : '',
       '',
       `仅本次有效，${seconds} 秒后自动拒绝。`,
-      '（按钮不可用时请回复 `/approve|/deny + 验证码`）',
+      '',
+      `🔑 验证码：\`${code}\``,
+      '（点上方按钮最快; 按钮不可用时回复 `/approve ' + code + '` 或 `/deny ' + code + '`）',
     ].filter(Boolean).join('\n');
 
     try {

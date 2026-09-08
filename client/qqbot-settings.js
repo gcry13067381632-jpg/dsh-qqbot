@@ -2290,10 +2290,10 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
               var ctx = (b.llmEffect && b.llmEffect.contextText) || ''
               body += '<div class="dk-item" style="border:1px solid #f0ecff;border-radius:8px;margin:3px 0;padding:4px 6px">'
                 + '<input class="qqs-txt" data-bplabel="' + bi + '" value="' + esc(b.label) + '" placeholder="按钮文字" style="flex:1;min-width:90px">'
-                + '<select class="qqs-sel" data-bpact="' + bi + '">' + ['reply_text','jump_url','callback'].map(function (t) { return '<option value="' + t + '"' + (bt === t ? ' selected' : '') + '>' + ({ reply_text: '回文本', jump_url: '跳链接', callback: '仅结算' }[t]) + '</option>' }).join('') + '</select>'
+                + '<select class="qqs-sel" data-bpact="' + bi + '">' + ['reply_text','jump_url','callback','command'].map(function (t) { return '<option value="' + t + '"' + (bt === t ? ' selected' : '') + '>' + ({ reply_text: '回文本', jump_url: '跳链接', callback: '仅结算', command: '执行命令' }[t]) + '</option>' }).join('') + '</select>'
                 + '<select class="qqs-sel" data-bpmode="' + bi + '">' + ['no_append','append_silent','append_wake'].map(function (m) { return '<option value="' + m + '"' + (md === m ? ' selected' : '') + '>' + ({ no_append: '不影响AI', append_silent: '记录不唤醒', append_wake: '记录并唤醒AI' }[m]) + '</option>' }).join('') + '</select>'
                 + '<button class="dk-btn no" data-bpdelbtn="' + bi + '">✕</button></div>'
-                + '<input class="qqs-txt" data-bpacttext="' + bi + '" value="' + esc((b.botAction && b.botAction.text) || '') + '" placeholder="点击后 bot 直接回复的文本(回文本时用)" style="width:calc(100% - 8px);box-sizing:border-box;margin:0 0 4px 4px">'
+                + '<input class="qqs-txt" data-bpacttext="' + bi + '" value="' + esc((b.botAction && b.botAction.text) || '') + '" placeholder="回文本=回复内容 / 执行命令=命令名(如 bot-status, 不带/)" style="width:calc(100% - 8px);box-sizing:border-box;margin:0 0 4px 4px">'
                 + '<input class="qqs-txt" data-bpctx="' + bi + '" value="' + esc(ctx) + '" placeholder="(记录/唤醒AI时)对AI说的话, 支持 {name} 事件名 {label} 按钮名; 空=默认" style="width:calc(100% - 8px);box-sizing:border-box;margin:0 0 4px 4px">'
             })
             body += '<div class="dk-row"><button class="dk-btn" id="dk-bp-addbtn">➕ 加按钮</button>'

@@ -6,12 +6,13 @@
  */
 import type { SlashCommand } from '@tencent-connect/qqbot-nodejs';
 import type { CommandDeps } from './types.js';
-import { resetCommand, newCommand } from './session.js';
+import { resetCommand, newCommand, newPresetCommand, presetsCommand } from './session.js';
 import { modelCommand, modelAliasCommand } from './model.js';
 import { statusCommand } from './status.js';
 import { helpCommand } from './help.js';
 import { pingCommand, versionCommand, stopCommand, toolsReloadCommand } from './misc.js';
 import { outModeCommand } from './outmode.js';
+import { permissionCommand } from './permission.js';
 import { botplayCommand } from './botplay.js';
 import { botRestartCommand, botExitCommand } from './exit.js';
 
@@ -23,6 +24,9 @@ export function buildCommandList(deps: CommandDeps): SlashCommand[] {
     // 会话
     resetCommand(deps),
     newCommand(deps),
+    // 人格(preset): /new <id> 按会话切换, /presets 查看可用(2026-09-08)
+    newPresetCommand(deps),
+    presetsCommand(deps),
     // 模型
     modelCommand(deps),
     modelAliasCommand(deps), // /model 简写
@@ -30,6 +34,8 @@ export function buildCommandList(deps: CommandDeps): SlashCommand[] {
     statusCommand(deps),
     // 出站模式(逃生通道: SDK 直通不经 LLM, nothink 也能唤醒)
     outModeCommand(deps),
+    // 权限档位切换(宿主 permissionPresets)
+    permissionCommand(deps),
     // botplay 互动事件(/botplay 列表/触发发卡)
     botplayCommand(deps),
     // 自重启(杀旧+自动拉起 dsh web; /bot-exit 兼容同款)

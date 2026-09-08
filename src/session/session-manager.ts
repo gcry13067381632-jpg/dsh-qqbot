@@ -160,19 +160,101 @@ export class SessionManager {
   }
 
   /**
-   * 开新会话(2026-09-08 修 /bot-new 假实现):
+   * 开新会话(2026-09-08 修 /bot-new 假实现; 同日加 preset 切换):
    * 当前会话 fork 成 childId(旧会话存档为 parent, 磁盘记录仍在可回看),
-   * 同一模型/预设建新 agent 替换活跃记录。inherit=true 继承旧对话上下文(切模型用);
+   * 用同模型建新 agent 替换活跃记录。inherit=true 继承旧对话上下文(切模型用);
    * false = 全新空档(不继承旧上下文, 旧会话存档可回看)。
+   * presetId 给定时: 记录该会话的 preset 覆盖并用于新档(如 /new code 切人格);
+   * 不传则沿用当前生效 preset(config 或之前会话覆盖)。
    */
-  async startNewSession(scope: ChatScope, peerId: string, inherit = false): Promise<boolean> {
+  async startNewSession(scope: ChatScope, peerId: string, inherit = false, presetId?: string): Promise<boolean> {
     const key = this.sessionKey(scope, peerId);
     const record = this.sessions.get(key);
     if (!record) return false;
 
+    // preset 覆盖: 显式给出则落盘(重启后恢复同 preset)
+    if (presetId) {
+      try { this.modelResolver.setSessionPreset(key, presetId); } catch { /* ignore */ }
+    }
+
     const route = this.modelResolver.getEffectiveRoute(key);
     await this.forkCurrentSession(key, record, route, inherit);
     return true;
+  }
+
+  /** 当前会话生效 preset: 会话覆盖(/new 指定) > config.preset */
+  private effectivePreset(key: string): string | undefined {
+    const override = this.modelResolver.getSessionPreset(key);
+    return override || this.config.preset;
+  }
+
+  /** 列出宿主可用 agent presets(供 /presets 命令; 失败返回空) */
+  async listPresets(): Promise<Array<{ id: string; name?: string; broken?: boolean }>> {
+    try {
+      const presets = this.ctx.get('agentPresets') as {
+        list?: () => Promise<Array<{ id: string; name?: string; broken?: boolean }>>;
+      } | undefined;
+      if (!presets || typeof presets.list !== 'function') return [];
+      return await presets.list();
+    } catch {
+      return [];
+    }
+  }
+
+  /** 校验 preset id 是否存在(供 /new <id>; 未知/损坏返回 false) */
+  async hasPreset(id: string): Promise<boolean> {
+    const list = await this.listPresets();
+    return list.some((p) => p.id === id && !p.broken);
+  }
+
+  // ── 宿主权限档位(permissionPresets)桥接(2026-09-08, QQ 里切权限) ──
+
+  private permissionPresetsService(): { names?: string[]; optionOf?: (n: string) => { value: string; name: string; description?: string }; current?: (s: unknown) => string; set?: (s: unknown, n: string) => void } | undefined {
+    try {
+      return this.ctx.get('permissionPresets') as ReturnType<SessionManager['permissionPresetsService']>;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** 列出宿主权限档(如 workspace-write / danger-full-access / read-only) */
+  async listPermissionPresets(): Promise<Array<{ value: string; name: string; description?: string }>> {
+    const svc = this.permissionPresetsService();
+    if (!svc || !Array.isArray(svc.names) || typeof svc.optionOf !== 'function') return [];
+    return svc.names.map((n) => svc.optionOf!(n));
+  }
+
+  /** 当前会话权限档名 */
+  currentPermissionPreset(scope: ChatScope, peerId: string): string {
+    const svc = this.permissionPresetsService();
+    if (!svc || typeof svc.current !== 'function') return '';
+    const rec = this.sessions.get(this.sessionKey(scope, peerId));
+    if (!rec) return '';
+    try { return svc.current((rec.agent as { session?: unknown }).session); } catch { return ''; }
+  }
+
+  /** 切权限档: 校验名字 → svc.set(session, name) */
+  async switchPermissionPreset(scope: ChatScope, peerId: string, name: string): Promise<{ ok: boolean; msg: string }> {
+    const svc = this.permissionPresetsService();
+    if (!svc || typeof svc.set !== 'function') {
+      return { ok: false, msg: '宿主未提供 permissionPresets 服务(需装配 dsh-permission-presets)' };
+    }
+    const list = await this.listPermissionPresets();
+    const hit = list.find((p) => p.value === name);
+    if (!hit) {
+      const lines = [`未知权限档「${name}」— 可用:`];
+      for (const p of list) lines.push(`- ${p.value}${p.name && p.name !== p.value ? `(${p.name})` : ''}${p.description ? ` — ${p.description}` : ''}`);
+      return { ok: false, msg: lines.join('\n') };
+    }
+    const rec = this.sessions.get(this.sessionKey(scope, peerId));
+    if (!rec) return { ok: false, msg: '当前没有活跃会话, 请先聊一句再切' };
+    try {
+      svc.set((rec.agent as { session?: unknown }).session, name);
+      this.logger.info(`[permission] 权限档 → ${name} (${scope}:${peerId})`);
+      return { ok: true, msg: `✅ 权限档已切换: **${hit.name ?? name}**${hit.description ? `\n${hit.description}` : ''}` };
+    } catch (err) {
+      return { ok: false, msg: `切换失败: ${err instanceof Error ? err.message : String(err)}` };
+    }
   }
 
 
@@ -207,7 +289,7 @@ export class SessionManager {
 
     const childId = SessionId(randomUUID());
 
-    const composed = await this.composePreset(this.config.preset);
+    const composed = await this.composePreset(this.effectivePreset(key));
     const created = await this.agents.create({
       sessionId: childId,
       ...(seed ? { seed } : {}),
@@ -465,8 +547,8 @@ export class SessionManager {
       agent = live;
       this.logger.info(`reusing live agent: key=${key}`);
     } else {
-      // preset 只解析一次：resume/create 共用同一组合，避免重复 resolve/mount 目录
-      const composed = await this.composePreset(this.config.preset);
+      // preset 只解析一次：resume/create 共用同一组合(会话覆盖 > config), 避免重复 resolve/mount 目录
+      const composed = await this.composePreset(this.effectivePreset(key));
       agentPreset = composed.agentPreset;
       try {
         const resumeRoute = this.modelResolver.getResumeRoute(key);

@@ -112,8 +112,8 @@ export interface ScheduleConfig {
 
 // ── botplay 互动事件装配器(2026-09-08, 设计见 参考文档/botplay互动事件装配器_设计完整稿.md) ──
 
-/** botAction 行为类型: reply_text=回指定文本 | jump_url=跳转(官方action.type=0) | callback=仅回调结算无bot回复 */
-export type BotplayActionType = 'reply_text' | 'jump_url' | 'callback';
+/** botAction 行为类型: reply_text=回指定文本 | jump_url=跳转(官方action.type=0) | callback=仅回调结算无bot回复 | command=点击执行斜杠命令(host侧直发) */
+export type BotplayActionType = 'reply_text' | 'jump_url' | 'callback' | 'command';
 
 /** llmEffect.mode 三档: no_append=纯bot行为AI不知 / append_silent=记录不唤醒 / append_wake=记录并唤醒AI */
 export type BotplayEffectMode = 'no_append' | 'append_silent' | 'append_wake';
@@ -134,7 +134,7 @@ export interface BotplayButtonConfig {
   /** 点击后 bot(非LLM)直接做什么 */
   botAction: {
     type: BotplayActionType;
-    /** reply_text 用 */
+    /** reply_text 用(文本); command 用(斜杠命令名, 如 bot-status) */
     text?: string;
     /** jump_url 用 */
     url?: string;
@@ -328,8 +328,8 @@ const scheduleSchema = Schema.object({
 
 // ── botplay 互动事件(schema, 2026-09-08) ──
 const botplayActionSchema = Schema.object({
-  type: Schema.union(['reply_text', 'jump_url', 'callback']).default('reply_text').description('行为类型: reply_text=回指定文本 / jump_url=跳转 / callback=仅结算'),
-  text: Schema.string().default('').description('reply_text: 点击后 bot 直接回复的文本'),
+  type: Schema.union(['reply_text', 'jump_url', 'callback', 'command']).default('reply_text').description('行为类型: reply_text=回指定文本 / jump_url=跳转 / callback=仅结算 / command=点击执行斜杠命令(如 bot-status)'),
+  text: Schema.string().default('').description('reply_text: 回复文本; command: 斜杠命令名(不带/, 如 bot-status)'),
   url: Schema.string().default('').description('jump_url: 跳转链接'),
 }).default({ type: 'reply_text', text: '', url: '' }).description('按钮 bot(非LLM)动作');
 
