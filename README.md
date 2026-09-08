@@ -262,6 +262,52 @@ npx @deepseek-ai/dsh web --patch /path/to/dsh-qqbot/cordis.dev.yml
 
 > 💡 `/outmode` 是她的"逃生开关"：即使处于 nothink(完全不思考)状态，SDK 直通命令也能把她唤醒——在 QQ 里发 `/outmode adaptive` 即可。
 
+## 用户扩展(自定义斜杠命令 / QQ 工具)(v0.9.8+)
+
+> 给"用户自己 + AI 自己"写扩展用的。写在**账号工作目录的扩展区**, 不碰插件本体——
+> 以后升级插件(换 node_modules)不会覆盖你的扩展。扩展=可执行 JS, 只在你自己的机器上跑。
+
+### 目录结构(每账号独立, 在账号的 cwd 下)
+```
+.qqbot-extensions/
+├── commands/    # 自定义斜杠命令(重启后生效)
+└── tools/       # 自定义 QQ 通道工具(AI 可调; 写完用 /tools-reload 或让 AI 调 tools_reload 热刷)
+```
+
+### 自定义斜杠命令: .qqbot-extensions/commands/xxx.mjs
+```js
+export default {
+  name: ['hello', '你好'],        // 命令名(可别名数组); QQ 群发 /hello 或 /你好 触发
+  description: '打招呼(示例)',
+  usage: '/hello [名字]',
+  handler: (ctx) => `👋 你好 ${ctx.command.raw || ''}`.trim(),  // 返回文本即回复
+};
+```
+改完**重启宿主**(`/bot-restart`)生效, 或直接问 AI(它知道规则)。
+
+### 自定义 QQ 工具: .qqbot-extensions/tools/xxx.mjs
+```js
+export default {
+  name: 'roll_dice',
+  description: '掷一颗 N 面骰子, 返回点数',
+  inputSchema: {                  // ⚠️ 可选参数不要写 required; 必填才写 required: true
+    sides: { type: 'integer', description: '骰子面数, 默认 6' },
+  },
+  // env: { cwd, manager, sender, replyTarget, exec } —— sender/replyTarget 可发 QQ 消息
+  run: async (args, env) => {
+    const sides = Math.max(2, Math.min(1000, Math.round(Number(args.sides) || 6)));
+    return { ok: true, msg: `🎲 ${1 + Math.floor(Math.random() * sides)}` };
+  },
+};
+```
+写完在 QQ 里发 `/tools-reload`(或直接让 AI 调 `tools_reload` 工具)即可用, 无需重启。
+
+### 给 AI 的要点(让 AI 帮用户写扩展时照此办)
+1. 命令/工具文件都放账号 cwd 的 `.qqbot-extensions/` 下, 别放插件包内。
+2. 工具入参 schema 用 JSON Schema 风格; **可选参数不带 required 字段**。
+3. 写完后告知用户: 命令需重启, 工具发 `/tools-reload` 或调 tools_reload。
+4. 返回统一 `{ ok, msg }`(工具)或纯文本(命令)。
+
 ## 富媒体指令（AI 回复里写标记，自动变成真消息）
 
 让 AI（或你替她）在回复正文里写以下标记，插件会自动拆出来发成真实的 QQ 消息，**标记本身不会显示**：

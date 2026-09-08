@@ -4,6 +4,21 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [0.9.8] - 2026-09-08
+
+### 新增
+- **用户扩展注册表(Phase 4)**: 用户/AI 可在账号 cwd 的 `.qqbot-extensions/` 写自定义内容, 升级插件不覆盖:
+  - `.qqbot-extensions/commands/` → 自定义**斜杠命令**(重启后生效, `/hello` 示例)
+  - `.qqbot-extensions/tools/` → 自定义 **QQ 通道工具**(AI 可调; `/tools-reload` 或 AI 调 `tools_reload` 热刷即可用, `roll_dice` 示例)
+- AI 工具 `tools_reload`: AI 写完扩展工具后可自助热刷注册(等价 `/tools-reload`, 不再依赖主人手发)。
+- `/bot-restart` 自动带 `--no-open`: 重启不再弹 web 浏览器标签页。
+- README/README_EN 新增「用户扩展」教程(含给 AI 的书写要点)。
+
+### 修复
+- 扩展加载 Windows 路径转 file:// URL(直接 import 绝对路径失败)。
+- 扩展工具入参 schema 可选参数不能带 `required:false`(dsh defineTool 规范), 文档已注明。
+- 扩展工具注册 cwd 解析加全局桥兜底(热刷路径 agent ctx 可能无 qqChannel)。
+
 ## [0.9.7] - 2026-09-08
 
 ### 新增

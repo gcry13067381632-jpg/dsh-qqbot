@@ -218,6 +218,36 @@ auto-cancelled when the agent is cancelled or dsh exits.
 | `/botplay` | List assembled interactive events; `/botplay <name>` triggers a keyboard card |
 | `/bot-help` | View all commands |
 
+## User Extensions (custom slash commands / QQ tools) (v0.9.8+)
+
+Extensions live under the **account workspace** (never inside the plugin package), so upgrading the plugin never overwrites them.
+
+```
+.qqbot-extensions/
+├── commands/    # custom slash commands (take effect after /bot-restart)
+└── tools/       # custom QQ tools callable by the AI (hot-reload via /tools-reload)
+```
+
+**Slash command** (`.qqbot-extensions/commands/hello.mjs`):
+```js
+export default {
+  name: ['hello', '你好'],
+  description: 'say hi',
+  handler: (ctx) => `👋 hi ${ctx.command.raw || ''}`.trim(),
+};
+```
+
+**QQ tool** (`.qqbot-extensions/tools/roll_dice.mjs`):
+```js
+export default {
+  name: 'roll_dice',
+  description: 'roll an N-sided die',
+  inputSchema: { sides: { type: 'integer', description: 'sides, default 6' } }, // optional params: no `required` key
+  run: async (args, env) => ({ ok: true, msg: `🎲 ${1 + Math.floor(Math.random() * 6)}` }),
+};
+```
+Then run `/tools-reload` (or ask the AI to call the `tools_reload` tool). Commands need a host restart.
+
 ## Core Modules
 
 ```

@@ -398,7 +398,7 @@ const DEMO_BOTPLAY_EVENTS: BotplayEventConfig[] = [
       visitedLabel: '已抽取',
       style: 1,
       botAction: { type: 'callback', text: '', url: '' },
-      llmEffect: { mode: 'append_wake', contextText: '用户点击了「今日运势」的抽签按钮, 想看看今天的运势' },
+      llmEffect: { mode: 'append_wake', contextText: '用户点击了「{name}」的抽签按钮, 想看看今天的运势' },
     }],
   },
 ];

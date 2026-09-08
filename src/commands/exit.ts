@@ -17,7 +17,10 @@ import type { SlashCommand } from '@tencent-connect/qqbot-nodejs';
 export function selfRestart(delayMs = 1600, killWaitMs = 2000): boolean {
   try {
     const exe = process.execPath;              // node 路径(动态)
-    const args = process.argv.slice(1);        // 宿主启动参数(动态, 如 [bin.js, 'web'])
+    // 宿主启动参数(动态, 如 [bin.js, 'web'])——自重启强制带 --no-open:
+    // 后台重启不再弹浏览器标签页(dsh web 启动默认开浏览器; 主人 2026-09-08 定)。
+    const args = [...process.argv.slice(1)];
+    if (!args.includes('--no-open')) args.push('--no-open');
     const pid = process.pid;                    // 当前宿主 PID(自己)
     const cwd = process.cwd();
 

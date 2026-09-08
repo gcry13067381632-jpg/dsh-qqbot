@@ -25,18 +25,25 @@ import { attachmentProcessor } from '../middleware/attachment.js';
 import { mediaHistoryBuffer } from '../middleware/media-history.js';
 import { stickerCapture } from '../middleware/sticker-capture.js';
 import { getHistoryStore, historyGroupKey } from '../features/history-store.js';
+import { loadExtensionCommands } from '../features/extension-store.js';
 import { stickerActivityRecorder } from '../features/sticker-gate.js';
 import { chatLedgerRecorder } from '../features/chat-ledger.js';
 import { debounceLayer } from './debounce.js';
 import { faceTagResolver } from '../features/face-tags.js';
 import { join } from 'node:path';
 
-export function setupMiddlewares(
+export async function setupMiddlewares(
   bot: QQBot,
   config: ImQQBotConfig,
   manager: SessionManager,
   logger: Logger,
-): void {
+): Promise<void> {
+  // 0. 用户扩展命令(P4.1): 加载插件包外扩展目录的命令, 并入下方 cmdList/slash,
+  //    群聊前置解析 cmdMap 与 SDK slash 双通道自然覆盖 → /扩展命令 重启后即用。
+  const extensionCommands = await loadExtensionCommands(config.cwd, logger);
+  if (extensionCommands.length > 0) {
+    logger.info(`[im-qqbot] 用户扩展命令已加载: ${extensionCommands.length} 个`);
+  }
   // 1. 错误兜底（最外层洋葱皮）
   bot.use(errorHandler());
 
@@ -131,7 +138,8 @@ export function setupMiddlewares(
   bot.use(debounceLayer(config, manager, logger, lastDispatchAt));
 
   // 8. 斜杠命令（在 concurrencyGuard 之前，命令匹配后不排队直接响应）
-  const cmdList = buildCommandList({ manager, config });
+  //    基础命令 + 用户扩展命令(P4.1)合并 → cmdMap 与 SDK slash 双通道覆盖
+  const cmdList = [...buildCommandList({ manager, config }), ...extensionCommands];
   // 群聊放开"必须 @bot"限制(SDK 硬性要求 @ 才触发, 导致直发 /cmd 变文本):
   // 前置解析已知命令(除 stop/bot-stop——保留给下方 concurrencyGuard 的 urgent 打断链路)。类型宽松以适配 SDK ctx。
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

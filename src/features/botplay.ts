@@ -48,10 +48,10 @@ function defaultContextText(eventName: string, buttonLabel: string): string {
   return `[互动事件·${eventName}] bot 发送了互动卡片, 用户点击了「${buttonLabel}」`;
 }
 
-/** 按模板渲染: 支持 {label} 占位; 末尾自动附加点击人身份(openid, 尽力带昵称) */
+/** 按模板渲染: 支持 {name}(事件名) {label}(按钮文字) 占位; 末尾自动附加点击人身份(尽力带昵称) */
 function renderContext(tpl: string | undefined, eventName: string, buttonLabel: string, clicker: string): string {
   let base = tpl && tpl.trim() ? String(tpl) : defaultContextText(eventName, buttonLabel);
-  base = base.replace(/\{label\}/g, buttonLabel);
+  base = base.replace(/\{name\}/g, eventName).replace(/\{label\}/g, buttonLabel);
   // 点击人信息: 模板未显式包含时统一补一行(保证 AI 知道"谁点了")
   if (clicker && base.indexOf(clicker) < 0) {
     base += `\n(点击人: ${clicker})`;

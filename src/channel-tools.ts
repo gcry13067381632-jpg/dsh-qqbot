@@ -17,6 +17,7 @@ import { autoTagImage } from './features/sticker-tagger.js';
 import { isStickerGateDenied } from './features/sticker-gate.js';
 import { getScheduleStore } from './features/schedule-store.js';
 import { switchOutboundMode } from './features/outbound-mode-switch.js';
+import { loadExtensionTools } from './features/extension-store.js';
 
 /** 诊断日志路径: 默认关闭; 需要排查时设环境变量 QQBOT_DIAG_FILE 指向日志文件 */
 const DIAG_FILE = process.env.QQBOT_DIAG_FILE || '';
@@ -40,6 +41,15 @@ function notifySession(sess: unknown, text: string): void {
 function diag(line: string): void {
   if (!DIAG_FILE) return;
   try { appendFileSync(DIAG_FILE, `${new Date().toISOString()} ${line}\n`); } catch { /* ignore */ }
+}
+
+/** 扩展工具注册诊断(固定落盘, 不依赖环境变量; 排查扩展没进工具列表用) */
+function extDiag(line: string): void {
+  try {
+    const home = process.env.USERPROFILE || process.env.HOME || '';
+    if (!home) return;
+    appendFileSync(home.replace(/\\/g, '/') + '/.dsh/qqbot-ext-diag.log', `[${new Date().toISOString()}] ${line}\n`);
+  } catch { /* ignore */ }
 }
 
 /** qqChannel service 形状：由 dsh-qqbot 在 QQ 会话 ctx 上 provide */
@@ -132,7 +142,7 @@ function stickerStoreOf(exec: { agent?: unknown }): ReturnType<typeof getSticker
 }
 
 /** 装载本插件时把 qqChannel 一并注入(由 dsh-qqbot setup 提供) */
-export function apply(ctx: Context): void {
+export async function apply(ctx: Context): Promise<void> {
   const toolsAny = (ctx as { tools?: unknown }).tools as { register?: (t: unknown) => unknown } | undefined;
   diag(`apply 调用: tools=${typeof toolsAny} register=${typeof toolsAny?.register} ctxKeys=${Object.keys(ctx as object).slice(0, 12).join(',')}`);
 
@@ -900,11 +910,37 @@ export function apply(ctx: Context): void {
     },
   });
 
+  // tools_reload: 热刷新 QQ 通道工具(2026-09-08, 主人建议)——AI 自己写完扩展工具后,
+  // 调本工具即可让新扩展注册进当前会话(等价于 /tools-reload 斜杠), 不再依赖主人手发。
+  const toolsReloadTool = defineTool({
+    name: 'tools_reload',
+    description: '热刷新 QQ 通道工具: 重新扫描并注册扩展目录(.qqbot-extensions/tools)里的用户工具+重载内置工具。写完/更新扩展工具后调用一次, 下条消息即可用新工具(等价于 /tools-reload)。开发/装配用, 平时不需要调。',
+    parameters: {},
+    output: {
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: { ok: { type: 'boolean', required: true }, msg: { type: 'string', required: true } },
+      },
+      render: (_a, v: { ok: boolean; msg: string }) => [{ type: 'text' as const, text: v.ok ? v.msg : `失败: ${v.msg}` }],
+    },
+    async execute(_args, exec) {
+      const sess = findSessionRec(channelOf(exec as never), exec);
+      if (!sess) return { ok: false, msg: '未找到当前 QQ 会话(通道未就绪), 请稍后重试' };
+      try {
+        const summary = await sess.ch.manager.reloadAllChannelTools();
+        return { ok: true, msg: summary };
+      } catch (e) {
+        return { ok: false, msg: e instanceof Error ? e.message : String(e) };
+      }
+    },
+  });
+
   // 逐个注册并记录结果(便于线上定位是哪个工具失败)
   const toolDefs: Array<{ name: string; tool: unknown }> = [
     { name: 'send_media', tool: sendMediaTool },
     { name: 'recall_message', tool: recallTool },
     { name: 'text_break', tool: textBreakTool },
+    { name: 'tools_reload', tool: toolsReloadTool },
     { name: 'reply_gate', tool: replyGateTool },
     { name: 'outbound_mode', tool: outboundModeTool },
     { name: 'group_join_requests', tool: listJoinRequestsTool },
@@ -935,5 +971,71 @@ export function apply(ctx: Context): void {
       ctx.logger?.warn?.(`[channel-tools] 注册失败 ${t.name}: ${msg}`);
       diag(`注册失败: ${t.name} → ${msg}`);
     }
+  }
+
+  // ── P4.2 用户扩展工具: 扫描 {cwd}/.qqbot-extensions/tools/ 并注册 ──
+  // 扩展文件 run(args, env) 可拿: { cwd, manager, sender, replyTarget, logger }
+  // (调用方 session-manager 已 await mountChannelTools, 此处 await 加载不影响时序)。
+  try {
+    const qqCh = (() => {
+      try { return (ctx as unknown as { get?: (n: string) => unknown }).get?.('qqChannel') as QQChannel | undefined; } catch { return undefined; }
+    })();
+    // cwd 解析: ①agent ctx qqChannel; ②全局桥(热刷/自愈路径 ctx 可能无 qqChannel); ③ctx.cwd; ④进程 cwd
+    const bridgeCh = channelBridges.length ? channelBridges[channelBridges.length - 1] : undefined;
+    const extCwd = (qqCh?.manager?.cwd as string | undefined)
+      || (bridgeCh?.manager?.cwd as string | undefined)
+      || (ctx as { cwd?: string }).cwd
+      || process.cwd();
+    const defs = await loadExtensionTools(extCwd, (ctx.logger ?? console) as Parameters<typeof loadExtensionTools>[1]);
+    extDiag(`apply extCwd=${extCwd} defs=${defs.length} qqCh=${!!qqCh} bridge=${!!bridgeCh}`);
+    for (const def of defs) {
+      try {
+        const tool = defineTool({
+          name: def.name,
+          description: def.description + ' (用户扩展工具)',
+          parameters: def.inputSchema as never,
+          output: {
+            schema: {
+              type: 'object', additionalProperties: false,
+              properties: { ok: { type: 'boolean', required: true }, msg: { type: 'string', required: true } },
+            },
+            render: (_a, v: { ok: boolean; msg: string }) => [{ type: 'text' as const, text: v.ok ? v.msg : `失败: ${v.msg}` }],
+          },
+          async execute(args, exec) {
+            const sess = findSessionRec(channelOf(exec as never), exec as never);
+            const env: Record<string, unknown> = {
+              cwd: extCwd,
+              manager: sess?.ch.manager,
+              sender: sess?.ch.sender,
+              replyTarget: sess?.rec.replyTarget,
+              exec,
+            };
+            try {
+              const r = await def.run(args as Record<string, unknown>, env) as { ok?: boolean; msg?: string } | string | undefined | null;
+              if (r && typeof r === 'object') return { ok: r.ok === true, msg: String(r.msg ?? 'done') };
+              return { ok: true, msg: r === undefined || r === null ? 'done' : String(r) };
+            } catch (err) {
+              return { ok: false, msg: err instanceof Error ? err.message : String(err) };
+            }
+          },
+        });
+        ctx.tools.register(tool as never);
+        ctx.logger?.info?.(`[channel-tools] 已注册扩展工具: ${def.name}`);
+        diag(`扩展工具注册成功: ${def.name}`);
+        extDiag(`注册成功: ${def.name}`);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (/already registered/i.test(msg)) {
+          extDiag(`already registered: ${def.name}`);
+          continue;
+        }
+        ctx.logger?.warn?.(`[channel-tools] 扩展工具注册失败 ${def.name}: ${msg}`);
+        diag(`扩展工具注册失败: ${def.name} → ${msg}`);
+        extDiag(`注册失败: ${def.name} → ${msg}`);
+      }
+    }
+  } catch (err) {
+    ctx.logger?.warn?.(`[channel-tools] 扩展工具加载异常(已忽略): ${err instanceof Error ? err.message : String(err)}`);
+    extDiag(`加载异常: ${err instanceof Error ? err.message : String(err)}`);
   }
 }

@@ -64,6 +64,11 @@ export class SessionManager {
     this.channelSender = sender;
   }
 
+  /** 本实例工作目录(多账号独立; 缺省进程 cwd) */
+  public get cwd(): string {
+    return this.config.cwd || process.cwd();
+  }
+
   /** 本实例图库目录(多账号: 每实例 cwd 独立; config.sticker.dataDir 可覆盖) */
   public get stickerDataDir(): string {
     return this.config.sticker?.dataDir || join(this.config.cwd || process.cwd(), '表情包');

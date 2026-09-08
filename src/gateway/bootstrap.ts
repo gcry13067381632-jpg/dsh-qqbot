@@ -100,7 +100,7 @@ export async function bootstrapGateway(
   logger.info(`QQBot SDK initialized (UA: ${userAgent})${watchJoinRequests ? ' [watchJoinRequests: GROUP_MEMBER_EVENT 已订阅]' : ''}`);
 
   // ── 中间件链 ──
-  setupMiddlewares(bot, config, manager, logger);
+  await setupMiddlewares(bot, config, manager, logger);
 
   // ── 入站：经过中间件链后的消息交给 dsh agent ──
   bot.on('message', async (mCtx: MiddlewareContext) => {

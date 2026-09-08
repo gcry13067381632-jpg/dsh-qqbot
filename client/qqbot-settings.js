@@ -2278,18 +2278,23 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             body += '<div class="dk-row"><label style="font-size:12px;color:#555;width:56px">id</label><input class="qqs-txt" id="dk-bp-id" value="' + esc(D.id) + '" style="flex:1" placeholder="英文/数字/_- (触发用)"></div>'
             body += '<div class="dk-row"><label style="font-size:12px;color:#555;width:56px">权限</label>'
               + '<select class="qqs-sel" id="dk-bp-perm">' + ['all','triggerer','owner','users'].map(function (p) { return '<option value="' + p + '"' + (D.perm && D.perm.type === p ? ' selected' : '') + '>' + ({ all: '所有人', triggerer: '仅触发者本人(推荐)', owner: '主人白名单', users: '指定openid' }[p]) + '</option>' }).join('') + '</select>'
+              + (D.perm && D.perm.type === 'users'
+                ? '<input class="qqs-txt" id="dk-bp-users" value="' + esc(((D.perm.userIds) || []).join(', ')) + '" placeholder="指定 openid(逗号分隔)" style="flex:1;min-width:160px">'
+                : '')
               + '<label style="font-size:12px;color:#555">有效期(s)</label><input class="qqs-txt" id="dk-bp-expire" type="number" min="30" value="' + (D.expireSec || 600) + '" style="width:70px">'
               + '<label style="font-size:12px;color:#555">总次数(0不限)</label><input class="qqs-txt" id="dk-bp-max" type="number" min="0" value="' + (D.maxClicks || 0) + '" style="width:60px"></div>'
             body += '<div style="font-weight:700;font-size:12px;margin:6px 0 2px;color:#4a3a9f">按钮(最多 5 个)</div>'
             ;(D.buttons || []).forEach(function (b, bi) {
               var bt = (b.botAction && b.botAction.type) || 'reply_text'
               var md = (b.llmEffect && b.llmEffect.mode) || 'no_append'
+              var ctx = (b.llmEffect && b.llmEffect.contextText) || ''
               body += '<div class="dk-item" style="border:1px solid #f0ecff;border-radius:8px;margin:3px 0;padding:4px 6px">'
                 + '<input class="qqs-txt" data-bplabel="' + bi + '" value="' + esc(b.label) + '" placeholder="按钮文字" style="flex:1;min-width:90px">'
                 + '<select class="qqs-sel" data-bpact="' + bi + '">' + ['reply_text','jump_url','callback'].map(function (t) { return '<option value="' + t + '"' + (bt === t ? ' selected' : '') + '>' + ({ reply_text: '回文本', jump_url: '跳链接', callback: '仅结算' }[t]) + '</option>' }).join('') + '</select>'
                 + '<select class="qqs-sel" data-bpmode="' + bi + '">' + ['no_append','append_silent','append_wake'].map(function (m) { return '<option value="' + m + '"' + (md === m ? ' selected' : '') + '>' + ({ no_append: '不影响AI', append_silent: '记录不唤醒', append_wake: '记录并唤醒AI' }[m]) + '</option>' }).join('') + '</select>'
                 + '<button class="dk-btn no" data-bpdelbtn="' + bi + '">✕</button></div>'
-                + '<input class="qqs-txt" data-bptext="' + bi + '" value="' + esc((b.botAction && b.botAction.text) || '') + '" placeholder="点击后 bot 回复的文本(回文本时用)" style="width:calc(100% - 8px);box-sizing:border-box;margin:0 0 4px 4px">'
+                + '<input class="qqs-txt" data-bpacttext="' + bi + '" value="' + esc((b.botAction && b.botAction.text) || '') + '" placeholder="点击后 bot 直接回复的文本(回文本时用)" style="width:calc(100% - 8px);box-sizing:border-box;margin:0 0 4px 4px">'
+                + '<input class="qqs-txt" data-bpctx="' + bi + '" value="' + esc(ctx) + '" placeholder="(记录/唤醒AI时)对AI说的话, 支持 {name} 事件名 {label} 按钮名; 空=默认" style="width:calc(100% - 8px);box-sizing:border-box;margin:0 0 4px 4px">'
             })
             body += '<div class="dk-row"><button class="dk-btn" id="dk-bp-addbtn">➕ 加按钮</button>'
               + '<span class="dk-msg">按钮上限 5 个(QQ 键盘限制)</span></div>'
@@ -2469,12 +2474,21 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         var bpId = panel.querySelector('#dk-bp-id')
         if (bpId) bpId.oninput = function (e) { state.bpDraft.id = e.target.value.trim() }
         var bpPerm = panel.querySelector('#dk-bp-perm')
-        if (bpPerm) bpPerm.onchange = function (e) { state.bpDraft.perm = state.bpDraft.perm || {}; state.bpDraft.perm.type = e.target.value }
+        if (bpPerm) bpPerm.onchange = function (e) {
+          state.bpDraft.perm = state.bpDraft.perm || {}
+          state.bpDraft.perm.type = e.target.value
+          paintBody() // users 档要显示 openid 输入框
+        }
+        var bpUsers = panel.querySelector('#dk-bp-users')
+        if (bpUsers) bpUsers.oninput = function (e) {
+          state.bpDraft.perm = state.bpDraft.perm || {}
+          state.bpDraft.perm.userIds = String(e.target.value || '').split(/[,，\s]+/).map(function (s) { return s.trim() }).filter(Boolean)
+        }
         var bpExpire = panel.querySelector('#dk-bp-expire')
         if (bpExpire) bpExpire.oninput = function (e) { state.bpDraft.expireSec = Math.max(30, Number(e.target.value) || 600) }
         var bpMax = panel.querySelector('#dk-bp-max')
         if (bpMax) bpMax.oninput = function (e) { state.bpDraft.maxClicks = Math.max(0, Number(e.target.value) || 0) }
-        // 按钮行编辑(label/botAction.type/llmEffect.mode/删除/回复文本)
+        // 按钮行编辑(label/botAction.type/llmEffect.mode/删除/回复文本/对AI说的话)
         var bpBtns = panel.querySelectorAll('[data-bplabel]')
         bpBtns.forEach(function (inp) {
           var bi = Number(inp.getAttribute('data-bplabel'))
@@ -2499,12 +2513,20 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             state.bpDraft.buttons[bi].llmEffect.mode = e.target.value
           }
         })
-        var bpTexts = panel.querySelectorAll('[data-bptext]')
+        var bpTexts = panel.querySelectorAll('[data-bpacttext]')
         bpTexts.forEach(function (inp) {
-          var bi = Number(inp.getAttribute('data-bptext'))
+          var bi = Number(inp.getAttribute('data-bpacttext'))
           inp.oninput = function (e) {
             state.bpDraft.buttons[bi].botAction = state.bpDraft.buttons[bi].botAction || {}
             state.bpDraft.buttons[bi].botAction.text = e.target.value
+          }
+        })
+        var bpCtxs = panel.querySelectorAll('[data-bpctx]')
+        bpCtxs.forEach(function (inp) {
+          var bi = Number(inp.getAttribute('data-bpctx'))
+          inp.oninput = function (e) {
+            state.bpDraft.buttons[bi].llmEffect = state.bpDraft.buttons[bi].llmEffect || {}
+            state.bpDraft.buttons[bi].llmEffect.contextText = e.target.value
           }
         })
         var bpDelBtn = panel.querySelectorAll('[data-bpdelbtn]')
