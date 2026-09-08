@@ -255,7 +255,7 @@ export async function apply(ctx: Context): Promise<void> {
 
   const listStickersTool = defineTool({
     name: 'list_stickers',
-    description: '(只读,不发图)查本地表情包库,返回图片本地绝对路径+标签+详细描述。当你被@且语境适合回一张表情包/梗图(对方发图想接梗、自嘲、庆祝、吐槽)时,先调用它搜库;每张的"描述"会说明画面和适合的场合,据此挑最贴切的一张,再用 send_media(kind=image,source=该本地路径) 发 0~1 张。纪律:无强语境或拿不准→不查也不发;描述与想表达不合→只发文字。query 可为空(返回最近收藏)。',
+    description: '(QQ聊天加分项,气氛对就大胆用!)查本地表情包库,返回图片本地路径+标签+详细描述。想用图回应的时刻——对方发图(接梗/回图)、爆笑/自嘲/庆祝/被夸/共鸣/话题热闹——**先**调它按情绪关键词搜库(query可空=最近收藏), 从返回里挑最贴切的一张, 用 send_media(kind=image, source=该路径) 发出去(0~1张, 一次最多一张)。每张的"描述"写着画面和适用场合帮你挑准; 只有实在查不到贴切的, 才退而回纯文字。别老憋着——QQ 聊天带张好图比干巴巴文字生动多了。',
     parameters: {
       query: { type: 'string', description: '语义关键词(可空=最近收藏; 会匹配标签和描述)' },
       tag: { type: 'string', description: '标签过滤(可空)' },
