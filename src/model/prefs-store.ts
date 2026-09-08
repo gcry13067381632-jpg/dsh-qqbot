@@ -17,11 +17,19 @@ import type { ModelRoute } from './types.js';
 /** 日志回调（可选） */
 type DebugFn = (msg: string) => void;
 
+/** 会话创建时的配置指纹(2026-09-08, 响应上游 issue #43: cwd/preset 改了要能换新会话) */
+export interface SessionCfgFingerprint {
+  cwd?: string;
+  preset?: string;
+}
+
 /** 隔离偏好文件结构 */
 interface PrefsFile {
   overrides: Record<string, ModelRoute>;
   /** sessionKey → 最新 sessionId（fork 后更新，用于重启后恢复到 fork 后的会话） */
   sessionIds: Record<string, string>;
+  /** sessionKey → 该会话创建时的 cwd/preset 指纹(判断配置变更, 变了就不 resume 旧会话) */
+  sessionCfg?: Record<string, SessionCfgFingerprint>;
 }
 
 export class PrefsStore {
@@ -29,6 +37,8 @@ export class PrefsStore {
   private overrides = new Map<string, ModelRoute>();
   /** per-peer 最新 sessionId（fork 后更新，内存态） */
   private sessionIds = new Map<string, string>();
+  /** per-peer 会话配置指纹（内存态） */
+  private sessionCfg = new Map<string, SessionCfgFingerprint>();
   /** 隔离偏好文件路径 */
   private readonly prefsPath: string;
   private readonly debugLog?: DebugFn;
@@ -77,6 +87,24 @@ export class PrefsStore {
     return deleted;
   }
 
+  // ── 会话配置指纹操作 ──
+
+  getSessionCfg(sessionKey: string): SessionCfgFingerprint | undefined {
+    return this.sessionCfg.get(sessionKey);
+  }
+
+  setSessionCfg(sessionKey: string, cfg: SessionCfgFingerprint): void {
+    this.sessionCfg.set(sessionKey, cfg);
+    this.write();
+  }
+
+  /** 清 sessionId 时连带清指纹(重置会话 = 抛弃旧配置记录) */
+  clearSessionCfg(sessionKey: string): boolean {
+    const deleted = this.sessionCfg.delete(sessionKey);
+    if (deleted) this.write();
+    return deleted;
+  }
+
   // ── 私有方法 ──
 
   private load(): void {
@@ -95,6 +123,13 @@ export class PrefsStore {
         for (const [key, sessionId] of Object.entries(data.sessionIds)) {
           if (typeof sessionId === 'string' && sessionId) {
             this.sessionIds.set(key, sessionId);
+          }
+        }
+      }
+      if (data.sessionCfg && typeof data.sessionCfg === 'object') {
+        for (const [key, cfg] of Object.entries(data.sessionCfg)) {
+          if (cfg && typeof cfg === 'object') {
+            this.sessionCfg.set(key, { cwd: cfg.cwd, preset: cfg.preset });
           }
         }
       }
@@ -120,6 +155,7 @@ export class PrefsStore {
       const data: PrefsFile = {
         overrides: Object.fromEntries(this.overrides.entries()),
         sessionIds: Object.fromEntries(this.sessionIds.entries()),
+        ...(this.sessionCfg.size > 0 ? { sessionCfg: Object.fromEntries(this.sessionCfg.entries()) } : {}),
       };
       // 2026-09-06 (PR #41): 原子写入 —— 先写 .tmp 再 renameSync 覆盖(同卷 rename 原子, OS 保证)。
       // 旧行为 writeFileSync 就地全量覆盖, 写盘瞬间进程被 kill → 留下半截 JSON, 下次 load 静默重置。

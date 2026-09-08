@@ -38,8 +38,15 @@ export async function apply(ctx: Context, config: ImQQBotConfig): Promise<void> 
   const ns = (config.settingsNs ?? '').trim() || 'im-qqbot';
   const isMain = ns === 'im-qqbot';
 
+  // ── 账号实例化: appId/appSecret/cwd/preset 都做 env 兜底(2026-09-08, 响应上游 issue #43) ──
+  // 背景: cordis.patch.yml 的 im-qqbot config 里 cwd/preset 可能未被 dsh 框架完整传入 apply()
+  // (上游 tencent-connect/dsh-qqbot issue #43), appId/appSecret 靠 QQBOT_APPID/SECRET 兜底才"看似正常"。
+  // 这里给 cwd/preset 同样提供 env 兜底: 优先 patch 传入值 → 环境变量 → 留空(走进程 cwd/全局默认)。
+  // ⚠️ 不做硬编码默认(上游用户在 dist 里写死 /mnt/... 不可移植), env 兜底通用且可覆盖。
   let appId = resolveEnv(config.appId, 'QQBOT_APPID');
   let appSecret = resolveEnv(config.appSecret, 'QQBOT_SECRET');
+  const cwdOverride = resolveEnv(config.cwd ?? '', 'QQBOT_CWD') || undefined;
+  const presetOverride = resolveEnv(config.preset ?? '', 'QQBOT_PRESET') || undefined;
 
   // ── 凭据缺失 ──
   if (!appId || !appSecret) {
@@ -74,7 +81,14 @@ export async function apply(ctx: Context, config: ImQQBotConfig): Promise<void> 
     logger.warn('凭据未能持久化，本次进程将使用环境变量凭据启动（重启后需重新绑定）');
   }
 
-  const resolvedConfig: ImQQBotConfig = { ...config, appId, appSecret };
+  const resolvedConfig: ImQQBotConfig = {
+    ...config,
+    appId,
+    appSecret,
+    // cwd/preset: patch 值优先, env 兜底(QQBOT_CWD / QQBOT_PRESET), 都没有则留原值(进程 cwd/全局默认)
+    ...(cwdOverride ? { cwd: cwdOverride } : {}),
+    ...(presetOverride ? { preset: presetOverride } : {}),
+  };
 
   // ── Web 可视化设置: 注册 im-qqbot settings 命名空间(可编辑子集, live 生效) ──
   // 用户层存 ~/.dsh/settings.yaml; 变更经 watch 原地覆盖 resolvedConfig 对应字段,

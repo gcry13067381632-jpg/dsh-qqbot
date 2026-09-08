@@ -155,6 +155,34 @@ export class SessionManager {
       return;
     }
 
+    // fork 旧会话历史作为 seed → 子会话保留上下文继续聊(换模型不丢记忆)
+    await this.forkCurrentSession(key, record, route, true);
+  }
+
+  /**
+   * 开新会话(2026-09-08 修 /bot-new 假实现):
+   * 当前会话 fork 成 childId(旧会话存档为 parent, 磁盘记录仍在可回看),
+   * 同一模型/预设建新 agent 替换活跃记录。inherit=true 继承旧对话上下文(切模型用);
+   * false = 全新空档(不继承旧上下文, 旧会话存档可回看)。
+   */
+  async startNewSession(scope: ChatScope, peerId: string, inherit = false): Promise<boolean> {
+    const key = this.sessionKey(scope, peerId);
+    const record = this.sessions.get(key);
+    if (!record) return false;
+
+    const route = this.modelResolver.getEffectiveRoute(key);
+    await this.forkCurrentSession(key, record, route, inherit);
+    return true;
+  }
+
+
+  /** fork 当前会话 → 新 childId; inherit=true 用旧历史做 seed(切模型), false 全新空档; 失败降级 dispose */
+  private async forkCurrentSession(
+    key: string,
+    record: SessionRecord,
+    route: ModelRoute | undefined,
+    inherit: boolean,
+  ): Promise<void> {
     const sessionsService = this.getSessionsService();
     if (!sessionsService) {
       this.logger.warn(`fork unavailable, fallback to dispose: key=${key}`);
@@ -164,15 +192,17 @@ export class SessionManager {
       return;
     }
 
-    let seed: readonly unknown[];
-    try {
-      seed = sessionsService.fork(record.agent.session).events;
-    } catch (err) {
-      this.logger.warn(`fork failed, fallback to dispose: key=${key} err=${err instanceof Error ? err.message : String(err)}`);
-      this.sessions.delete(key);
-      record.agent.cancel({ kind: 'user' });
-      await record.handle.dispose().catch(() => {});
-      return;
+    let seed: readonly unknown[] | undefined;
+    if (inherit) {
+      try {
+        seed = sessionsService.fork(record.agent.session).events;
+      } catch (err) {
+        this.logger.warn(`fork failed, fallback to dispose: key=${key} err=${err instanceof Error ? err.message : String(err)}`);
+        this.sessions.delete(key);
+        record.agent.cancel({ kind: 'user' });
+        await record.handle.dispose().catch(() => {});
+        return;
+      }
     }
 
     const childId = SessionId(randomUUID());
@@ -180,14 +210,14 @@ export class SessionManager {
     const composed = await this.composePreset(this.config.preset);
     const created = await this.agents.create({
       sessionId: childId,
-      seed,
+      ...(seed ? { seed } : {}),
       meta: {
         cwd: this.config.cwd || process.cwd(),
         parentSession: record.sessionId,
-        seedLength: seed.length,
+        ...(seed ? { seedLength: seed.length } : {}),
         ...(composed.agentPreset ? { agentPreset: composed.agentPreset } : {}),
       },
-      agentOptions: route,
+      ...(route ? { agentOptions: route } : {}),
       ...(composed.setup ? { setup: composed.setup } : {}),
     });
 
@@ -201,7 +231,7 @@ export class SessionManager {
     record.lastActivity = Date.now();
 
     void oldHandle.dispose().catch(() => {});
-    this.logger.info(`model switched via fork: key=${key} → ${route.provider}/${route.model} sessionId=${childId}`);
+    this.logger.info(`forked session: key=${key} → ${childId} ${seed ? '(继承历史)' : '(全新空档, 旧会话存档为 parent)'} route=${route ? `${route.provider}/${route.model}` : 'session-own'}`);
   }
 
   clearModelOverride(scope: ChatScope, peerId: string): void {
@@ -388,11 +418,37 @@ export class SessionManager {
     replyTarget: ReplyTarget,
   ): Promise<SessionRecord> {
     const key = this.sessionKey(scope, peerId);
-    const existing = this.sessions.get(key);
+    const wantCwd = this.config.cwd || process.cwd();
+    const prevCfg = this.modelResolver.getSessionCfg(key);
 
+    // ── cwd 指纹校验(2026-09-08, 响应上游 issue #43: cwd 改了要能换会话) ──
+    // 背景: sessionId 由 sessionKey 确定性派生, 与 cwd 无关 → 改 cwd 后 resume 仍命中旧 cwd 会话。
+    // ⚠️ 只比 cwd 不比 preset: preset 有热更新通道(dock 人格编辑器保存即热更), 改 preset 不应扔会话历史。
+    // 变更处理:
+    //   ① 活跃会话在内存 → fork 继承历史 + 新 cwd 建新档(对话无缝迁移, 旧档存档可回看)= 热迁移
+    //   ② 无活跃会话(重启后首条消息)→ 无法 fork 旧会话(不在内存), 清记录走 create 用新 cwd(旧文件保留可回看)
+    if (prevCfg && (prevCfg.cwd ?? '') !== wantCwd) {
+      const active = this.sessions.get(key);
+      if (active) {
+        this.logger.info(`getOrCreate: cwd 已变更, fork 热迁移(继承历史): key=${key} old=${prevCfg.cwd ?? '(未记录)'} new=${wantCwd}`);
+        // forkCurrentSession 内部用 this.config.cwd(新值)建子会话并继承历史 seed;
+        // fork 后 active 记录的 sessionId/agent 已被替换为新档, 直接补 target 返回即可。
+        await this.forkCurrentSession(key, active, this.modelResolver.getEffectiveRoute(key), true);
+        active.replyTarget = replyTarget;
+        active.lastActivity = Date.now();
+        return active;
+      }
+      this.logger.info(`getOrCreate: cwd 已变更且无活跃会话, 弃旧开新: key=${key} old=${prevCfg.cwd ?? '(未记录)'} new=${wantCwd}(旧会话文件保留)`);
+      this.modelResolver.clearSessionId(key);
+      this.modelResolver.clearSessionCfg(key);
+    }
+
+    const existing = this.sessions.get(key);
     if (existing) {
       existing.replyTarget = replyTarget;
       existing.lastActivity = Date.now();
+      // 会话已存在且配置一致 → 指纹刷新为当前值(防止误判)
+      try { this.modelResolver.setSessionCfg(key, { cwd: wantCwd }); } catch { /* ignore */ }
       return existing;
     }
 
@@ -422,6 +478,8 @@ export class SessionManager {
         agent = resumed.agent;
         handle = resumed;
         this.logger.info(`resumed session: key=${key} preset=${agentPreset ?? 'none'} route=${resumeRoute ? `${resumeRoute.provider}/${resumeRoute.model}` : 'session-own'}`);
+        // 更新配置指纹(会话已存在且配置一致 → 指纹刷新为当前值)
+        try { this.modelResolver.setSessionCfg(key, { cwd: wantCwd }); } catch { /* ignore */ }
       } catch {
         const created = await this.agents.create({
           sessionId,
@@ -435,6 +493,8 @@ export class SessionManager {
         agent = created.agent;
         handle = created;
         this.logger.info(`created new session: key=${key} preset=${agentPreset ?? 'none'}`);
+        // 记录配置指纹(create 用当前 cwd/preset; 下次配置变更据此弃旧开新)
+        try { this.modelResolver.setSessionCfg(key, { cwd: wantCwd }); } catch { /* ignore */ }
       }
     }
 

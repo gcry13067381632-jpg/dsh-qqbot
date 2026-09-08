@@ -108,6 +108,21 @@ export class ModelResolver {
     this.prefs.clearSessionId(sessionKey);
   }
 
+  /** 读会话配置指纹(cwd/preset; issue #43: 判断配置是否变更) */
+  getSessionCfg(sessionKey: string): import('./prefs-store.js').SessionCfgFingerprint | undefined {
+    return this.prefs.getSessionCfg(sessionKey);
+  }
+
+  /** 记会话配置指纹 */
+  setSessionCfg(sessionKey: string, cfg: import('./prefs-store.js').SessionCfgFingerprint): void {
+    this.prefs.setSessionCfg(sessionKey, cfg);
+  }
+
+  /** 清会话配置指纹(重置会话时连带) */
+  clearSessionCfg(sessionKey: string): void {
+    this.prefs.clearSessionCfg(sessionKey);
+  }
+
   /**
    * 解析默认模型路由（不含 per-peer 偏好）
    *
