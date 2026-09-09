@@ -19,6 +19,7 @@ import { getScheduleStore } from './features/schedule-store.js';
 import { switchOutboundMode } from './features/outbound-mode-switch.js';
 import { loadExtensionTools } from './features/extension-store.js';
 import { verifyHuman } from './api/group-admin.js';
+import { wakeSessionAgent } from './features/group-hub.js';
 
 /** 诊断日志路径: 默认关闭; 需要排查时设环境变量 QQBOT_DIAG_FILE 指向日志文件 */
 const DIAG_FILE = process.env.QQBOT_DIAG_FILE || '';
@@ -28,6 +29,20 @@ const FILE_ASYNC_MIN = 5 * 1024 * 1024;
 const TURN_WAIT_MS = 60_000;
 let bgSeq = 0;
 function fmtMB(n: number): string { return (n / 1048576).toFixed(1) + 'MB'; }
+/** 从 exec 取 logger(ctx.logger), 拿不到用 console 兜底(类型兼容 Logger) */
+function loggerLike(exec: { agent?: unknown }): import('./types.js').Logger {
+  try {
+    const a = exec.agent as { ctx?: { logger?: import('./types.js').Logger } } | undefined;
+    if (a?.ctx?.logger) return a.ctx.logger;
+  } catch { /* 忽略 */ }
+  const c = console;
+  return {
+    info: (m: string, ...args: unknown[]) => c.info(m, ...args),
+    warn: (m: string, ...args: unknown[]) => c.warn(m, ...args),
+    error: (m: string, ...args: unknown[]) => c.error(m, ...args),
+    debug: (m: string, ...args: unknown[]) => c.debug(m, ...args),
+  };
+}
 /**
  * 把后台任务结果作为 user/message 写回会话(不唤醒, 与入群申请通知同款; 失败静默)。
  * 🔒 回合安全(主人硬约束 2026-09-09): LLM 回合进行中严禁 session.append(拆散 tool_calls 坏记录),
@@ -892,6 +907,72 @@ export async function apply(ctx: Context): Promise<void> {
     },
   });
 
+  const sessionListTool = defineTool({
+    name: 'session_list',
+    description: '会话(读): 列出本 bot 全部活跃会话(sessionId/范围/peer/最近活跃/预设), 用于跨会话寻址(找 session_wake 的目标 id)。',
+    parameters: {},
+    output: {
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: { ok: { type: 'boolean', required: true }, msg: { type: 'string', required: true } },
+      },
+      render: (_a, v: { ok: boolean; msg: string }) => [{ type: 'text' as const, text: v.ok ? v.msg : `失败: ${v.msg}` }],
+    },
+    async execute(_args, exec) {
+      const ch = channelOf(exec as never);
+      const manager = ch?.manager;
+      if (!manager) return { ok: false, msg: '找不到会话管理器实例' };
+      const list = manager.listSessions();
+      if (!list.length) return { ok: true, msg: '当前无活跃会话' };
+      const tail = (s: string | undefined, n = 10): string => (s && s.length > n ? '…' + s.slice(-n) : (s ?? ''));
+      const lines = list.map((s, i) => `${i + 1}. [${s.scope}] peer=${tail(s.peerId)} sender=${tail(s.senderId, 8)} id=${s.sessionId}${s.agentPreset ? ` (${s.agentPreset})` : ''} 活跃=${new Date(s.lastActivity).toLocaleTimeString()}`);
+      return { ok: true, msg: `活跃会话 ${list.length} 个:\n${lines.join('\n')}` };
+    },
+  });
+
+  const sessionWakeTool = defineTool({
+    name: 'session_wake',
+    description: '跨会话(写,需谨慎): 向指定会话发送一条消息并唤醒该会话的 LLM(AI 开回合主动处理)。可用 session_list 查目标 id; 也支持按 peerId(群/私聊) 寻址。仅主人明确要求时调用。',
+    parameters: {
+      session_id: { type: 'string', description: '目标会话 id(完整 sessionId, 来自 session_list)' },
+      peer_id: { type: 'string', description: '或按 peer 寻址: 群 openid/私聊 openid(需带 scope)' },
+      scope: { type: 'string', enum: ['group', 'c2c'], description: 'peer_id 寻址时的范围(group=群 / c2c=私聊)' },
+      text: { type: 'string', required: true, description: '要发送并唤醒 AI 的消息内容' },
+    },
+    output: {
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: { ok: { type: 'boolean', required: true }, msg: { type: 'string', required: true } },
+      },
+      render: (_a, v: { ok: boolean; msg: string }) => [{ type: 'text' as const, text: v.ok ? v.msg : `失败: ${v.msg}` }],
+    },
+    async execute(args, exec) {
+      const text = String(args.text || '');
+      if (!text) return { ok: false, msg: '缺少 text' };
+      const ch = channelOf(exec as never);
+      const manager = ch?.manager;
+      if (!manager) return { ok: false, msg: '找不到会话管理器实例' };
+      // 寻址: 优先 sessionId; 否则 scope+peerId
+      let sid = String(args.session_id || '');
+      if (!sid) {
+        const peer = String(args.peer_id || '');
+        const scope = String(args.scope || '');
+        if (!peer || !scope) return { ok: false, msg: '请给 session_id, 或 scope+peer_id' };
+        const rec = manager.findByPeer(scope as 'group' | 'c2c', peer);
+        if (!rec) return { ok: false, msg: `会话不存在: ${scope} ${peer.slice(0, 8)}…` };
+        sid = rec.sessionId;
+      }
+      const r = await wakeSessionAgent(manager, sid, loggerLike(exec as never), text);
+      const map: Record<string, string> = {
+        ok: '✅ 已发送并唤醒',
+        'no-session': `❌ 会话不存在: ${sid.slice(0, 8)}…(可能已重建/换绑)`,
+        'no-followup': '❌ 该会话 agent 不支持 followup 唤醒',
+        fail: '❌ 唤醒异常',
+      };
+      return { ok: r === 'ok', msg: `${map[r] ?? r} (${sid.slice(0, 8)}…)` };
+    },
+  });
+
   const muteStateTool = defineTool({
     name: 'group_mute_state',
     description: '群管理(读): 查看当前群禁言状态(全员模式 + 正在禁言中的成员及到期时间)。仅主人要求时调用。',
@@ -984,6 +1065,8 @@ export async function apply(ctx: Context): Promise<void> {
     { name: 'group_approve_join', tool: approveJoinTool },
     { name: 'group_mute_state', tool: muteStateTool },
     { name: 'group_mute_member', tool: muteMemberTool },
+    { name: 'session_list', tool: sessionListTool },
+    { name: 'session_wake', tool: sessionWakeTool },
     { name: 'list_stickers', tool: listStickersTool },
     { name: 'sticker_tag', tool: tagStickerTool },
     { name: 'sticker_delete', tool: deleteStickerTool },

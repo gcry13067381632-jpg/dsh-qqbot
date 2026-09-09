@@ -762,6 +762,22 @@ export class SessionManager {
     return undefined;
   }
 
+  /** 列出本 bot 全部活跃会话(通用插件能力: 供 session_list/跨会话唤醒等按 id 寻址) */
+  listSessions(): Array<Pick<SessionRecord, 'sessionId' | 'scope' | 'peerId' | 'senderId' | 'lastActivity' | 'agentPreset'>> {
+    const out: Array<Pick<SessionRecord, 'sessionId' | 'scope' | 'peerId' | 'senderId' | 'lastActivity' | 'agentPreset'>> = [];
+    for (const record of this.sessions.values()) {
+      out.push({
+        sessionId: record.sessionId,
+        scope: record.scope,
+        peerId: record.peerId,
+        senderId: record.senderId,
+        lastActivity: record.lastActivity,
+        agentPreset: record.agentPreset,
+      });
+    }
+    return out;
+  }
+
   findByAgent(agent: DshAgent): SessionRecord | undefined {
     for (const record of this.sessions.values()) {
       if (record.agent === agent) return record;
