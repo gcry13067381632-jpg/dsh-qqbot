@@ -996,7 +996,7 @@ export async function apply(ctx: Context): Promise<void> {
         // ① session_id 寻址: module 级注册表跨全部实例精确命中(重启后仍可查)
         const manager = findManagerBySessionId(sid);
         if (!manager) return { ok: false, msg: `❌ 会话不存在: ${sid.slice(0, 8)}…(不在任何已注册实例)` };
-        const r = await wakeSessionAgent(manager, sid, loggerLike(exec as never), text);
+        const r = await wakeSessionAgent(manager, sid, loggerLike(exec as never), body);
         let extra = '';
         if (args.send_qq !== false) {
           // 目标 peer: 活跃会话直接取记录; 潜在群(未创建)从群注册表按 sessionIdFor 反查
@@ -1043,7 +1043,7 @@ export async function apply(ctx: Context): Promise<void> {
         if (!rec) return { ok: false, msg: `会话创建失败: ${sc} ${peer.slice(0, 8)}…` };
       }
       const sid2 = rec.sessionId;
-      const r = await wakeSessionAgent(manager, sid2, loggerLike(exec as never), text);
+      const r = await wakeSessionAgent(manager, sid2, loggerLike(exec as never), body);
       let extra = '';
       if (args.send_qq !== false) {
         const ga = groupAdminOf(exec);
