@@ -167,13 +167,6 @@ export async function wakeSessionAgent(
 ): Promise<string> {
   if (!sessionId) return 'no-session';
   try {
-    const rec = manager.findBySessionId(sessionId);
-    if (!rec) {
-      logger.warn?.(`[group-hub] 会话未找到(唤醒): ${sessionId.slice(0, 8)}…`);
-      return 'no-session';
-    }
-    const a = rec.agent as { followup?: (m: unknown) => void };
-    if (typeof a.followup !== 'function') return 'no-followup';
     let msg: unknown;
     try {
       msg = createUserMessage({
@@ -183,12 +176,29 @@ export async function wakeSessionAgent(
     } catch {
       return 'no-followup';
     }
-    // 与 QQ 入站唤醒同语义(inbound.ts L203-206): 置回合活跃(消息聚合见忙攒消息) + followup 唤醒
-    rec.lastInboundAt = Date.now();
-    (rec as { turnActive?: boolean }).turnActive = true;
-    a.followup(msg);
-    logger.info(`[group-hub] 唤醒 agent(${sessionId.slice(0, 8)}…) ok`);
-    return 'ok';
+    // ① 本插件会话表(QQ 会话): 走完整语义(lastInboundAt/turnActive + followup)
+    const rec = manager.findBySessionId(sessionId);
+    if (rec) {
+      const a = rec.agent as { followup?: (m: unknown) => void };
+      if (typeof a.followup !== 'function') return 'no-followup';
+      // 与 QQ 入站唤醒同语义(inbound.ts L203-206): 置回合活跃(消息聚合见忙攒消息) + followup 唤醒
+      rec.lastInboundAt = Date.now();
+      (rec as { turnActive?: boolean }).turnActive = true;
+      a.followup(msg);
+      logger.info(`[group-hub] 唤醒 agent(${sessionId.slice(0, 8)}…) ok`);
+      return 'ok';
+    }
+    // ② 宿主全局 registry(web/hub 等非 QQ 会话): 直接对 agent followup
+    const host = manager.findHostAgent(sessionId);
+    if (host) {
+      const a = host.agent as { followup?: (m: unknown) => void };
+      if (typeof a.followup !== 'function') return 'no-followup';
+      a.followup(msg);
+      logger.info(`[group-hub] 唤醒宿主 agent(${sessionId.slice(0, 8)}…) ok`);
+      return 'ok';
+    }
+    logger.warn?.(`[group-hub] 会话未找到(唤醒): ${sessionId.slice(0, 8)}…`);
+    return 'no-session';
   } catch (err) {
     logger.warn?.(`[group-hub] 唤醒异常: ${err instanceof Error ? err.message : String(err)}`);
     return 'fail';

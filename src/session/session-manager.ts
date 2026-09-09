@@ -762,6 +762,16 @@ export class SessionManager {
     return undefined;
   }
 
+  /** 查宿主全局 agent registry(进程内存活 agent, 含 web/hub 等非 QQ 会话): 跨会话唤醒兜底 */
+  findHostAgent(sessionId: string): { agent: DshAgent } | undefined {
+    try {
+      const agent = this.agents.get(sessionId);
+      return agent ? { agent } : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   /** 列出本 bot 全部活跃会话(通用插件能力: 供 session_list/跨会话唤醒等按 id 寻址) */
   listSessions(): Array<Pick<SessionRecord, 'sessionId' | 'scope' | 'peerId' | 'senderId' | 'lastActivity' | 'agentPreset'>> {
     const out: Array<Pick<SessionRecord, 'sessionId' | 'scope' | 'peerId' | 'senderId' | 'lastActivity' | 'agentPreset'>> = [];
