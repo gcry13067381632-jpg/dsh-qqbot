@@ -851,10 +851,8 @@ window.__ModuleLoader__.load({
           var nm = c.name || (nameByMid[c.id] && nameByMid[c.id].name) || ''
           c2c.push({ scope: 'c2c', id: c.id, name: nm, lastSeen: c.lastSeen || 0, count: c.count || 0 })
         })
-        // 台账里没有但成员表有名字的 openid 也补上(私聊候选)
-        Object.keys(nameByMid).forEach(function (mid) {
-          if (!seen[mid]) { seen[mid] = 1; c2c.push({ scope: 'c2c', id: mid, name: nameByMid[mid].name, lastSeen: nameByMid[mid].ts, count: 0 }) }
-        })
+        // 只列真·私聊过的人(known-chats scope=c2c): 群成员没有可私聊会话(dsh 一会话一对象),
+        // 且群 member_openid 与 c2c openid 不同域, 补进来定时发私聊必失败 —— 不混入。
         c2c.sort(function (a, b) { return (b.lastSeen || 0) - (a.lastSeen || 0) })
         return { group: groups, c2c: c2c }
       })
@@ -1995,7 +1993,9 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         var dd = curDataDir()
         state.c2cs = []
         if (!dd) { paintBody(); return }
-        // 与定时任务同款三源合并: 台账 + 本地成员表补名(不露裸 id)
+        // 目标候选 = 真·私聊台账(known-chats scope=c2c, 即"与该机器人私聊过/开过会话"的人)。
+        // ⚠️ 不能混入 group-members(群成员≠私聊对象: 群 member_openid 与 c2c openid 不同域,
+        //    且 dsh 里一个 QQ 会话只绑定一个对象, 仅群里见过的人没有可私聊会话 → 发不出去)。
         var qNs = state.ns ? ('?ns=' + encodeURIComponent(state.ns)) : ''
         var qDD = dd ? ('?dataDir=' + encodeURIComponent(dd)) : ''
         Promise.all([
@@ -2003,6 +2003,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           api('group/members_local', qNs.replace('?', '')),
         ]).then(function (rs) {
           var known = ((rs[0] && rs[0].chats) || [])
+          // 群成员表仅用于给同 id 的私聊对象补昵称(不同域通常不命中, 无副作用)
           var nameByMid = {}
           ;((rs[1] && rs[1].members) || []).forEach(function (m) {
             if (m.mid && m.name) {
@@ -2017,9 +2018,6 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             seen[c.id] = 1
             var nm = c.name || (nameByMid[c.id] && nameByMid[c.id].name) || ''
             c2c.push({ id: c.id, name: nm, lastSeen: c.lastSeen || 0, count: c.count || 0 })
-          })
-          Object.keys(nameByMid).forEach(function (mid) {
-            if (!seen[mid]) { seen[mid] = 1; c2c.push({ id: mid, name: nameByMid[mid].name, lastSeen: nameByMid[mid].ts, count: 0 }) }
           })
           c2c.sort(function (a, b) { return (b.lastSeen || 0) - (a.lastSeen || 0) })
           state.c2cs = c2c
@@ -2048,7 +2046,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         var c = null; state.c2cs.forEach(function (x) { if (x.id === state.sendTo) c = x })
         return c ? (c.name || c.id.slice(0, 10)) : '(未选)'
       }
-      // ── 📇 群组管理 M1: 台账勾选(机器人见过的群/私聊人, 复用 state.groups+state.c2cs) ──
+      // ── 📇 群组管理 M1: 会话台账勾选(群 = 群会话; 个人 = 真私聊过的人(c2c 会话), 复用 state.groups+state.c2cs) ──
       function rosterRows() {
         var rows = []
         state.groups.forEach(function (g) { rows.push({ key: 'group:' + g.gid, scope: 'group', id: g.gid, name: g.name || '', lastSeen: (g && g.lastAt) || 0, count: 0 }) })
@@ -2074,7 +2072,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         var stat = panel.querySelector('#dk-roster-stat')
         if (stat) stat.textContent = '共 ' + rows.length + ' 条 · 已选 ' + rosterSelN()
         if (!rows.length) {
-          box.innerHTML = '<div class="dk-empty">' + ((state.rosterScope === 'all' && !String(state.rosterQ || '').trim()) ? '台账还是空的: 机器人进过群/私聊过后会自动累积到这里。' : '没有匹配项。') + '</div>'
+          box.innerHTML = '<div class="dk-empty">' + ((state.rosterScope === 'all' && !String(state.rosterQ || '').trim()) ? '没有会话记录: 机器人被拉进群/有人私聊过后会自动累积(仅这些对象可被直接投递)。' : '没有匹配项。') + '</div>'
           return
         }
         var html = ''
@@ -2327,10 +2325,11 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           body += '<div style="font-weight:700;font-size:13px;margin:8px 0 4px">② 正在禁言中</div>'
           body += '<div class="dk-list" id="dk-mute-list"></div>'
         } else if (state.tab === 'roster') {
-          body += '<div class="dk-row" style="font-weight:700;font-size:13px;margin:2px 0">📇 台账:机器人见过的群 / 个人(私聊+见过的群成员)</div>'
+          body += '<div class="dk-row" style="font-weight:700;font-size:13px;margin:2px 0">📇 会话台账:机器人聊过的对象</div>'
+          body += '<div class="dk-row"><span class="dk-msg" style="flex:1;line-height:1.5">👤 = 私聊过的人(有 c2c 会话,可直接发消息) · 👥 = 群(群成员≠私聊对象: 群里见过≠能私聊,只能群内@)</span></div>'
           body += '<div class="dk-row">范围: '
             + '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px"><input type="radio" name="dk-rscope" value="all"' + (state.rosterScope === 'all' ? ' checked' : '') + '> 全部</label>'
-            + '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px"><input type="radio" name="dk-rscope" value="c2c"' + (state.rosterScope === 'c2c' ? ' checked' : '') + '> 👤 个人</label>'
+            + '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px"><input type="radio" name="dk-rscope" value="c2c"' + (state.rosterScope === 'c2c' ? ' checked' : '') + '> 👤 私聊过的人</label>'
             + '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px"><input type="radio" name="dk-rscope" value="group"' + (state.rosterScope === 'group' ? ' checked' : '') + '> 👥 群</label>'
             + '<span style="flex:1"></span>'
             + '<button class="dk-btn" id="dk-roster-refresh" title="重新拉取群注册表+聊天台账">🔄 刷新</button></div>'
