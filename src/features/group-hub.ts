@@ -183,6 +183,9 @@ export async function wakeSessionAgent(
     } catch {
       return 'no-followup';
     }
+    // 与 QQ 入站唤醒同语义(inbound.ts L203-206): 置回合活跃(消息聚合见忙攒消息) + followup 唤醒
+    rec.lastInboundAt = Date.now();
+    (rec as { turnActive?: boolean }).turnActive = true;
     a.followup(msg);
     logger.info(`[group-hub] 唤醒 agent(${sessionId.slice(0, 8)}…) ok`);
     return 'ok';
