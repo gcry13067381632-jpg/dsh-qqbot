@@ -835,9 +835,10 @@ export async function apply(ctx: Context): Promise<void> {
 
   const approveJoinTool = defineTool({
     name: 'group_approve_join',
-    description: '群管理(写,危险): 审批入群申请。approve=放行 / decline=拒绝(可带理由)。仅主人明确要求时调用; 调用前建议先 group_join_requests 核对申请人。',
+    description: '群管理(写,危险): 审批入群申请。approve=放行 / decline=拒绝(可带理由)。支持批量: member_openids 数组一次批多人(优先); 也兼容单数 member_openid。仅主人明确要求时调用; 调用前建议先 group_join_requests 核对申请人。',
     parameters: {
-      member_openid: { type: 'string', required: true, description: '申请人 member_openid(来自 group_join_requests)' },
+      member_openids: { type: 'array', description: '批量审批: 申请人 member_openid 数组(来自 group_join_requests), 一次批多人' },
+      member_openid: { type: 'string', description: '单个申请人 member_openid(批量时可不填)' },
       op: { type: 'string', required: true, enum: ['approve', 'decline'], description: 'approve 放行 / decline 拒绝' },
       reason: { type: 'string', required: true, description: '拒绝理由(decline 时填; approve 或不需要可填 "-")' },
     },
@@ -852,18 +853,36 @@ export async function apply(ctx: Context): Promise<void> {
       const ga = groupAdminOf(exec);
       if (!ga) return { ok: false, msg: '群管理未开启或非群会话' };
       if (!ga.gid) return { ok: false, msg: '当前不是群会话' };
+      const targets = Array.isArray(args.member_openids) && args.member_openids.length
+        ? args.member_openids
+        : (args.member_openid ? [args.member_openid] : []);
+      if (targets.length === 0) return { ok: false, msg: '请提供要审批的 member_openid(可多个)' };
       // join_request_id 官方审批必填(缺省报 40103007): 先拉列表按 member_openid 匹配自动补上
       const listR = await ga.client.listJoinRequests(ga.gid);
       if (!listR.ok) return { ok: false, msg: listR.err.human };
-      const found = (listR.data.list ?? []).find((j) => j.member_openid === args.member_openid);
-      const r = await ga.client.approveJoinRequest(ga.gid, args.member_openid, args.op as 'approve' | 'decline', {
-        ...(found ? { join_request_id: found.join_request_id } : {}),
-        ...(args.op === 'decline' && String(args.reason ?? '') && String(args.reason) !== '-'
-          ? { reject_reason: String(args.reason) }
-          : {}),
-      });
-      if (!r.ok) return { ok: false, msg: r.err.human };
-      return { ok: true, msg: args.op === 'approve' ? '✅ 已放行该入群申请' : '已拒绝该入群申请' };
+      const list = listR.data.list ?? [];
+      const results: string[] = [];
+      let failed = 0;
+      for (const midRaw of targets) {
+        const mid = String(midRaw);
+        const found = list.find((j) => j.member_openid === mid);
+        const r = await ga.client.approveJoinRequest(ga.gid, mid, args.op as 'approve' | 'decline', {
+          ...(found ? { join_request_id: String(found.join_request_id ?? '') } : {}),
+          ...(args.op === 'decline' && String(args.reason ?? '') && String(args.reason) !== '-'
+            ? { reject_reason: String(args.reason) }
+            : {}),
+        });
+        if (r.ok) {
+          results.push(`${String(mid).slice(0, 10)}… ${args.op === 'approve' ? '✅放行' : '已拒绝'}${found ? `(${String(found.username ?? '')})` : ''}`);
+        } else {
+          failed++;
+          results.push(`${String(mid).slice(0, 10)}… ❌ ${r.err.human}`);
+        }
+      }
+      if (failed === 0) {
+        return { ok: true, msg: `${args.op === 'approve' ? '✅ 已全部放行' : '已全部拒绝'} ${targets.length} 人:\n${results.join('\n')}` };
+      }
+      return { ok: failed === targets.length ? false : true, msg: `${targets.length - failed}/${targets.length} 成功:\n${results.join('\n')}` };
     },
   });
 
