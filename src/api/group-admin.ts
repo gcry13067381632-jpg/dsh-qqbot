@@ -58,11 +58,16 @@ const VERIFY_METHOD_HUMAN: Record<string, string> = {
 
 /**
  * 入群申请的"验证信息"人话化:
- *   - verify_message 有值 → 直接显示用户填的答案(如「我是小号」);
+ *   - review_qa_list 有内容 → 逐条「问题:xxx / 答案:yyy」;
+ *   - 否则 verify_message 有值 → 直接显示用户填的答案(如「我是小号」);
  *   - 否则 method 有值 → 翻译成中文(admin_review_qa 这类英文枚举不该露给用户);
  *   - 都没有 → ''(无验证, 调用方显示 '-' 或不显示)。
  */
-export function verifyHuman(vi?: { method?: string; verify_message?: string }): string {
+export function verifyHuman(vi?: { method?: string; verify_message?: string; review_qa_list?: Array<{ question?: string; answer?: string }> }): string {
+  const qa = vi?.review_qa_list?.filter((x) => x && (x.question || x.answer));
+  if (qa && qa.length) {
+    return qa.map((x) => `${x.question ?? '问题'}「${x.answer ?? '(未填)'}」`).join('；');
+  }
   if (vi?.verify_message) return vi.verify_message;
   if (vi?.method) return VERIFY_METHOD_HUMAN[vi.method] ?? `验证方式:${vi.method}`;
   return '';
