@@ -508,7 +508,7 @@ window.__ModuleLoader__.load({
         return {
           username: j.username || '(未知昵称)',
           source: j.apply_source === 'invited' ? '被邀请' : '主动申请',
-          verify: (j.verify_info && j.verify_info.verify_message) || (j.verify_info && j.verify_info.method) || '',
+          verify: j.verify_human || (j.verify_info && j.verify_info.verify_message) || (j.verify_info && j.verify_info.method) || '',
           risk: j.risk_tips || '',
           member_openid: j.member_openid,
         }
@@ -2300,7 +2300,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         if (!state.gid) { state.joins = []; paintBody(); return }
         var q = 'gid=' + encodeURIComponent(state.gid) + (state.ns ? '&ns=' + encodeURIComponent(state.ns) : '')
         api('group/join_requests', q).then(function (d) {
-          state.joins = (d && d.ok && Array.isArray(d.list) ? d.list : []).map(function (j) { return { member_openid: j.member_openid, username: j.username || '(未知昵称)', verify: (j.verify_info && (j.verify_info.verify_message || j.verify_info.method)) || '', risk: j.risk_tips || '', source: j.apply_source === 'invited' ? '被邀请' : '主动申请' } })
+          state.joins = (d && d.ok && Array.isArray(d.list) ? d.list : []).map(function (j) { return { member_openid: j.member_openid, username: j.username || '(未知昵称)', verify: j.verify_human || (j.verify_info && (j.verify_info.verify_message || j.verify_info.method)) || '', risk: j.risk_tips || '', source: j.apply_source === 'invited' ? '被邀请' : '主动申请' } })
           paintBody()
         })
       }

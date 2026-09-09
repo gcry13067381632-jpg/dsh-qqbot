@@ -1012,7 +1012,11 @@ export function apply(ctx) {
       if (!r.ok) return writeJson(res, 200, { ok: false, err: r.err });
       const pend = readPendingJson(gc.bot.cwd);
       const local = (pend[gid] || []).map((x) => ({ member_openid: x.member_openid, join_request_id: x.join_request_id, notified: !!x.notified, seen_at: x.seen_at }));
-      writeJson(res, 200, { ok: true, list: r.data.list, local });
+      // 验证信息人话化: verify_info 的 method 是英文枚举(admin_review_qa), 复用 dist 的 verifyHuman 翻译
+      const gaMod = await import('./dist/api/group-admin.js');
+      const vh = (gaMod && typeof gaMod.verifyHuman === 'function') ? gaMod.verifyHuman : (vi) => (vi && (vi.verify_message || vi.method)) || '-';
+      const list = (r.data.list || []).map((j) => ({ ...j, verify_human: vh(j.verify_info) }));
+      writeJson(res, 200, { ok: true, list, local });
     } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
   });
 
