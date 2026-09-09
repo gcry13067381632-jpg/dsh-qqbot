@@ -346,12 +346,15 @@ export function apply(ctx) {
     out.push(`${pad4}requireMention: false`);
     out.push(`${pad4}historyLimit: 20`);
     if (inst.cwd) out.push(`${pad4}cwd: ${yq(inst.cwd)}`);
+    if (inst.dataRoot) out.push(`${pad4}dataRoot: ${yq(inst.dataRoot)}`); // 数据根(可选; 保存时保留, 见 saveInstances)
     return out.join('\n');
   }
 
   /** 保存实例清单(全量同步; 行级重建, 其它插件行/注释原样保留)
    *  借鉴 dsh-qqbot-panel(2026-09-06): appSecret 空值/掩码(********) = 保留原值,
-   *  只有提供全新非掩码值才覆盖 —— 前端只回显掩码, 不会因漏传/未改而误清 secret。 */
+   *  只有提供全新非掩码值才覆盖 —— 前端只回显掩码, 不会因漏传/未改而误清 secret。
+   *  ⚠️ 2026-09-09: dataRoot 同理 —— 前端不编辑它, 保存时必须保留原值,
+   *     否则 accounts/save 会把 patch.yml 里的 dataRoot 覆盖掉(图库路径回退 cwd 的根因)。 */
   function saveInstances(instances) {
     const { raw, hasFile, bots } = parsePatch();
     if (!hasFile) return { ok: false, error: '找不到 cordis.patch.yml(仅 web profile 支持)' };
@@ -364,12 +367,14 @@ export function apply(ctx) {
     for (const inst of instances) {
       if (inst.remove) continue;
       const t = bots.find((b) => b.id === inst.id);
+      const orig = bots.find((b) => b.id === inst.id);
       // 掩码/空 → 保留原 secret(仅当原值存在; 全新账号本就无原值则维持空)
       if (!inst.appSecret || inst.appSecret === SECRET_MASK) {
-        const orig = bots.find((b) => b.id === inst.id);
         if (orig && orig.cfg?.appSecret) inst.appSecret = orig.cfg.appSecret;
         else inst.appSecret = '';
       }
+      // 前端不编辑 dataRoot → 保留原值(2026-09-09: 曾因保存覆盖丢失导致图库路径回退 cwd)
+      if (inst.dataRoot === undefined && orig && orig.cfg?.dataRoot) inst.dataRoot = orig.cfg.dataRoot;
       const blockText = renderBotBlock(inst);
       if (t) edits.push({ start: t.start, end: t.end, text: blockText });
       else edits.push({ append: blockText });
