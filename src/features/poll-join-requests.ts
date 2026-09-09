@@ -208,7 +208,8 @@ export function startJoinRequestPolling(
     if (first) {
       if (poll.wakeLlm !== false) {
         // 唤醒群组管理器会话的 AI(带完整明细): 主人 web 这边 AI 起来查列表/处理
-        const wakeText = `【审批轮询】发现 ${total} 个新的入群申请:\n${summary}\n\n可回复我处理(如: 查看入群申请 / 通过 某人 / 拒绝 某人)`;
+        // summary 首行已含「【审批轮询】发现 N 个…」标题, 这里不再重复拼
+        const wakeText = `${summary}\n\n可回复我处理(如: 查看入群申请 / 通过 某人 / 拒绝 某人)`;
         const w = await wakeHubAgent(manager, config, logger, wakeText);
         logger.info(`[join-poll] 唤醒 hub agent: ${w}`);
       } else {
