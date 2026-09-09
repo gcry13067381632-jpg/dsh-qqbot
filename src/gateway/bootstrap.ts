@@ -30,6 +30,7 @@ import { handleGroupMemberAddEvent, handleGroupAddRobotEvent } from '../features
 import { registerSessionManager, setBotOnline } from '../features/session-registry.js';
 import { BotplayController, registerBotplayController, setBotplayTriggerImpl, setBotplayCatalogImpl } from '../features/botplay.js';
 import { buildCommandList } from '../commands/index.js';
+import { SettingsReader } from '../model/settings-reader.js';
 
 /** 从 interaction 事件推出"回复目标"(回执发到按钮所在群/私聊)。scope 由事件 chat_type/scene 推断 */
 function replyTargetOfInteraction(
@@ -88,6 +89,21 @@ export async function bootstrapGateway(
 
   // ── 初始化 QQ Bot SDK ──
   const userAgent = buildUserAgent();
+  // 启动期合并 settings.yaml 的 groupAdmin(Web 可视化设置那份):
+  // QQBot 构造时 intents 一次性读取 config.groupAdmin; 而 settings 服务注入是异步的,
+  // 晚于 gateway 构造 → 仅靠 settings 同步拿不到值, 曾导致 watchJoinRequests 改完不生效
+  // (2026-09-09 复盘: 只能改 cordis.patch.yml 绕坑)。这里启动时直接读文件, 让
+  // Web 设置(存 settings.yaml)重启即生效, 无需手改 yml —— 通用且时序安全。
+  try {
+    const reader = new SettingsReader();
+    const ga = reader.readGroupAdmin((config as { settingsNs?: string }).settingsNs?.trim() || 'im-qqbot');
+    if (ga) {
+      config.groupAdmin = { ...(config.groupAdmin ?? {}), ...ga } as typeof config.groupAdmin;
+      logger.info(`[im-qqbot] 启动合并 settings.yaml groupAdmin: ${JSON.stringify(config.groupAdmin)}`);
+    }
+  } catch (err) {
+    logger.warn?.(`[im-qqbot] settings.yaml groupAdmin 合并跳过: ${err instanceof Error ? err.message : String(err)}`);
+  }
   // 入群申请事件(GROUP_JOIN_REQUEST)订阅: intent GROUP_MEMBER_EVENT = 1<<24, SDK 默认 FULL_INTENTS 不含它。
   // ⚠️ 只在"群管理开启 + watchJoinRequests"时扩展 intents(Identify 携带未授权 intent 可能被拒连 4914/4915);
   //    该值在 gateway 连接建立时确定 → 修改 config 后需重启才生效(非 live)。

@@ -76,6 +76,20 @@ export class SettingsReader {
     return llmPiAi?.providers ? Object.keys(llmPiAi.providers) : [];
   }
 
+  /**
+   * 从 settings.yaml 的 <ns> 段读取 groupAdmin 配置。
+   * 解决"QQBot 构造时 intents 一次性读取"的时序坑: settings 服务的 Web 可视化配置
+   * (写 settings.yaml)是异步注入, 晚于 gateway 构造 → 启动期读文件才能在构造前拿到值。
+   * 返回 undefined = settings.yaml 无该 ns 或 ns 无 groupAdmin。
+   */
+  readGroupAdmin(ns: string): Record<string, unknown> | undefined {
+    const settings = this.loadSettings();
+    if (!settings) return undefined;
+    const nsBlock = settings[ns] as Record<string, unknown> | undefined;
+    const ga = nsBlock?.groupAdmin as Record<string, unknown> | undefined;
+    return ga && typeof ga === 'object' ? ga : undefined;
+  }
+
   private loadSettings(): Record<string, unknown> | null {
     if (this.settingsCache !== undefined) return this.settingsCache;
 

@@ -828,7 +828,7 @@ export async function apply(ctx: Context): Promise<void> {
       if (!r.ok) return { ok: false, msg: r.err.human };
       const list = r.data.list;
       if (list.length === 0) return { ok: true, msg: '当前没有待审批的入群申请 ✓' };
-      const lines = list.map((j, i) => `${i + 1}. ${j.username ?? '?'} (${String(j.member_openid).slice(0, 10)}…) 来源:${j.apply_source ?? '?'} 验证:${j.verify_info?.verify_message ?? j.verify_info?.method ?? '-'}${j.risk_tips ? ` ⚠️${j.risk_tips}` : ''}`);
+      const lines = list.map((j, i) => `${i + 1}. ${j.username ?? '?'} (${j.member_openid}) 来源:${j.apply_source ?? '?'} 验证:${j.verify_info?.verify_message ?? j.verify_info?.method ?? '-'}${j.risk_tips ? ` ⚠️${j.risk_tips}` : ''}`);
       return { ok: true, msg: `入群申请 ${list.length} 条:\n${lines.join('\n')}` };
     },
   });
