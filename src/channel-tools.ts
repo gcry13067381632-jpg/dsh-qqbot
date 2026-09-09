@@ -20,6 +20,7 @@ import { switchOutboundMode } from './features/outbound-mode-switch.js';
 import { loadExtensionTools } from './features/extension-store.js';
 import { verifyHuman, groupRegistryPath } from './api/group-admin.js';
 import { wakeSessionAgent } from './features/group-hub.js';
+import { managersOf, findManagerByPeer, findManagerBySessionId } from './features/session-registry.js';
 
 /** 诊断日志路径: 默认关闭; 需要排查时设环境变量 QQBOT_DIAG_FILE 指向日志文件 */
 const DIAG_FILE = process.env.QQBOT_DIAG_FILE || '';
@@ -139,26 +140,6 @@ function findSessionRec(ch: QQChannel | undefined, exec: { agent?: unknown }): {
     if (r) return r;
   }
   return undefined;
-}
-
-/**
- * 按 scope+peer 找目标归属的 QQ 通道(多账号: 会话可能属于任一实例桥)。
- * 优先级: ①某实例会话表里有该 peer; ②某实例 manageGroup 匹配; ③回退第一个桥。
- * 跨会话唤醒/发送必须用它, 否则会在错误实例 getOrCreate 一个不相干的会话(唤醒不到真身)。
- */
-function channelForPeer(scope: string, peer: string): QQChannel | undefined {
-  if (channelBridges.length === 0) return undefined;
-  for (const b of channelBridges) {
-    try {
-      if (b.manager.findByPeer(scope as 'group' | 'c2c', peer)) return b;
-    } catch { /* 忽略 */ }
-  }
-  for (const b of channelBridges) {
-    try {
-      if ((b.manager as { manageGroup?: string }).manageGroup === peer) return b;
-    } catch { /* 忽略 */ }
-  }
-  return channelBridges[0];
 }
 
 /**
@@ -937,24 +918,35 @@ export async function apply(ctx: Context): Promise<void> {
       render: (_a, v: { ok: boolean; msg: string }) => [{ type: 'text' as const, text: v.ok ? v.msg : `失败: ${v.msg}` }],
     },
     async execute(_args, exec) {
-      const ch = channelOf(exec as never);
-      const manager = ch?.manager;
-      if (!manager) return { ok: false, msg: '找不到会话管理器实例' };
-      const list = manager.listSessions();
       const tail = (s: string | undefined, n = 10): string => (s && s.length > n ? '…' + s.slice(-n) : (s ?? ''));
-      const lines = list.map((s, i) => `${i + 1}. [${s.scope}] peer=${tail(s.peerId)} sender=${tail(s.senderId, 8)} id=${s.sessionId}${s.agentPreset ? ` (${s.agentPreset})` : ''} 活跃=${new Date(s.lastActivity).toLocaleTimeString()}`);
-      // 潜在会话: 群注册表里的群可能还没 getOrCreate(无活跃记录), 但 sessionId 可确定性算出
-      try {
-        const raw = readFileSync(groupRegistryPath(manager.cwd), 'utf8');
-        const reg = JSON.parse(raw) as Record<string, { name?: string }>;
-        const ids = new Set(list.map((s) => s.sessionId));
-        const pend: string[] = [];
-        for (const gid of Object.keys(reg ?? {})) {
-          const sid = manager.sessionIdFor('group', gid);
-          if (!ids.has(sid)) pend.push(`[潜在群] ${reg[gid]?.name ?? ''}(${tail(gid)}) id=${sid} 活跃=未创建`);
+      const lines: string[] = [];
+      // 遍历全部已注册实例(module 级注册表, 重启后仍可枚举; 不依赖 channelBridges)
+      const managers = managersOf();
+      if (managers.length === 0) {
+        const ch = channelOf(exec as never);
+        const manager = ch?.manager;
+        if (manager) managers.push(manager);
+      }
+      if (managers.length === 0) return { ok: false, msg: '找不到会话管理器实例(无已注册实例)' };
+      let n = 0;
+      for (const manager of managers) {
+        const list = manager.listSessions();
+        const ns = manager.settingsNs;
+        for (const s of list) {
+          n++;
+          lines.push(`${n}. [${s.scope}]${ns !== 'im-qqbot' ? `(${ns})` : ''} peer=${tail(s.peerId)} sender=${tail(s.senderId, 8)} id=${s.sessionId}${s.agentPreset ? ` (${s.agentPreset})` : ''} 活跃=${new Date(s.lastActivity).toLocaleTimeString()}`);
         }
-        if (pend.length) lines.push(...pend);
-      } catch { /* 无注册表/读失败则跳过 */ }
+        // 潜在会话: 群注册表里的群可能还没 getOrCreate(无活跃记录), 但 sessionId 可确定性算出
+        try {
+          const raw = readFileSync(groupRegistryPath(manager.cwd), 'utf8');
+          const reg = JSON.parse(raw) as Record<string, { name?: string }>;
+          const ids = new Set(list.map((s) => s.sessionId));
+          for (const gid of Object.keys(reg ?? {})) {
+            const sid = manager.sessionIdFor('group', gid);
+            if (!ids.has(sid)) lines.push(`[潜在群] ${reg[gid]?.name ?? ''}(${tail(gid)}) id=${sid} 活跃=未创建`);
+          }
+        } catch { /* 无注册表/读失败则跳过 */ }
+      }
       if (lines.length === 0) return { ok: true, msg: '当前无活跃会话, 也无已注册群' };
       return { ok: true, msg: `会话 ${lines.length} 个:\n${lines.join('\n')}` };
     },
@@ -980,41 +972,34 @@ export async function apply(ctx: Context): Promise<void> {
     async execute(args, exec) {
       const text = String(args.text || '');
       if (!text) return { ok: false, msg: '缺少 text' };
-      // 解析目标: 优先 session_id; 否则 scope+peer_id
-      let sid = String(args.session_id || '');
-      let sc: 'group' | 'c2c' | undefined;
-      let peer = '';
+      // 来源标注(便于对方直接会话): 取本执行会话 id, 拿不到用 'web'
+      let from = 'web';
+      try {
+        const ch0 = channelOf(exec as never);
+        const src = findSessionRec(ch0, exec as never);
+        if (src?.rec?.sessionId) from = src.rec.sessionId.slice(0, 8) + '…';
+      } catch { /* 忽略 */ }
+      const body = `【来自会话 ${from}】\n${text}`;
+      const map: Record<string, string> = {
+        ok: '✅ 已发送并唤醒',
+        'no-session': `❌ 会话不存在: 目标会话不在任何已注册实例中(或已重建/换绑)`,
+        'no-followup': '❌ 该会话 agent 不支持 followup 唤醒',
+        fail: '❌ 唤醒异常',
+      };
+      const sid = String(args.session_id || '');
       if (sid) {
-        // session_id: 遍历所有桥找归属 manager
-        let targetCh: QQChannel | undefined;
-        for (const b of channelBridges) {
-          if (b.manager.findBySessionId(sid) || b.manager.findHostAgent(sid)) { targetCh = b; break; }
-        }
-        targetCh = targetCh ?? channelOf(exec as never) ?? channelBridges[0];
-        const manager = targetCh?.manager;
-        if (!manager) return { ok: false, msg: '找不到会话管理器实例' };
+        // ① session_id 寻址: module 级注册表跨全部实例精确命中(重启后仍可查)
+        const manager = findManagerBySessionId(sid);
+        if (!manager) return { ok: false, msg: `❌ 会话不存在: ${sid.slice(0, 8)}…(不在任何已注册实例)` };
         const r = await wakeSessionAgent(manager, sid, loggerLike(exec as never), text);
-        const map: Record<string, string> = {
-          ok: '✅ 已发送并唤醒',
-          'no-session': `❌ 会话不存在: ${sid.slice(0, 8)}…(可能已重建/换绑)`,
-          'no-followup': '❌ 该会话 agent 不支持 followup 唤醒',
-          fail: '❌ 唤醒异常',
-        };
         let extra = '';
-        // 发到绑定的 QQ 群/私聊
         if (args.send_qq !== false) {
           const rec = manager.findBySessionId(sid);
           const qScope = rec?.scope;
           const qPeer = rec?.peerId;
           if (qScope && qPeer) {
-            let from = 'web';
-            try {
-              const src = findSessionRec(targetCh, exec as never);
-              if (src?.rec?.sessionId) from = src.rec.sessionId.slice(0, 8) + '…';
-            } catch { /* 忽略 */ }
             const ga = groupAdminOf(exec);
             if (ga) {
-              const body = `【来自会话 ${from}】\n${text}`;
               const sr = qScope === 'group'
                 ? await ga.client.sendGroupText(qPeer, body)
                 : await ga.client.sendC2cText(qPeer, body);
@@ -1026,36 +1011,25 @@ export async function apply(ctx: Context): Promise<void> {
         }
         return { ok: r === 'ok', msg: `${map[r] ?? r} (${sid.slice(0, 8)}…)${extra}` };
       }
-      // peer 寻址: 遍历桥找目标群真实归属的 manager, 别在错误实例上 getOrCreate
-      peer = String(args.peer_id || '');
-      sc = String(args.scope || '') as 'group' | 'c2c';
+      // ② peer 寻址: registry 按 scope+peer 找目标实例(跨全部实例), 找不到回退任意实例
+      const peer = String(args.peer_id || '');
+      const sc = String(args.scope || '') as 'group' | 'c2c';
       if (!peer || !sc) return { ok: false, msg: '请给 session_id, 或 scope+peer_id' };
-      const targetCh = channelForPeer(sc, peer) ?? channelOf(exec as never);
-      const manager = targetCh?.manager;
-      if (!manager) return { ok: false, msg: '找不到目标会话归属的实例' };
+      let manager = findManagerByPeer(sc, peer);
+      if (!manager) manager = managersOf()[0];
+      if (!manager) return { ok: false, msg: '找不到会话管理器实例(无已注册实例)' };
       let rec = manager.findByPeer(sc, peer);
       if (!rec) {
+        // 会话未创建(懒创建): 用主人身份 getOrCreate 建起来再唤醒(2026-09-10 主人定)
         rec = await manager.getOrCreate(sc, peer, 'master', { scope: sc, targetId: peer });
         if (!rec) return { ok: false, msg: `会话创建失败: ${sc} ${peer.slice(0, 8)}…` };
       }
-      sid = rec.sessionId;
-      const r = await wakeSessionAgent(manager, sid, loggerLike(exec as never), text);
-      const map: Record<string, string> = {
-        ok: '✅ 已发送并唤醒',
-        'no-session': `❌ 会话不存在: ${sid.slice(0, 8)}…(可能已重建/换绑)`,
-        'no-followup': '❌ 该会话 agent 不支持 followup 唤醒',
-        fail: '❌ 唤醒异常',
-      };
+      const sid2 = rec.sessionId;
+      const r = await wakeSessionAgent(manager, sid2, loggerLike(exec as never), text);
       let extra = '';
       if (args.send_qq !== false) {
-        let from = 'web';
-        try {
-          const src = findSessionRec(targetCh, exec as never);
-          if (src?.rec?.sessionId) from = src.rec.sessionId.slice(0, 8) + '…';
-        } catch { /* 忽略 */ }
         const ga = groupAdminOf(exec);
         if (ga) {
-          const body = `【来自会话 ${from}】\n${text}`;
           const sr = sc === 'group'
             ? await ga.client.sendGroupText(peer, body)
             : await ga.client.sendC2cText(peer, body);
@@ -1064,7 +1038,7 @@ export async function apply(ctx: Context): Promise<void> {
           extra = '；⚠️ 群管理未开启, 未发QQ';
         }
       }
-      return { ok: r === 'ok', msg: `${map[r] ?? r} (${sid.slice(0, 8)}…)${extra}` };
+      return { ok: r === 'ok', msg: `${map[r] ?? r} (${sid2.slice(0, 8)}…)${extra}` };
     },
   });
 

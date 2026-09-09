@@ -120,3 +120,28 @@ export function hasManager(ns: string): boolean {
 export function listManagerNs(): string[] {
   return [...managers.keys()];
 }
+
+/** 全部已注册 manager(通用插件: 跨实例枚举/寻址用, 同一 ESM 实例无 realm 隔离) */
+export function managersOf(): SessionManager[] {
+  return [...managers.values()];
+}
+
+/** 按 scope+peer 找目标实例的 manager(先活跃表, 再回退任意一个已注册) */
+export function findManagerByPeer(scope: ChatScope, peerId: string): SessionManager | undefined {
+  for (const m of managers.values()) {
+    try {
+      if (m.findByPeer(scope, peerId)) return m;
+    } catch { /* 单实例异常跳过 */ }
+  }
+  return managers.values().next().value as SessionManager | undefined;
+}
+
+/** 按 sessionId 找目标实例的 manager(活跃表精确命中) */
+export function findManagerBySessionId(sessionId: string): SessionManager | undefined {
+  for (const m of managers.values()) {
+    try {
+      if (m.findBySessionId(sessionId) || m.findHostAgent(sessionId)) return m;
+    } catch { /* 单实例异常跳过 */ }
+  }
+  return undefined;
+}
