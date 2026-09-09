@@ -12,8 +12,20 @@
  */
 import type { SessionManager } from '../session/index.js';
 import type { ChatScope } from '../types.js';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 const managers = new Map<string, SessionManager>();
+
+/** 读某实例的群注册表 groups.json(cwd/.qqbot/groups.json); 失败返回 undefined */
+function readJSONRegistry(cwd: string): Record<string, { name?: string }> | undefined {
+  try {
+    const raw = readFileSync(join(cwd || process.cwd(), '.qqbot', 'groups.json'), 'utf8');
+    return JSON.parse(raw) as Record<string, { name?: string }>;
+  } catch {
+    return undefined;
+  }
+}
 
 export function registerSessionManager(ns: string, m: SessionManager | undefined): void {
   if (m) managers.set(ns, m);
@@ -126,13 +138,24 @@ export function managersOf(): SessionManager[] {
   return [...managers.values()];
 }
 
-/** 按 scope+peer 找目标实例的 manager(先活跃表, 再回退任意一个已注册) */
+/** 按 scope+peer 找目标实例的 manager(先活跃表; 再按群注册表归属匹配; 最后回退任意一个已注册) */
 export function findManagerByPeer(scope: ChatScope, peerId: string): SessionManager | undefined {
+  // ① 活跃会话表精确命中
   for (const m of managers.values()) {
     try {
       if (m.findByPeer(scope, peerId)) return m;
     } catch { /* 单实例异常跳过 */ }
   }
+  // ② 群注册表归属匹配(会话未创建时: 该群在哪个实例的 groups.json 里就是哪个实例)
+  if (scope === 'group' && peerId) {
+    for (const m of managers.values()) {
+      try {
+        const reg = readJSONRegistry(m.cwd);
+        if (reg && Object.prototype.hasOwnProperty.call(reg, peerId)) return m;
+      } catch { /* 单实例异常跳过 */ }
+    }
+  }
+  // ③ 回退第一个已注册
   return managers.values().next().value as SessionManager | undefined;
 }
 
