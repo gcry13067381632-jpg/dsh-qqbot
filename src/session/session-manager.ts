@@ -17,6 +17,7 @@ import { SessionId } from '@deepseek-ai/dsh-session';
 import type { Context } from '@deepseek-ai/cordis';
 import type { ChatScope, Logger, ReplyTarget } from '../types.js';
 import type { ImQQBotConfig } from '../config.js';
+import { FIXED_CHANNEL_CONTEXT } from '../config.js';
 import { dataRootOf, stickerDirOf } from '../gateway/data-root.js';
 import { ModelResolver } from '../model/model-resolver.js';
 import type { ModelRoute, ModelEntry } from '../model/types.js';
@@ -725,13 +726,19 @@ export class SessionManager {
       console.log(`[qqbot-rules] ensure agent=${agentId} inject=${typeof anyCtx.inject} sp=${typeof anyCtx.systemPrompt} eff=${typeof anyCtx.effect}`);
       const doReg = (sp?: { context?: (o: unknown) => unknown }): void => {
         if (sp && typeof sp.context === 'function') {
+          // 通道固定上下文(与群守则无关, 无条件注入; 覆盖 @方法/富媒体等基础规则)
+          sp.context({
+            name: 'qqbot:fixed-channel-rules',
+            order: 115,
+            text: () => FIXED_CHANNEL_CONTEXT,
+          });
           sp.context({
             name: 'qqbot:group-rules',
             order: 116,
             text: () => this.config.groupPrompt?.trim() || '',
           });
           (this as unknown as Record<string, unknown>).__rulesMounted = ((this as unknown as Record<string, unknown>).__rulesMounted as Set<string> || new Set<string>()).add(agentId);
-          console.log(`[qqbot-rules] context registered agent=${agentId}`);
+          console.log(`[qqbot-rules] contexts registered agent=${agentId} (fixed + group)`);
         } else {
           console.log(`[qqbot-rules] context unavailable sp=${typeof sp}`);
         }

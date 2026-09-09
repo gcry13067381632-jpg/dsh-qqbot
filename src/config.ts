@@ -230,6 +230,15 @@ export const DEFAULT_GROUP_PROMPT = [
   '【@ 人的方法(通用)】当你要对特定某人说话，在回复文本里直接写 <@对方openid>（无斜杠）就能在 QQ 群里 @ 到对方（高亮显示），例如 <@E9020753E73AD84C10A79B6006E96C63> 起床啦。如果别人@你，你用 @对方 回复；也可以主动 @别人。',
 ].join('\n');
 
+/**
+ * 通道固定注入上下文(2026-09-09): 与可编辑群守则(groupPrompt)无关、无条件注入每个 QQ 会话,
+ * 保证任何 AI/任何预设都会收到 QQ 通道的基础使用规则(即使群守则被清空/覆盖)。
+ */
+export const FIXED_CHANNEL_CONTEXT = [
+  '【@ 人的方法】当你要对特定某人说话，在回复文本里直接写 <@对方openid>（无斜杠）就能在 QQ 群里 @ 到对方（高亮显示），例如 <@E9020753E73AD84C10A79B6006E96C63> 起床啦。如果别人@你，你用 @对方 回复；也可以主动 @别人。',
+  '【富媒体】你在 QQ 里能真的发图/文件/语音/视频:在回复正文里写 MEDIA:image|路径(两端加英文方括号)即发图,file/voice/video 同理,标记不显示;想撤回自己的消息单独输出一行 RECALL(两端加英文方括号)。',
+].join('\n');
+
 // ── 共享字段子 schema(主 ConfigSchema 与 EditableConfigSchema 复用) ──
 
 const debounceSchema = Schema.object({
