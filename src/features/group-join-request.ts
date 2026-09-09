@@ -19,11 +19,11 @@
  */
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import type { QQBotSender } from '../transport/outbound-buffer.js';
 import type { ImQQBotConfig } from '../config.js';
 import type { Logger } from '../types.js';
 import type { SessionManager } from '../session/index.js';
+import { notifyGroupHub, safeAppendUserMessage } from './group-hub.js';
 
 /** 官方 GROUP_JOIN_REQUEST 事件体(与本项目用到的字段) */
 export interface GroupJoinRequestEvent {
@@ -184,23 +184,41 @@ export async function handleGroupJoinRequestEvent(
   pushPendingJoinRequest(config.cwd, item);
   logger.info(`[group-join] 新入群申请: gid=${gid} user=${ev.username ?? '?'}(${mid.slice(0, 10)}…) src=${ev.apply_source ?? '?'}${ev.risk_tips ? ` risk=${ev.risk_tips}` : ''}`);
 
-  // 通知策略(主人定稿 2026-09-05 21:10):
-  // 要"模拟用户消息 + 模拟点停止" = 把申请直接 append 为该群 agent 的 session log 一条
+  // 通知策略(主人定稿 2026-09-05 21:10 + M2 2026-09-09 扩展):
+  // 要"模拟用户消息 + 模拟点停止" = 把申请 append 为目标会话的 session log 一条
   // user/message 事件(turn() 中让消息显示在 web 的那一步), 但【不 wake 不开回合】→
   // web 会话流能看到这条消息(像用户真发过), AI 却不会主动思考/回复(不撞 QQ 限流)。
-  // 主人下次真人消息开新回合时, 这条 user/message 作为 log 历史被 deriveMessages 组装进
+  // 主人下条真人消息开新回合时, 这条 user/message 作为 log 历史被 deriveMessages 组装进
   // 上下文 → AI 自然看到申请并能接应"通过/拒绝"。
+  // 🔒 硬约束(M2 主人指正): LLM 回合进行中严禁 session.append(拆散 tool_calls 坏记录),
+  //    统一走 safeAppendUserMessage = whenIdle 等回合空闲再 append; 超时/无能力 → 兜底 QQ 卡。
+  const srcPart = ev.apply_source === 'invited'
+    ? `被邀请${ev.invited_by ? `(邀请人 ${ev.invited_by.slice(0, 10)}…)` : ''}`
+    : '主动申请';
+  const verifyPart = verify ? ` 验证「${verify}」` : '';
+  const riskPart = ev.risk_tips ? ` ⚠️${ev.risk_tips}` : '';
+  const summary = `[入群申请] ${ev.username ?? '(未知昵称)'}(${srcPart})${verifyPart}${riskPart}`;
+
+  // ① 群组管理器(hub): 配置了 hubSessionId → 群事件汇总注入该会话; 成功则群内不再打扰
+  const hubR = await notifyGroupHub(manager, config, logger, {
+    kind: 'join_request',
+    gid,
+    memberOpenid: mid,
+    name: ev.username,
+    extra: verify ? `验证「${verify}」` : (ev.apply_source === 'invited' ? '被邀请' : undefined),
+  });
+  if (hubR === 'ok') {
+    item.notified = true;
+    pushPendingJoinRequest(config.cwd, item);
+    logger.info(`[group-join] 已转发群组管理器(hub), 跳过群内提醒 gid=${gid}`);
+    return true;
+  }
+
+  // ② 无 hub / 转发未成功 → 原群内提醒(回合安全 append; busy/fail 兜底 QQ 静态卡)
   if (config.groupAdmin?.notifyInGroup !== false) {
     const last = lastGroupNotify.get(gid) ?? 0;
     if (now - last >= GROUP_NOTIFY_MIN_GAP_MS) {
       lastGroupNotify.set(gid, now);
-      const userPart = ev.username ?? '(未知昵称)';
-      const srcPart = ev.apply_source === 'invited'
-        ? `被邀请${ev.invited_by ? `(邀请人 ${ev.invited_by.slice(0, 10)}…)` : ''}`
-        : '主动申请';
-      const verifyPart = verify ? ` 验证「${verify}」` : '';
-      const riskPart = ev.risk_tips ? ` ⚠️${ev.risk_tips}` : '';
-      const summary = `[入群申请] ${userPart}(${srcPart})${verifyPart}${riskPart}`;
       // 有活跃会话直接用; 没有(空闲被回收)→ getOrCreate 恢复/重建会话(不触发回合, 只保证 log 存在)
       let record = manager.findByPeer('group', gid);
       if (!record) {
@@ -212,29 +230,15 @@ export async function handleGroupJoinRequestEvent(
           logger.warn(`[group-join] getOrCreate 失败: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
-      const sess = (record?.agent as unknown as {
-        session?: { append?: (type: string, data: unknown, opts?: { surfaceOp?: string }) => unknown };
-      } | undefined)?.session;
-      if (sess && typeof sess.append === 'function') {
-        try {
-          // 与 turn() 同款: session.append('user/message', msg, {surfaceOp:'append'}) → web 可见;
-          // 不调 send/followup → 不 wakeDriver → AI 不触发回合(等效用户发消息后点停止)。
-          const msg = createUserMessage({
-            content: [{ type: 'text', text: summary }],
-            source: { kind: 'user' },
-          });
-          sess.append('user/message', msg, { surfaceOp: 'append' });
-          item.notified = true;
-          pushPendingJoinRequest(config.cwd, item);
-          logger.info(`[group-join] 已 append user/message 到会话 log(不唤醒, 模拟用户消息+停止) gid=${gid}`);
-          return true;
-        } catch (err) {
-          logger.warn(`[group-join] append 失败: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      } else {
-        logger.warn(`[group-join] 会话无 append 能力, 兜底发 QQ 卡片 gid=${gid}`);
+      const safeR = await safeAppendUserMessage(record?.agent, summary, logger);
+      if (safeR === 'ok') {
+        item.notified = true;
+        pushPendingJoinRequest(config.cwd, item);
+        logger.info(`[group-join] 已 append user/message 到会话 log(不唤醒, 模拟用户消息+停止) gid=${gid}`);
+        return true;
       }
-      // 兜底: 无会话/append 不可用 → 发一条静态群消息提醒(不静默丢)
+      logger.warn(`[group-join] 群内 append ${safeR}, 兜底发 QQ 卡片 gid=${gid}`);
+      // 兜底: 无会话/append 不可用/回合忙 → 发一条静态群消息提醒(不静默丢)
       try {
         const target = { scope: 'group' as const, targetId: gid };
         await sender.sendMarkdown(target, `${summary}\n\n主人可回复让我查看/审批(如: 查看入群申请)。`);

@@ -186,6 +186,15 @@ export interface GroupAdminConfig {
   watchJoinRequests: boolean;
   /** 收到新入群申请事件时是否在该群内发一条 bot 提醒消息(默认开; 需机器人=该群管理员) */
   notifyInGroup: boolean;
+  /**
+   * 群组管理器会话 id(2026-09-09 M2): 该机器人各群的"群事件"(入群申请/新成员加入/机器人被拉群)
+   * 汇总注入到这一个会话(dock 群组管理 tab 一键设为当前 web 会话; 该会话须绑定某 QQ 群/私聊,
+   * 注入姿势=whenIdle 回合空闲后 append user/message 不唤醒 —— web 流可见、不坏聊天记录)。
+   * 配置了且注入成功 → 不再在该群内发提醒(统一收 hub, 避免重复打扰)。
+   */
+  hubSessionId: string;
+  /** 群事件转发到群组管理器的开关(默认开; 置 false 后只在原群内提醒) */
+  hubNotify: boolean;
 }
 
 /** Web 设置可编辑子集(不含 appId/appSecret 等敏感/底层字段) */
@@ -424,12 +433,16 @@ const groupAdminSchema = Schema.object({
   manageGroup: Schema.string().default('').description('对话内默认管理群 group_openid(web/非群会话时群工具用它; QQ 群会话自动用当前群)'),
   watchJoinRequests: Schema.boolean().default(false).description('订阅"入群申请"实时事件(GROUP_JOIN_REQUEST)并自动提醒(改后需重启生效)'),
   notifyInGroup: Schema.boolean().default(true).description('收到入群申请事件时, 在该群内发一条 bot 提醒(需机器人=群管理员)'),
+  hubSessionId: Schema.string().default('').description('群组管理器会话 id: 各群群事件(入群申请/新成员加入/被拉群)汇总注入此会话(dock 群组管理 tab 一键设置; 须绑定某 QQ 群/私聊)'),
+  hubNotify: Schema.boolean().default(true).description('群事件转发到群组管理器(默认开; 注入成功则不再群内提醒)'),
 }).default({
   enabled: false,
   owners: [],
   manageGroup: '',
   watchJoinRequests: false,
   notifyInGroup: true,
+  hubSessionId: '',
+  hubNotify: true,
 }).description('QQ 群管理');
 
 /** Web 设置页可编辑项的 schema(behavior/sticker.gates/injectRules/groupPrompt/schedule) */

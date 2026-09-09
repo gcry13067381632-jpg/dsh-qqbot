@@ -1886,7 +1886,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
       setInterval(refreshBadge, 20000)
 
       // ── 面板状态(每个实例独立保存, 切回不丢) ──
-      var state = { ns: '', accts: [], gid: '', groups: [], tab: 'chat', sendScope: 'group', sendTo: '', sendName: '', sendText: '', insertCtx: true, targetQ: '', c2cs: [], joins: null, mutes: null, members: null, muteSecs: '60', bindGid: '', bindName: '', msg: '', busy: '', wantPeer: null, lookedUp: false, detected: null, detectedHit: null, chatItems: [], chatMore: false, chatBusy: '', chatErr: '', chatOldest: 0, chatText: '', chatIns: true, outMode: '', outRev: undefined, bpEvents: [], bpSel: null, bpDraft: null, rosterSel: {}, rosterScope: 'all', rosterQ: '' }
+      var state = { ns: '', accts: [], gid: '', groups: [], tab: 'chat', sendScope: 'group', sendTo: '', sendName: '', sendText: '', insertCtx: true, targetQ: '', c2cs: [], joins: null, mutes: null, members: null, muteSecs: '60', bindGid: '', bindName: '', msg: '', busy: '', wantPeer: null, lookedUp: false, detected: null, detectedHit: null, chatItems: [], chatMore: false, chatBusy: '', chatErr: '', chatOldest: 0, chatText: '', chatIns: true, outMode: '', outRev: undefined, bpEvents: [], bpSel: null, bpDraft: null, rosterSel: {}, rosterScope: 'all', rosterQ: '', hubSid: '', hubRev: undefined, hubBusy: '', hubMsg: '' }
       // 📇 群组管理 M1: 勾选集合本地持久化(刷新/重开不丢, 供后续群发/批量操作使用)
       try { var _rs = localStorage.getItem('qqs-roster-sel'); if (_rs) { var _rso = JSON.parse(_rs); if (_rso && typeof _rso === 'object') state.rosterSel = _rso } } catch (e) {}
       var chatFlash = '' // 发送结果/错误提示(短时展示, 不被列表计数覆盖)
@@ -2104,7 +2104,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         var ref = panel.querySelector('#dk-roster-refresh')
         if (ref) ref.onclick = function () {
           var q2 = panel.querySelector('#dk-roster-q'); if (q2) q2.value = ''
-          state.rosterQ = ''; refreshAll()
+          state.rosterQ = ''; refreshAll(); loadHubState()
         }
         var allB = panel.querySelector('#dk-roster-all')
         if (allB) allB.onclick = function () {
@@ -2125,6 +2125,67 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           if (!cb || cb === box) return
           rosterToggle(cb.getAttribute('data-rkey'))
         }
+        // 🎯 群组管理器: 设本会话/取消(走 settings groupAdmin.hubSessionId, live 热更)
+        var hubSet = panel.querySelector('#dk-hub-set')
+        if (hubSet) hubSet.onclick = function () {
+          var sid = readCurrentSessionId()
+          if (!sid) { hubHint('未识别到当前 web 会话(稍后再试)'); return }
+          saveHub(sid)
+        }
+        var hubClr = panel.querySelector('#dk-hub-clear')
+        if (hubClr) hubClr.onclick = function () { saveHub('') }
+      }
+      function hubStatusText() {
+        if (state.hubSid) return '已设: 会话 ' + state.hubSid.slice(0, 8) + '… ← 各群群事件(入群申请/新成员/被拉群)汇总注入这里'
+        return '未设置: 群事件只在原群内提醒'
+      }
+      function hubHint(t) {
+        state.hubMsg = t || ''
+        var el = panel && panel.querySelector('#dk-hub-hint')
+        if (el) el.textContent = state.hubMsg
+      }
+      function loadHubState() {
+        fetch(READ + (state.ns ? '?' + outNsQ() : '')).then(function (r) { return r.json() }).then(function (d) {
+          if (!d || !d.value) return
+          var ga = d.value.groupAdmin || {}
+          state.hubSid = ga.hubSessionId || ''
+          state.hubRev = d.revision
+          var st = panel && panel.querySelector('#dk-hub-status')
+          if (st) st.textContent = hubStatusText()
+          var clr = panel && panel.querySelector('#dk-hub-clear')
+          if (clr) clr.disabled = !state.hubSid
+        }).catch(function () {})
+      }
+      function saveHub(sid) {
+        state.hubBusy = 'hub'; hubHint('保存中…')
+        var trySave = function (cur, rev) {
+          var patch = Object.assign({}, cur || {})
+          var ga = Object.assign({}, (cur && cur.groupAdmin) || {}, { hubSessionId: sid || '' })
+          patch.groupAdmin = ga
+          return fetch(UPDATE, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ ns: state.ns || undefined, patch: patch, expectedRevision: rev }),
+          }).then(function (r) { return r.json().catch(function () { return null }) }).then(function (d2) {
+            state.hubBusy = ''
+            if (d2 && d2.value) {
+              var ga2 = d2.value.groupAdmin || {}
+              state.hubSid = ga2.hubSessionId || ''
+              state.hubRev = d2.revision
+              hubHint(sid ? '✓ 已设为本会话为群组管理器(live 生效): 各群群事件将注入此会话' : '✓ 已取消群组管理器')
+              var st = panel && panel.querySelector('#dk-hub-status')
+              if (st) st.textContent = hubStatusText()
+              var clr = panel && panel.querySelector('#dk-hub-clear')
+              if (clr) clr.disabled = !state.hubSid
+            } else {
+              hubHint('保存失败: ' + ((d2 && d2.error) || '未知错误') + (d2 && String(d2.error || '').indexOf('changed since') >= 0 ? '(冲突, 请重试)' : ''))
+            }
+          }).catch(function () { state.hubBusy = ''; hubHint('保存异常') })
+        }
+        // 先读最新 revision 再存(避免陈旧冲突)
+        fetch(READ + (state.ns ? '?' + outNsQ() : '')).then(function (r) { return r.json() }).then(function (d) {
+          if (d && d.value) trySave(d.value, d.revision)
+          else { state.hubBusy = ''; hubHint('保存失败: 无法读取当前设置') }
+        }).catch(function () { state.hubBusy = ''; hubHint('保存异常: 读取失败') })
       }
       function sendNow() {
         var t = (state.sendText || '').trim()
@@ -2327,6 +2388,12 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         } else if (state.tab === 'roster') {
           body += '<div class="dk-row" style="font-weight:700;font-size:13px;margin:2px 0">📇 会话台账:机器人聊过的对象</div>'
           body += '<div class="dk-row"><span class="dk-msg" style="flex:1;line-height:1.5">👤 = 私聊过的人(有 c2c 会话,可直接发消息) · 👥 = 群(群成员≠私聊对象: 群里见过≠能私聊,只能群内@)</span></div>'
+          body += '<div style="border:1px solid #e2d9ff;border-radius:8px;padding:6px 8px;margin:2px 0 6px;background:#faf8ff">'
+            + '<div class="dk-row" style="margin:0"><b style="font-size:13px">🎯 群组管理器(M2)</b>'
+            + '<span class="dk-msg" style="flex:1" id="dk-hub-status">' + hubStatusText() + '</span>'
+            + '<button class="dk-btn ok" id="dk-hub-set"' + (state.hubBusy ? ' disabled' : '') + ' title="把当前 web 会话设为群组管理器: 各群群事件(入群申请/新成员加入/被拉群)将汇总注入此会话">📌 设为本会话</button>'
+            + '<button class="dk-btn" id="dk-hub-clear"' + (state.hubSid ? '' : ' disabled') + '>取消</button></div>'
+            + '<div class="dk-msg" id="dk-hub-hint" style="color:#2f9e44"></div></div>'
           body += '<div class="dk-row">范围: '
             + '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px"><input type="radio" name="dk-rscope" value="all"' + (state.rosterScope === 'all' ? ' checked' : '') + '> 全部</label>'
             + '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px"><input type="radio" name="dk-rscope" value="c2c"' + (state.rosterScope === 'c2c' ? ' checked' : '') + '> 👤 私聊过的人</label>'
@@ -2420,7 +2487,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         if (state.tab === 'chat') renderChatList()
         if (state.tab === 'join') renderJoinList()
         if (state.tab === 'mute') { renderMemberList(); renderMuteList() }
-        if (state.tab === 'roster') { renderRosterList(); bindRosterEvents() }
+        if (state.tab === 'roster') { renderRosterList(); bindRosterEvents(); loadHubState() }
         // 首次进入聊天 tab 自动拉最新一页
         if (state.tab === 'chat' && !state.chatItems.length && !state.chatBusy) loadChat(true)
         setTimeout(layoutPanel, 0)

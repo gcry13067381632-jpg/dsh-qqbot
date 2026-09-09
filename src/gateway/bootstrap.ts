@@ -26,6 +26,7 @@ import { setChannelBridge } from '../channel-tools.js';
 import { QqApprovalController, setApprovalDispatch, makeApprovalListener, registerApprovalController } from '../features/qq-approval.js';
 import { QqUserQuestionsController, registerQuestionController } from '../features/qq-user-questions.js';
 import { handleGroupJoinRequestEvent } from '../features/group-join-request.js';
+import { handleGroupMemberAddEvent, handleGroupAddRobotEvent } from '../features/group-hub.js';
 import { registerSessionManager, setBotOnline } from '../features/session-registry.js';
 import { BotplayController, registerBotplayController, setBotplayTriggerImpl, setBotplayCatalogImpl } from '../features/botplay.js';
 import { buildCommandList } from '../commands/index.js';
@@ -292,15 +293,32 @@ export async function bootstrapGateway(
   // 全局桥: 通道工具 execute 的兜底解析(不依赖 setup/provide, 防重启后 setup 未跑)
   setChannelBridge({ manager, sender });
 
-  // ── 入群申请事件(P2.5): 实时 GROUP_JOIN_REQUEST → 提醒 + pending 待办 ──
-  // SDK 未知事件走 rawEvent 透传; 需 watchJoinRequests(构造时已扩 intents)才收得到。
+  // ── 群事件(M2 群组管理器 + P2.5): rawEvent 分发 ──
+  //  · GROUP_JOIN_REQUEST / GROUP_MEMBER_ADD: intent GROUP_MEMBER_EVENT(1<<24), 需 watchJoinRequests 已扩 intents;
+  //  · GROUP_ADD_ROBOT: intent GROUP_AND_C2C_EVENT(1<<25, SDK FULL_INTENTS 基础订阅即收)。
   // 同一 bot 仅一个群管理实例; 事件带 group_openid, 天然按群路由。
   bot.on('rawEvent', (rawCtx: { eventType?: string; data?: unknown }) => {
-    if (rawCtx.eventType !== 'GROUP_JOIN_REQUEST') return;
-    logger.info(`[group-join] rawEvent GROUP_JOIN_REQUEST 到达`);
-    void handleGroupJoinRequestEvent(rawCtx.data, { sender, config, logger, manager }).catch((err: unknown) => {
-      logger.error(`[group-join] 事件处理异常: ${err instanceof Error ? err.message : String(err)}`);
-    });
+    const et = rawCtx.eventType;
+    if (et === 'GROUP_JOIN_REQUEST') {
+      logger.info(`[group-join] rawEvent GROUP_JOIN_REQUEST 到达`);
+      void handleGroupJoinRequestEvent(rawCtx.data, { sender, config, logger, manager }).catch((err: unknown) => {
+        logger.error(`[group-join] 事件处理异常: ${err instanceof Error ? err.message : String(err)}`);
+      });
+      return;
+    }
+    if (et === 'GROUP_MEMBER_ADD') {
+      logger.info(`[group-hub] rawEvent GROUP_MEMBER_ADD 到达`);
+      void handleGroupMemberAddEvent(rawCtx.data, { config, logger, manager }).catch((err: unknown) => {
+        logger.error(`[group-hub] member_add 处理异常: ${err instanceof Error ? err.message : String(err)}`);
+      });
+      return;
+    }
+    if (et === 'GROUP_ADD_ROBOT') {
+      logger.info(`[group-hub] rawEvent GROUP_ADD_ROBOT 到达`);
+      void handleGroupAddRobotEvent(rawCtx.data, { config, logger, manager }).catch((err: unknown) => {
+        logger.error(`[group-hub] add_robot 处理异常: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    }
   });
 
   // ── QQ 远程审批: ACP 模式接入(专家考古实证, 见 qq-approval.ts 头注) ──
