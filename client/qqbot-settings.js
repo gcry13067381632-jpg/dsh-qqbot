@@ -1886,7 +1886,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
       setInterval(refreshBadge, 20000)
 
       // ── 面板状态(每个实例独立保存, 切回不丢) ──
-      var state = { ns: '', accts: [], gid: '', groups: [], tab: 'chat', sendScope: 'group', sendTo: '', sendName: '', sendText: '', insertCtx: true, targetQ: '', c2cs: [], joins: null, mutes: null, members: null, muteSecs: '60', bindGid: '', bindName: '', msg: '', busy: '', wantPeer: null, lookedUp: false, detected: null, detectedHit: null, chatItems: [], chatMore: false, chatBusy: '', chatErr: '', chatOldest: 0, chatText: '', chatIns: true, outMode: '', outRev: undefined, bpEvents: [], bpSel: null, bpDraft: null, rosterSel: {}, rosterScope: 'all', rosterQ: '', hubSid: '', hubRev: undefined, hubBusy: '', hubMsg: '' }
+      var state = { ns: '', accts: [], gid: '', groups: [], tab: 'chat', sendScope: 'group', sendTo: '', sendName: '', sendText: '', insertCtx: true, targetQ: '', c2cs: [], joins: null, mutes: null, members: null, muteSecs: '60', bindGid: '', bindName: '', msg: '', busy: '', wantPeer: null, lookedUp: false, detected: null, detectedHit: null, chatItems: [], chatMore: false, chatBusy: '', chatErr: '', chatOldest: 0, chatText: '', chatIns: true, outMode: '', outRev: undefined, bpEvents: [], bpSel: null, bpDraft: null, rosterSel: {}, rosterScope: 'all', rosterQ: '', hubSid: '', hubRev: undefined, hubBusy: '', hubMsg: '', gaEnabled: false, gaPoll: false, gaPollWake: true, gaHubNotify: true, gaInterval: 5, gaMinCount: 1, gaMsg: '', gaBusy: '' }
       // 📇 群组管理 M1: 勾选集合本地持久化(刷新/重开不丢, 供后续群发/批量操作使用)
       try { var _rs = localStorage.getItem('qqs-roster-sel'); if (_rs) { var _rso = JSON.parse(_rs); if (_rso && typeof _rso === 'object') state.rosterSel = _rso } } catch (e) {}
       var chatFlash = '' // 发送结果/错误提示(短时展示, 不被列表计数覆盖)
@@ -2134,6 +2134,23 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         }
         var hubClr = panel.querySelector('#dk-hub-clear')
         if (hubClr) hubClr.onclick = function () { saveHub('') }
+        // ⚙ 群组设置(轮询等): 读控件 → 保存到 settings groupAdmin(live 热更)
+        var gaSave = panel.querySelector('#dk-ga-save')
+        if (gaSave) gaSave.onclick = function () {
+          var read = function (id) { var el = panel.querySelector(id); return el ? el.checked : false }
+          var num = function (id, dft) {
+            var el = panel.querySelector(id)
+            var v = parseInt(el ? el.value : '', 10)
+            return isNaN(v) || v < 1 ? dft : v
+          }
+          state.gaEnabled = read('#dk-ga-enabled')
+          state.gaPoll = read('#dk-ga-poll')
+          state.gaPollWake = read('#dk-ga-pollwake')
+          state.gaHubNotify = read('#dk-ga-hubnotify')
+          state.gaInterval = num('#dk-ga-interval', 5)
+          state.gaMinCount = num('#dk-ga-mincount', 1)
+          saveGroupAdmin()
+        }
       }
       function hubStatusText() {
         if (state.hubSid) return '已设: 会话 ' + state.hubSid.slice(0, 8) + '… ← 各群群事件(入群申请/新成员/被拉群)汇总注入这里'
@@ -2154,7 +2171,62 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           if (st) st.textContent = hubStatusText()
           var clr = panel && panel.querySelector('#dk-hub-clear')
           if (clr) clr.disabled = !state.hubSid
+          // ⚙ 群组设置: 载入轮询/开关当前值
+          var poll = ga.pollJoinRequests || {}
+          state.gaEnabled = ga.enabled === true
+          state.gaPoll = poll.enabled === true
+          state.gaPollWake = poll.wakeLlm !== false
+          state.gaHubNotify = poll.hubNotify !== false
+          state.gaInterval = poll.intervalMin || 5
+          state.gaMinCount = poll.minCount || 1
+          var e1 = panel && panel.querySelector('#dk-ga-enabled'); if (e1) e1.checked = state.gaEnabled
+          var e2 = panel && panel.querySelector('#dk-ga-poll'); if (e2) e2.checked = state.gaPoll
+          var e3 = panel && panel.querySelector('#dk-ga-pollwake'); if (e3) e3.checked = state.gaPollWake
+          var e4 = panel && panel.querySelector('#dk-ga-hubnotify'); if (e4) e4.checked = state.gaHubNotify
+          var e5 = panel && panel.querySelector('#dk-ga-interval'); if (e5) e5.value = state.gaInterval
+          var e6 = panel && panel.querySelector('#dk-ga-mincount'); if (e6) e6.value = state.gaMinCount
         }).catch(function () {})
+      }
+      function gaHint(t) {
+        state.gaMsg = t || ''
+        var el = panel && panel.querySelector('#dk-ga-hint')
+        if (el) el.textContent = state.gaMsg
+      }
+      function saveGroupAdmin() {
+        state.gaBusy = 'ga'; gaHint('保存中…')
+        var doSave = function () {
+          var trySave = function (cur, rev) {
+            var patch = Object.assign({}, cur || {})
+            var ga = Object.assign({}, (cur && cur.groupAdmin) || {}, {
+              enabled: state.gaEnabled,
+              pollJoinRequests: {
+                enabled: state.gaPoll,
+                intervalMin: state.gaInterval,
+                minCount: state.gaMinCount,
+                wakeLlm: state.gaPollWake,
+                hubNotify: state.gaHubNotify,
+              },
+            })
+            patch.groupAdmin = ga
+            return fetch(UPDATE, {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ ns: state.ns || undefined, patch: patch, expectedRevision: rev }),
+            }).then(function (r) { return r.json().catch(function () { return null }) }).then(function (d2) {
+              state.gaBusy = ''
+              if (d2 && d2.value) {
+                state.hubRev = d2.revision
+                gaHint('✓ 群组设置已保存(live 生效, 轮询无需重启)')
+              } else {
+                gaHint('保存失败: ' + ((d2 && d2.error) || '未知错误') + (d2 && String(d2.error || '').indexOf('changed since') >= 0 ? '(冲突, 请重试)' : ''))
+              }
+            }).catch(function () { state.gaBusy = ''; gaHint('保存异常') })
+          }
+          fetch(READ + (state.ns ? '?' + outNsQ() : '')).then(function (r) { return r.json() }).then(function (d) {
+            if (d && d.value) trySave(d.value, d.revision)
+            else { state.gaBusy = ''; gaHint('保存失败: 无法读取当前设置') }
+          }).catch(function () { state.gaBusy = ''; gaHint('保存异常: 读取失败') })
+        }
+        doSave()
       }
       function saveHub(sid) {
         state.hubBusy = 'hub'; hubHint('保存中…')
@@ -2407,6 +2479,23 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             + '<button class="dk-btn ok" id="dk-hub-set"' + (state.hubBusy ? ' disabled' : '') + ' title="把当前 web 会话设为群组管理器: 各群群事件(入群申请/新成员加入/被拉群)将汇总注入此会话">📌 设为本会话</button>'
             + '<button class="dk-btn" id="dk-hub-clear"' + (state.hubSid ? '' : ' disabled') + '>取消</button></div>'
             + '<div class="dk-msg" id="dk-hub-hint" style="color:#2f9e44"></div></div>'
+          // ⚙ 群组设置(热更新): 群管理开关 + 入群申请轮询 —— 集中在此, 保存即 live 生效
+          body += '<div style="border:1px solid #e2d9ff;border-radius:8px;padding:6px 8px;margin:2px 0 6px;background:#faf8ff">'
+            + '<div class="dk-row" style="margin:0"><b style="font-size:13px">⚙ 群组设置(热更新)</b>'
+            + '<span class="dk-msg" style="flex:1" id="dk-ga-hint"></span></div>'
+            + '<div class="dk-row" style="gap:8px;flex-wrap:wrap">'
+            + '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px"><input type="checkbox" id="dk-ga-enabled"' + (state.gaEnabled ? ' checked' : '') + '> 群管理</label>'
+            + '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px"><input type="checkbox" id="dk-ga-poll"' + (state.gaPoll ? ' checked' : '') + '> 轮询审批</label>'
+            + '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px"><input type="checkbox" id="dk-ga-pollwake"' + (state.gaPollWake ? ' checked' : '') + '> 唤醒AI</label>'
+            + '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px"><input type="checkbox" id="dk-ga-hubnotify"' + (state.gaHubNotify ? ' checked' : '') + '> 注入群管会话</label>'
+            + '</div>'
+            + '<div class="dk-row" style="gap:8px;flex-wrap:wrap">'
+            + '<span style="font-size:12px;color:#666;display:inline-flex;align-items:center;gap:4px">间隔 <input type="number" id="dk-ga-interval" min="1" value="' + (state.gaInterval || 5) + '" style="width:52px;font-size:12px;padding:2px 4px"> 分钟</span>'
+            + '<span style="font-size:12px;color:#666;display:inline-flex;align-items:center;gap:4px">新增≥<input type="number" id="dk-ga-mincount" min="1" value="' + (state.gaMinCount || 1) + '" style="width:44px;font-size:12px;padding:2px 4px">个才唤醒</span>'
+            + '<button class="dk-btn ok" id="dk-ga-save" style="margin-left:auto">💾 保存设置</button>'
+            + '</div>'
+            + '<div class="dk-msg" style="line-height:1.5;color:#888">轮询=定时拉各群审批列表, 有新增就唤醒AI提醒你(默认1个也报, 不攒死); 大量申请靠轮询周期自然攒批。保存即热更新, 不用重启。</div>'
+            + '</div>'
           body += '<div class="dk-row">范围: '
             + '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px"><input type="radio" name="dk-rscope" value="all"' + (state.rosterScope === 'all' ? ' checked' : '') + '> 全部</label>'
             + '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px"><input type="radio" name="dk-rscope" value="c2c"' + (state.rosterScope === 'c2c' ? ' checked' : '') + '> 👤 私聊过的人</label>'
