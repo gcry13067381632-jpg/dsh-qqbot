@@ -53,6 +53,7 @@
 - QQ 会话内可直接调用的标准工具：发图/撤图/查库/打标/查未整理/定时（`send_media`/`recall_message`/`list_stickers`/`sticker_tag`/`sticker_untagged`/`schedule_timer`/`schedule_cancel`…），会话按账号精确路由
 - **群管理工具**（`group_join_requests`/`group_approve_join`/`group_mute_state`/`group_mute_member`…）：入群审批与禁言，需机器人为该群管理员；对话内管当前群，web/非群会话用配置的 `manageGroup`
 - **纯文本也能发图撤消息**：让 AI 在回复里写 `[MEDIA:image|图片路径或网址]` 就自动变成真图发出去（`voice`/`video`/`file` 同理）；写 `[RECALL]` 撤回自己刚发的那条
+- **跨会话通信（通用插件能力，v1.1.0+）**：`session_list` 列出全部会话（含潜在群，重启后仍可靠）；`session_wake` 向指定会话/群发送消息并唤醒对方 LLM（web 注入给 AI 看），同时可走 QQBot 通道发到绑定的群/私聊（给人看），自动带 `【来自会话 xxx…】` 来源标注，支持 `media` 跨群发图。寻址走 module 级 session-registry（跨实例精确命中），会话未创建时懒创建/宿主 resume 恢复——**重启后也能找到并唤醒任何会话**
 - 会话归属、工作区挂载等宿主问题已按官方机制修好（移植上游 PR #21，幂等、全 fail-soft）
 
 > 🛡️ 仓库**不含**任何机器人凭据、图库数据、日志与个人路径（发布前已清理）。AppID/AppSecret 请走环境变量或 Web 面板注入，**不要提交进 git**。
@@ -210,6 +211,11 @@ npx @deepseek-ai/dsh web --patch /path/to/dsh-qqbot/cordis.dev.yml
 > ⚠️ `watchJoinRequests` 需要连接期注册 intents(GROUP_MEMBER_EVENT, 1<<24)——**改它必须重启**,不是 live 热改;且需官方对该机器人开放对应能力,否则连接可能被拒(4914/4915)。
 
 **入群审批怎么用**: 事件到达 → bot 在群里发一条提醒(含申请人昵称/验证语)→ 你在对话里说"通过/拒绝"(AI 调 `group_approve_join`)→ 官方落库审批。也可以在设置面板「⑥ QQ 群管理 → 入群审批」页看待审批清单手动批。
+
+**跨群/跨会话工具**(v1.1.0+): 
+- `group_join_requests(gid=…)` / `group_approve_join(member_openids=…)`: 传 `gid` 可查询/审批**指定群**的入群申请(不限于当前会话群), 支持一次批量审批多人;
+- `session_list`: 列出全部会话(含群注册表里的"潜在群", 重启后仍可靠), 给出每个会话/群的 sessionId 供寻址;
+- `session_wake(session_id 或 scope+peer_id, text, send_qq?, media?)`: 向指定会话/群发消息并唤醒对方 LLM, 同时可走 QQBot 通道发到绑定的群/私聊(带 `【来自会话 xxx…】` 来源标注), `media` 支持跨群发图。
 
 **配置项**(Web 面板 ⑥ 可改, 见下表 `groupAdmin.*`)
 
