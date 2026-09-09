@@ -952,15 +952,51 @@ export async function apply(ctx: Context): Promise<void> {
     },
   });
 
+  /** 发到目标 QQ 群/私聊: 若给了 media 先发图(用目标 manager 归属的 sender), 再发带来源文本; 无 sender 则 groupAdmin 文本兜底 */
+  async function sendQQWithMedia(
+    manager: SessionManager,
+    scope: 'group' | 'c2c',
+    peer: string,
+    body: string,
+    media: string,
+    exec: unknown,
+  ): Promise<string> {
+    const ch = channelBridges.find((b) => b.manager === manager);
+    const sent: string[] = [];
+    if (media) {
+      if (ch?.sender) {
+        try {
+          const src = /^https?:\/\//i.test(media) ? { url: media } : { localPath: media };
+          await ch.sender.sendMedia({ scope, targetId: peer }, 'image', src);
+          sent.push('🖼️图');
+        } catch {
+          sent.push('⚠️发图失败');
+        }
+      } else {
+        sent.push('⚠️无发送通道');
+      }
+    }
+    const ga = groupAdminOf(exec as never);
+    if (ga) {
+      const sr = scope === 'group'
+        ? await ga.client.sendGroupText(peer, body)
+        : await ga.client.sendC2cText(peer, body);
+      sent.push(sr.ok ? `📨已发到QQ ${scope === 'group' ? '群' : '私聊'}` : `⚠️QQ发送失败: ${sr.err.human}`);
+    } else {
+      sent.push('⚠️群管理未开启');
+    }
+    return `；${sent.join(' ')}`;
+  }
+
   const sessionWakeTool = defineTool({
     name: 'session_wake',
-    description: '跨会话(写,需谨慎): 向指定会话发送一条消息并唤醒该会话的 LLM(给 AI 看); 同时把带来源标注的消息通过 QQBot 通道发到该会话绑定的群/私聊(给人看)。可用 session_list 查目标 id; 也支持按 peerId(群/私聊) 寻址。仅主人明确要求时调用。',
-    parameters: {
+    description: '跨会话(写,需谨慎): 向指定会话发送一条消息并唤醒该会话的 LLM(给 AI 看); 同时把带来源标注的消息通过 QQBot 通道发到该会话绑定的群/私聊(给人看)。可用 session_list 查目标 id; 也支持按 peerId(群/私聊) 寻址。仅主人明确要求时调用。',    parameters: {
       session_id: { type: 'string', description: '目标会话 id(完整 sessionId, 来自 session_list)' },
       peer_id: { type: 'string', description: '或按 peer 寻址: 群 openid/私聊 openid(需带 scope)' },
       scope: { type: 'string', enum: ['group', 'c2c'], description: 'peer_id 寻址时的范围(group=群 / c2c=私聊)' },
       text: { type: 'string', required: true, description: '要发送并唤醒 AI 的消息内容' },
       send_qq: { type: 'boolean', description: '是否同时发到绑定的 QQ 群/私聊(给人看, 默认 true)。false=只唤醒 LLM 不走 QQ 通道' },
+      media: { type: 'string', description: '跨群发图: 图片本地路径或 http(s) URL, 随消息发到目标群(需 send_qq=true)' },
     },
     output: {
       schema: {
@@ -1016,15 +1052,7 @@ export async function apply(ctx: Context): Promise<void> {
             } catch { /* 无注册表则跳过 */ }
           }
           if (qScope && qPeer) {
-            const ga = groupAdminOf(exec);
-            if (ga) {
-              const sr = qScope === 'group'
-                ? await ga.client.sendGroupText(qPeer, body)
-                : await ga.client.sendC2cText(qPeer, body);
-              extra = sr.ok ? `；📨 已发到QQ ${qScope === 'group' ? '群' : '私聊'}` : `；⚠️ QQ发送失败: ${sr.err.human}`;
-            } else {
-              extra = '；⚠️ 群管理未开启, 未发QQ';
-            }
+            extra = await sendQQWithMedia(manager, qScope, qPeer, body, String(args.media || ''), exec as never);
           }
         }
         return { ok: r === 'ok', msg: `${map[r] ?? r} (${sid.slice(0, 8)}…)${extra}` };
@@ -1046,15 +1074,7 @@ export async function apply(ctx: Context): Promise<void> {
       const r = await wakeSessionAgent(manager, sid2, loggerLike(exec as never), body);
       let extra = '';
       if (args.send_qq !== false) {
-        const ga = groupAdminOf(exec);
-        if (ga) {
-          const sr = sc === 'group'
-            ? await ga.client.sendGroupText(peer, body)
-            : await ga.client.sendC2cText(peer, body);
-          extra = sr.ok ? `；📨 已发到QQ ${sc === 'group' ? '群' : '私聊'}` : `；⚠️ QQ发送失败: ${sr.err.human}`;
-        } else {
-          extra = '；⚠️ 群管理未开启, 未发QQ';
-        }
+        extra = await sendQQWithMedia(manager, sc, peer, body, String(args.media || ''), exec as never);
       }
       return { ok: r === 'ok', msg: `${map[r] ?? r} (${sid2.slice(0, 8)}…)${extra}` };
     },
