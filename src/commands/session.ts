@@ -60,19 +60,49 @@ export function newPresetCommand({ manager }: CommandDeps): SlashCommand {
   };
 }
 
+/** /preset <id> — 热切换当前会话的人格(preset), 不丢对话历史(2026-09-10) */
+export function presetSwitchCommand({ manager }: CommandDeps): SlashCommand {
+  return {
+    name: 'preset',
+    description: '热切换当前会话人格: /preset <id>(不丢对话历史, 即时生效); /presets 查看可选',
+    usage: '/preset <id>',
+    handler: async (cmdCtx) => {
+      const { scope, peerId } = getScopePeer(cmdCtx);
+      const args = String((cmdCtx.command?.raw ?? '').trim());
+      if (!args) {
+        return '用法: /preset <id> — 热切换人格(不丢历史)\n/presets 查看可用人格';
+      }
+      const list = await manager.listPresets();
+      const hit = list.find((p) => p.id === args && !p.broken);
+      if (!hit) {
+        const lines = [`找不到人格「${args}」— 可用:`];
+        for (const p of list) {
+          lines.push(`- ${p.id}${p.name ? `(${p.name})` : ''}${p.broken ? ' [损坏]' : ''}`);
+        }
+        return lines.join('\n');
+      }
+      const r = await manager.switchPreset(scope, peerId, hit.id);
+      if (r === 'ok') return `✅ 已热切换人格为「${hit.id}」${hit.name ? `(${hit.name})` : ''}，对话历史保留，即时生效！`;
+      if (r === 'no-session') return '当前没有活跃会话, 请先聊一句再切换';
+      if (r === 'no-preset') return `人格「${hit.id}」不可用`;
+      return '⚠️ 热切换失败, 已回退(fork 未生效)';
+    },
+  };
+}
+
 /** /presets — 列出全部可用 agent preset(2026-09-08, 配合 /new 切人格) */
 export function presetsCommand({ manager }: CommandDeps): SlashCommand {
   return {
     name: 'presets',
-    description: '列出可用人格(preset), 配合 /new <id> 切换',
+    description: '列出可用人格(preset), 配合 /preset <id> 热切换 / /new <id> 开新档',
     handler: async () => {
       const list = await manager.listPresets();
       if (list.length === 0) return '宿主暂未提供 agent preset(或未挂载 agentPresets 服务)';
-      const lines = ['### 🧬 可用人格(preset)', '', '发 `/new <id>` 以该人格开新会话:'];
+      const lines = ['### 🧬 可用人格(preset)', '', '发 `/preset <id>` 热切换(不丢历史); `/new <id>` 以该人格开新会话:'];
       for (const p of list) {
         lines.push(`- **${p.id}**${p.name ? ` ${p.name}` : ''}${p.broken ? ' ⚠️损坏' : ''}`);
       }
-      lines.push('', '提示: /new 不带参=用默认人格开新档; 切人格不丢旧会话(存档可回看)');
+      lines.push('', '提示: /preset=当前会话即时换人格(上下文保留); /new 不带参=用默认人格开新档');
       return lines.join('\n');
     },
   };

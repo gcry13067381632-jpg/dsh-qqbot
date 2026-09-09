@@ -195,6 +195,30 @@ export class SessionManager {
     return override || this.config.preset;
   }
 
+  /**
+   * 热切换预设(2026-09-10, 主人要求不丢历史): 记 preset 覆盖落盘后,
+   * fork 当前会话并继承历史 seed, 用新 preset 重建 agent —— 换人格不丢上下文。
+   * 与 /bot-model 换模型同机制(inherit=true); 旧档作为 parent 存档可回看。
+   * @returns 'ok' | 'no-session' | 'no-preset' | 'fork-failed'
+   */
+  async switchPreset(scope: ChatScope, peerId: string, presetId: string): Promise<string> {
+    const key = this.sessionKey(scope, peerId);
+    const record = this.sessions.get(key);
+    if (!record) return 'no-session';
+    if (!(await this.hasPreset(presetId))) return 'no-preset';
+
+    try { this.modelResolver.setSessionPreset(key, presetId); } catch { /* ignore */ }
+
+    const route = this.modelResolver.getEffectiveRoute(key);
+    try {
+      await this.forkCurrentSession(key, record, route, true);
+      return 'ok';
+    } catch (err) {
+      this.logger.warn(`switchPreset failed: key=${key} err=${err instanceof Error ? err.message : String(err)}`);
+      return 'fork-failed';
+    }
+  }
+
   /** 列出宿主可用 agent presets(供 /presets 命令; 失败返回空) */
   async listPresets(): Promise<Array<{ id: string; name?: string; broken?: boolean }>> {
     try {

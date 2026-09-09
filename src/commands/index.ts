@@ -6,7 +6,7 @@
  */
 import type { SlashCommand } from '@tencent-connect/qqbot-nodejs';
 import type { CommandDeps } from './types.js';
-import { resetCommand, newCommand, newPresetCommand, presetsCommand } from './session.js';
+import { resetCommand, newCommand, newPresetCommand, presetSwitchCommand, presetsCommand } from './session.js';
 import { modelCommand, modelAliasCommand } from './model.js';
 import { statusCommand } from './status.js';
 import { helpCommand } from './help.js';
@@ -24,8 +24,9 @@ export function buildCommandList(deps: CommandDeps): SlashCommand[] {
     // 会话
     resetCommand(deps),
     newCommand(deps),
-    // 人格(preset): /new <id> 按会话切换, /presets 查看可用(2026-09-08)
+    // 人格(preset): /preset <id> 热切换不丢历史, /new <id> 开新档, /presets 查看可用(2026-09-08/10)
     newPresetCommand(deps),
+    presetSwitchCommand(deps),
     presetsCommand(deps),
     // 模型
     modelCommand(deps),
