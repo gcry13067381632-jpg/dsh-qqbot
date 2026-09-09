@@ -972,12 +972,17 @@ export async function apply(ctx: Context): Promise<void> {
     async execute(args, exec) {
       const text = String(args.text || '');
       if (!text) return { ok: false, msg: '缺少 text' };
-      // 来源标注(便于对方直接会话): 取本执行会话 id, 拿不到用 'web'
+      // 来源标注(便于对方直接会话): 优先当前执行 agent 的 id(=会话 id); 再取当前会话记录;
+      // 再回退 groupAdmin 的 hub 会话; 最后 'web'
       let from = 'web';
       try {
-        const ch0 = channelOf(exec as never);
-        const src = findSessionRec(ch0, exec as never);
-        if (src?.rec?.sessionId) from = src.rec.sessionId.slice(0, 8) + '…';
+        const aid = (exec.agent as { id?: unknown } | undefined)?.id;
+        if (typeof aid === 'string' && aid.length >= 8) from = aid.slice(0, 8) + '…';
+        else {
+          const ch0 = channelOf(exec as never);
+          const src = findSessionRec(ch0, exec as never);
+          if (src?.rec?.sessionId) from = src.rec.sessionId.slice(0, 8) + '…';
+        }
       } catch { /* 忽略 */ }
       const body = `【来自会话 ${from}】\n${text}`;
       const map: Record<string, string> = {
@@ -994,9 +999,22 @@ export async function apply(ctx: Context): Promise<void> {
         const r = await wakeSessionAgent(manager, sid, loggerLike(exec as never), text);
         let extra = '';
         if (args.send_qq !== false) {
+          // 目标 peer: 活跃会话直接取记录; 潜在群(未创建)从群注册表按 sessionIdFor 反查
+          let qScope: 'group' | 'c2c' | undefined;
+          let qPeer = '';
           const rec = manager.findBySessionId(sid);
-          const qScope = rec?.scope;
-          const qPeer = rec?.peerId;
+          if (rec) {
+            qScope = rec.scope;
+            qPeer = rec.peerId;
+          } else {
+            try {
+              const raw = readFileSync(groupRegistryPath(manager.cwd), 'utf8');
+              const reg = JSON.parse(raw) as Record<string, unknown>;
+              for (const gid of Object.keys(reg ?? {})) {
+                if (manager.sessionIdFor('group', gid) === sid) { qScope = 'group'; qPeer = gid; break; }
+              }
+            } catch { /* 无注册表则跳过 */ }
+          }
           if (qScope && qPeer) {
             const ga = groupAdminOf(exec);
             if (ga) {
