@@ -85,7 +85,7 @@ export function presetSwitchCommand({ manager }: CommandDeps): SlashCommand {
       if (r === 'ok') return `✅ 已热切换人格为「${hit.id}」${hit.name ? `(${hit.name})` : ''}，对话历史保留，即时生效！`;
       if (r === 'no-session') return '当前没有活跃会话, 请先聊一句再切换';
       if (r === 'no-preset') return `人格「${hit.id}」不可用`;
-      return '⚠️ 热切换失败, 已回退(fork 未生效)';
+      return '⚠️ 热切换失败(宿主 recompose 不可用/失败), 可试 /new <id> 开新档';
     },
   };
 }

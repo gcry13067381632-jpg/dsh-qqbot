@@ -196,10 +196,11 @@ export class SessionManager {
   }
 
   /**
-   * 热切换预设(2026-09-10, 主人要求不丢历史): 记 preset 覆盖落盘后,
-   * fork 当前会话并继承历史 seed, 用新 preset 重建 agent —— 换人格不丢上下文。
-   * 与 /bot-model 换模型同机制(inherit=true); 旧档作为 parent 存档可回看。
-   * @returns 'ok' | 'no-session' | 'no-preset' | 'fork-failed'
+   * 热切换预设(2026-09-10 主人确认: 设置页就是这么热切的):
+   * 直接调宿主 agentPresets.recompose(agent.ctx, id) —— 重绑 agent 的 scope 父级
+   * 到目标 preset 的 standing mount, 立即生效、不丢会话历史、不 fork。
+   * 这是宿主「账号和预设」设置页同款通道(实测语气即变)。
+   * @returns 'ok' | 'no-session' | 'no-preset' | 'recompose-failed'
    */
   async switchPreset(scope: ChatScope, peerId: string, presetId: string): Promise<string> {
     const key = this.sessionKey(scope, peerId);
@@ -207,15 +208,27 @@ export class SessionManager {
     if (!record) return 'no-session';
     if (!(await this.hasPreset(presetId))) return 'no-preset';
 
-    try { this.modelResolver.setSessionPreset(key, presetId); } catch { /* ignore */ }
+    const agentCtx = (record.agent as { ctx?: Context } | undefined)?.ctx;
+    if (!agentCtx) return 'recompose-failed';
 
-    const route = this.modelResolver.getEffectiveRoute(key);
     try {
-      await this.forkCurrentSession(key, record, route, true);
+      const presets = this.ctx.get('agentPresets') as {
+        recompose?: (agentCtx: Context, id: string) => Promise<unknown>;
+      } | undefined;
+      if (!presets || typeof presets.recompose !== 'function') {
+        this.logger.warn(`switchPreset: 宿主未提供 agentPresets.recompose, 回退 fork 通道`);
+        return 'recompose-failed';
+      }
+      await presets.recompose(agentCtx, presetId);
+      // 记录会话 preset 覆盖(重启后恢复同人格; 与 /new 一致)
+      try { this.modelResolver.setSessionPreset(key, presetId); } catch { /* ignore */ }
+      // 更新 record 上的 agentPreset 展示字段(会话状态/日志用)
+      record.agentPreset = presetId;
+      this.logger.info(`switchPreset ok: key=${key} → preset=${presetId} (host recompose, 热切不丢历史)`);
       return 'ok';
     } catch (err) {
       this.logger.warn(`switchPreset failed: key=${key} err=${err instanceof Error ? err.message : String(err)}`);
-      return 'fork-failed';
+      return 'recompose-failed';
     }
   }
 
