@@ -812,8 +812,10 @@ export async function apply(ctx: Context): Promise<void> {
 
   const listJoinRequestsTool = defineTool({
     name: 'group_join_requests',
-    description: '群管理(读): 查看当前群待审批的入群申请列表(申请人/验证消息/来源/风险提示)。仅主人要求时调用。需在设置开启"QQ群管理"且机器人为群管理员。',
-    parameters: {},
+    description: '群管理(读): 查看待审批的入群申请列表(申请人/验证消息/来源/风险提示)。默认查当前会话所在群/manageGroup; 也可传 gid 查指定群。仅主人要求时调用。需在设置开启"QQ群管理"且机器人为群管理员。',
+    parameters: {
+      gid: { type: 'string', description: '目标群 openid(可选)。不填=当前会话群或 manageGroup; 填了则查指定群的待审批列表' },
+    },
     output: {
       schema: {
         type: 'object', additionalProperties: false,
@@ -821,16 +823,17 @@ export async function apply(ctx: Context): Promise<void> {
       },
       render: (_a, v: { ok: boolean; msg: string }) => [{ type: 'text' as const, text: v.ok ? v.msg : `失败: ${v.msg}` }],
     },
-    async execute(_args, exec) {
+    async execute(args, exec) {
       const ga = groupAdminOf(exec);
       if (!ga) return { ok: false, msg: '群管理未开启(设置→QQ群管理)或非群会话' };
-      if (!ga.gid) return { ok: false, msg: '当前不是群会话, 无法确定目标群' };
-      const r = await ga.client.listJoinRequests(ga.gid);
+      const gid = args.gid || ga.gid;
+      if (!gid) return { ok: false, msg: '当前不是群会话且未指定 gid, 无法确定目标群' };
+      const r = await ga.client.listJoinRequests(gid);
       if (!r.ok) return { ok: false, msg: r.err.human };
       const list = r.data.list;
       if (list.length === 0) return { ok: true, msg: '当前没有待审批的入群申请 ✓' };
       const lines = list.map((j, i) => `${i + 1}. ${j.username ?? '?'} (${j.member_openid}) 来源:${j.apply_source ?? '?'} 验证:${verifyHuman(j.verify_info) || '-'}${j.risk_tips ? ` ⚠️${j.risk_tips}` : ''}`);
-      return { ok: true, msg: `入群申请 ${list.length} 条:\n${lines.join('\n')}` };
+      return { ok: true, msg: `入群申请 ${list.length} 条${args.gid ? `(群 …${gid.slice(-6)})` : ''}:\n${lines.join('\n')}` };
     },
   });
 
@@ -838,6 +841,7 @@ export async function apply(ctx: Context): Promise<void> {
     name: 'group_approve_join',
     description: '群管理(写,危险): 审批入群申请。approve=放行 / decline=拒绝(可带理由)。支持批量: member_openids 数组一次批多人(优先); 也兼容单数 member_openid。仅主人明确要求时调用; 调用前建议先 group_join_requests 核对申请人。',
     parameters: {
+      gid: { type: 'string', description: '目标群 openid(可选)。不填=当前会话群或 manageGroup; 填了则审批指定群的申请' },
       member_openids: { type: 'array', description: '批量审批: 申请人 member_openid 数组(来自 group_join_requests), 一次批多人' },
       member_openid: { type: 'string', description: '单个申请人 member_openid(批量时可不填)' },
       op: { type: 'string', required: true, enum: ['approve', 'decline'], description: 'approve 放行 / decline 拒绝' },
@@ -853,13 +857,14 @@ export async function apply(ctx: Context): Promise<void> {
     async execute(args, exec) {
       const ga = groupAdminOf(exec);
       if (!ga) return { ok: false, msg: '群管理未开启或非群会话' };
-      if (!ga.gid) return { ok: false, msg: '当前不是群会话' };
+      const gid = args.gid || ga.gid;
+      if (!gid) return { ok: false, msg: '当前不是群会话且未指定 gid' };
       const targets = Array.isArray(args.member_openids) && args.member_openids.length
         ? args.member_openids
         : (args.member_openid ? [args.member_openid] : []);
       if (targets.length === 0) return { ok: false, msg: '请提供要审批的 member_openid(可多个)' };
       // join_request_id 官方审批必填(缺省报 40103007): 先拉列表按 member_openid 匹配自动补上
-      const listR = await ga.client.listJoinRequests(ga.gid);
+      const listR = await ga.client.listJoinRequests(gid);
       if (!listR.ok) return { ok: false, msg: listR.err.human };
       const list = listR.data.list ?? [];
       const results: string[] = [];
@@ -867,7 +872,7 @@ export async function apply(ctx: Context): Promise<void> {
       for (const midRaw of targets) {
         const mid = String(midRaw);
         const found = list.find((j) => j.member_openid === mid);
-        const r = await ga.client.approveJoinRequest(ga.gid, mid, args.op as 'approve' | 'decline', {
+        const r = await ga.client.approveJoinRequest(gid, mid, args.op as 'approve' | 'decline', {
           ...(found ? { join_request_id: String(found.join_request_id ?? '') } : {}),
           ...(args.op === 'decline' && String(args.reason ?? '') && String(args.reason) !== '-'
             ? { reject_reason: String(args.reason) }
