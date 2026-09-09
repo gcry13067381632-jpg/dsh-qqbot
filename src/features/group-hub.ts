@@ -154,6 +154,45 @@ export async function notifyGroupHub(
   }
 }
 
+/**
+ * 唤醒群组管理器会话的 LLM(轮询用): 把待审批摘要 followup 给 hub 会话的 agent,
+ * AI 开回合即可主动处理(查列表/按主人指令批拒)。不依赖普通群会话。
+ * @returns 'ok' | 'no-hub' | 'no-session' | 'no-followup'
+ */
+export async function wakeHubAgent(
+  manager: SessionManager,
+  config: ImQQBotConfig,
+  logger: Logger,
+  text: string,
+): Promise<string> {
+  const ga = config.groupAdmin;
+  if (!ga?.hubSessionId) return 'no-hub';
+  try {
+    const rec = manager.findBySessionId(ga.hubSessionId);
+    if (!rec) {
+      logger.warn?.(`[group-hub] hub 会话未找到(唤醒): ${ga.hubSessionId.slice(0, 8)}…`);
+      return 'no-session';
+    }
+    const a = rec.agent as { followup?: (m: unknown) => void };
+    if (typeof a.followup !== 'function') return 'no-followup';
+    let msg: unknown;
+    try {
+      msg = createUserMessage({
+        content: [{ type: 'text', text }],
+        source: { kind: 'user' },
+      });
+    } catch {
+      return 'no-followup';
+    }
+    a.followup(msg);
+    logger.info(`[group-hub] 唤醒 hub agent(${ga.hubSessionId.slice(0, 8)}…) ok`);
+    return 'ok';
+  } catch (err) {
+    logger.warn?.(`[group-hub] 唤醒异常: ${err instanceof Error ? err.message : String(err)}`);
+    return 'fail';
+  }
+}
+
 /** GROUP_MEMBER_ADD: 新成员入群 → 记成员台账(事件无 username, 只落 openid)+ hub 通知 */
 export async function handleGroupMemberAddEvent(
   data: unknown,

@@ -21,7 +21,7 @@ import type { Logger } from '../types.js';
 import type { SessionManager } from '../session/index.js';
 import { handleInbound } from '../transport/inbound.js';
 import { pushPendingJoinRequest, type PendingJoinRequest } from './group-join-request.js';
-import { notifyGroupHub } from './group-hub.js';
+import { notifyGroupHub, wakeHubAgent } from './group-hub.js';
 import { groupRegistryPath } from '../api/group-admin.js';
 import { verifyHuman } from '../api/group-admin.js';
 import { dataRootOf } from '../gateway/data-root.js';
@@ -200,46 +200,54 @@ export function startJoinRequestPolling(
     persist();
     const summary = lines.join('\n');
 
-    // ── 注入策略(主人 2026-09-10 定): 唤醒与 hub 注入互斥, 都带完整明细 ──
-    //   ① wakeLlm=true 且 notifyGroup=true → 伪造入站消息唤醒 LLM(完整明细), hub 不再注入(避免双条重复)
-    //   ② 否则(未唤醒 / 不打扰普通群) → hub 注入, extra 带完整明细
+    // ── 注入策略(主人 2026-09-10 定稿): 三开关独立, 唤醒与 hub 注入互斥, 都带完整明细 ──
+    //   hubNotify   → 注入 hub 会话(web 可见, 不唤醒)
+    //   wakeLlm     → followup 唤醒 hub agent(AI 起来处理) —— 与 hubNotify 互斥(避免双条)
+    //   notifyGroup → 是否同时伪造消息进普通群会话(默认关=只走群组管理器, 普通群不打扰)
     const first = wakeTargets[0];
-    const willFakeWake = poll.wakeLlm !== false && poll.notifyGroup !== false && !!first;
-
-    if (willFakeWake) {
-      const now2 = new Date();
-      const pad = (n: number): string => String(n).padStart(2, '0');
-      const ts = `${now2.getFullYear()}-${pad(now2.getMonth() + 1)}-${pad(now2.getDate())} ${pad(now2.getHours())}:${pad(now2.getMinutes())}`;
-      const fakeMsg = {
-        kind: 'group' as const,
-        senderId: 'master',
-        senderName: '审批轮询',
-        content: `[审批轮询 ${ts}] ${summary}\n\n可回复我处理(如: 查看入群申请 / 通过 某人 / 拒绝 某人)`,
-        messageId: '',
-        timestamp: now2.toISOString(),
-        groupOpenid: first.gid,
-        msgType: 0,
-        attachments: undefined,
-      };
-      try {
-        await handleInbound(fakeMsg, manager, config, logger, undefined);
-        logger.info(`[join-poll] 已唤醒 LLM(${wakeTargets.length} 群, ${total} 条), hub 不再注入`);
-      } catch (err) {
-        logger.warn?.(`[join-poll] 唤醒失败: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    } else {
-      // hub 注入(带完整明细): 不唤醒时只有这一条, 信息不能丢
-      if (first && poll.hubNotify !== false && config.groupAdmin?.hubSessionId) {
-        const hubR = await notifyGroupHub(manager, config, logger, {
-          kind: 'join_request',
-          gid: first.gid,
-          memberOpenid: first.items[0]?.member_openid,
-          name: first.items[0]?.username,
-          extra: summary,
-        });
-        logger.info(`[join-poll] hub 注入(带明细): ${hubR}`);
+    if (first) {
+      if (poll.wakeLlm !== false) {
+        // 唤醒群组管理器会话的 AI(带完整明细): 主人 web 这边 AI 起来查列表/处理
+        const wakeText = `【审批轮询】发现 ${total} 个新的入群申请:\n${summary}\n\n可回复我处理(如: 查看入群申请 / 通过 某人 / 拒绝 某人)`;
+        const w = await wakeHubAgent(manager, config, logger, wakeText);
+        logger.info(`[join-poll] 唤醒 hub agent: ${w}`);
       } else {
-        logger.info(`[join-poll] 未唤醒且无 hub 目标(wakeLlm=${poll.wakeLlm} notifyGroup=${poll.notifyGroup} hubNotify=${poll.hubNotify}), 仅落盘`);
+        // 不唤醒 → hub 注入带完整明细(web 可见不 wake, 信息不丢)
+        if (poll.hubNotify !== false) {
+          const hubR = await notifyGroupHub(manager, config, logger, {
+            kind: 'join_request',
+            gid: first.gid,
+            memberOpenid: first.items[0]?.member_openid,
+            name: first.items[0]?.username,
+            extra: summary,
+          });
+          logger.info(`[join-poll] hub 注入(带明细): ${hubR}`);
+        } else {
+          logger.info(`[join-poll] wakeLlm=false 且 hubNotify=false, 仅落盘`);
+        }
+      }
+      // 通知普通群(独立开关, 默认 false): 在普通群会话也伪造一条(带明细)
+      if (poll.notifyGroup !== false) {
+        const now2 = new Date();
+        const pad = (n: number): string => String(n).padStart(2, '0');
+        const ts = `${now2.getFullYear()}-${pad(now2.getMonth() + 1)}-${pad(now2.getDate())} ${pad(now2.getHours())}:${pad(now2.getMinutes())}`;
+        const fakeMsg = {
+          kind: 'group' as const,
+          senderId: 'master',
+          senderName: '审批轮询',
+          content: `[审批轮询 ${ts}] ${summary}\n\n可回复我处理(如: 查看入群申请 / 通过 某人 / 拒绝 某人)`,
+          messageId: '',
+          timestamp: now2.toISOString(),
+          groupOpenid: first.gid,
+          msgType: 0,
+          attachments: undefined,
+        };
+        try {
+          await handleInbound(fakeMsg, manager, config, logger, undefined);
+          logger.info(`[join-poll] 普通群已提醒(notifyGroup)`);
+        } catch (err) {
+          logger.warn?.(`[join-poll] 普通群提醒失败: ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
     }
   }
