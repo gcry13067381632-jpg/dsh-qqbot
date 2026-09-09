@@ -2158,34 +2158,47 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
       }
       function saveHub(sid) {
         state.hubBusy = 'hub'; hubHint('保存中…')
-        var trySave = function (cur, rev) {
-          var patch = Object.assign({}, cur || {})
-          var ga = Object.assign({}, (cur && cur.groupAdmin) || {}, { hubSessionId: sid || '' })
-          patch.groupAdmin = ga
-          return fetch(UPDATE, {
-            method: 'POST', headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ ns: state.ns || undefined, patch: patch, expectedRevision: rev }),
-          }).then(function (r) { return r.json().catch(function () { return null }) }).then(function (d2) {
-            state.hubBusy = ''
-            if (d2 && d2.value) {
-              var ga2 = d2.value.groupAdmin || {}
-              state.hubSid = ga2.hubSessionId || ''
-              state.hubRev = d2.revision
-              hubHint(sid ? '✓ 已设为本会话为群组管理器(live 生效): 各群群事件将注入此会话' : '✓ 已取消群组管理器')
-              var st = panel && panel.querySelector('#dk-hub-status')
-              if (st) st.textContent = hubStatusText()
-              var clr = panel && panel.querySelector('#dk-hub-clear')
-              if (clr) clr.disabled = !state.hubSid
-            } else {
-              hubHint('保存失败: ' + ((d2 && d2.error) || '未知错误') + (d2 && String(d2.error || '').indexOf('changed since') >= 0 ? '(冲突, 请重试)' : ''))
-            }
-          }).catch(function () { state.hubBusy = ''; hubHint('保存异常') })
+        var doSave = function () {
+          var trySave = function (cur, rev) {
+            var patch = Object.assign({}, cur || {})
+            var ga = Object.assign({}, (cur && cur.groupAdmin) || {}, { hubSessionId: sid || '' })
+            patch.groupAdmin = ga
+            return fetch(UPDATE, {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ ns: state.ns || undefined, patch: patch, expectedRevision: rev }),
+            }).then(function (r) { return r.json().catch(function () { return null }) }).then(function (d2) {
+              state.hubBusy = ''
+              if (d2 && d2.value) {
+                var ga2 = d2.value.groupAdmin || {}
+                state.hubSid = ga2.hubSessionId || ''
+                state.hubRev = d2.revision
+                hubHint(sid ? '✓ 已设为本会话为群组管理器(live 生效): 各群群事件将注入此会话' : '✓ 已取消群组管理器')
+                var st = panel && panel.querySelector('#dk-hub-status')
+                if (st) st.textContent = hubStatusText()
+                var clr = panel && panel.querySelector('#dk-hub-clear')
+                if (clr) clr.disabled = !state.hubSid
+              } else {
+                hubHint('保存失败: ' + ((d2 && d2.error) || '未知错误') + (d2 && String(d2.error || '').indexOf('changed since') >= 0 ? '(冲突, 请重试)' : ''))
+              }
+            }).catch(function () { state.hubBusy = ''; hubHint('保存异常') })
+          }
+          // 先读最新 revision 再存(避免陈旧冲突)
+          fetch(READ + (state.ns ? '?' + outNsQ() : '')).then(function (r) { return r.json() }).then(function (d) {
+            if (d && d.value) trySave(d.value, d.revision)
+            else { state.hubBusy = ''; hubHint('保存失败: 无法读取当前设置') }
+          }).catch(function () { state.hubBusy = ''; hubHint('保存异常: 读取失败') })
         }
-        // 先读最新 revision 再存(避免陈旧冲突)
-        fetch(READ + (state.ns ? '?' + outNsQ() : '')).then(function (r) { return r.json() }).then(function (d) {
-          if (d && d.value) trySave(d.value, d.revision)
-          else { state.hubBusy = ''; hubHint('保存失败: 无法读取当前设置') }
-        }).catch(function () { state.hubBusy = ''; hubHint('保存异常: 读取失败') })
+        // 预校验(防呆): 群事件按 hubSessionId 反查本 bot 的 QQ 会话——纯 web(未绑群/私聊)的会话注不进去
+        if (!sid) { doSave(); return }
+        api('session-lookup', 'sessionId=' + encodeURIComponent(sid)).then(function (d) {
+          var hits = (d && d.ok && Array.isArray(d.hits)) ? d.hits : []
+          if (!hits.length) {
+            state.hubBusy = ''
+            hubHint('⚠️ 当前会话未绑定任何 QQ 群/私聊: 群事件注入不进去。请先切到与 bot 的某个群/私聊会话(顶栏「当前会话」会显示命中)再点设置')
+            return
+          }
+          doSave()
+        }).catch(function () { doSave() })
       }
       function sendNow() {
         var t = (state.sendText || '').trim()
