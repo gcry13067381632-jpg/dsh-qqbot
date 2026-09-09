@@ -778,6 +778,14 @@ export class SessionManager {
     return out;
   }
 
+  /** 按 scope+peerId 解析 sessionId(与 getOrCreate 完全一致: 存在则用记录值, 否则确定性派生) */
+  sessionIdFor(scope: ChatScope, peerId: string): string {
+    const key = this.sessionKey(scope, peerId);
+    const rec = this.sessions.get(key);
+    if (rec) return rec.sessionId;
+    return SessionId(this.currentSessionId(key));
+  }
+
   findByAgent(agent: DshAgent): SessionRecord | undefined {
     for (const record of this.sessions.values()) {
       if (record.agent === agent) return record;

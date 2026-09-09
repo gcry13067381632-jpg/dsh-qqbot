@@ -9,7 +9,7 @@
  */
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import type { Context } from '@deepseek-ai/cordis';
-import { appendFileSync, existsSync, statSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, statSync } from 'node:fs';
 import type { SessionManager } from './session/session-manager.js';
 import type { QQBotSender } from './transport/outbound-buffer.js';
 import { getStickerStore } from './features/sticker-store.js';
@@ -18,7 +18,7 @@ import { isStickerGateDenied } from './features/sticker-gate.js';
 import { getScheduleStore } from './features/schedule-store.js';
 import { switchOutboundMode } from './features/outbound-mode-switch.js';
 import { loadExtensionTools } from './features/extension-store.js';
-import { verifyHuman } from './api/group-admin.js';
+import { verifyHuman, groupRegistryPath } from './api/group-admin.js';
 import { wakeSessionAgent } from './features/group-hub.js';
 
 /** 诊断日志路径: 默认关闭; 需要排查时设环境变量 QQBOT_DIAG_FILE 指向日志文件 */
@@ -923,10 +923,25 @@ export async function apply(ctx: Context): Promise<void> {
       const manager = ch?.manager;
       if (!manager) return { ok: false, msg: '找不到会话管理器实例' };
       const list = manager.listSessions();
-      if (!list.length) return { ok: true, msg: '当前无活跃会话' };
       const tail = (s: string | undefined, n = 10): string => (s && s.length > n ? '…' + s.slice(-n) : (s ?? ''));
       const lines = list.map((s, i) => `${i + 1}. [${s.scope}] peer=${tail(s.peerId)} sender=${tail(s.senderId, 8)} id=${s.sessionId}${s.agentPreset ? ` (${s.agentPreset})` : ''} 活跃=${new Date(s.lastActivity).toLocaleTimeString()}`);
-      return { ok: true, msg: `活跃会话 ${list.length} 个:\n${lines.join('\n')}` };
+      // 潜在会话: 群注册表里的群可能还没 getOrCreate(无活跃记录), 但 sessionId 可确定性算出
+      const mc = manager as { cwd?: string };
+      if (mc.cwd) {
+        try {
+          const raw = readFileSync(groupRegistryPath(mc.cwd), 'utf8');
+          const reg = JSON.parse(raw) as Record<string, { name?: string }>;
+          const ids = new Set(list.map((s) => s.sessionId));
+          const pend: string[] = [];
+          for (const gid of Object.keys(reg ?? {})) {
+            const sid = manager.sessionIdFor('group', gid);
+            if (!ids.has(sid)) pend.push(`[潜在群] ${reg[gid]?.name ?? ''}(${tail(gid)}) id=${sid} 活跃=未创建`);
+          }
+          if (pend.length) lines.push(...pend);
+        } catch { /* 无注册表/读失败则跳过 */ }
+      }
+      if (lines.length === 0) return { ok: true, msg: '当前无活跃会话, 也无已注册群' };
+      return { ok: true, msg: `会话 ${lines.length} 个:\n${lines.join('\n')}` };
     },
   });
 
@@ -954,12 +969,18 @@ export async function apply(ctx: Context): Promise<void> {
       if (!manager) return { ok: false, msg: '找不到会话管理器实例' };
       // 寻址: 优先 sessionId; 否则 scope+peerId
       let sid = String(args.session_id || '');
+      let sc: 'group' | 'c2c' | undefined;
+      let peer = '';
       if (!sid) {
-        const peer = String(args.peer_id || '');
-        const scope = String(args.scope || '');
-        if (!peer || !scope) return { ok: false, msg: '请给 session_id, 或 scope+peer_id' };
-        const rec = manager.findByPeer(scope as 'group' | 'c2c', peer);
-        if (!rec) return { ok: false, msg: `会话不存在: ${scope} ${peer.slice(0, 8)}…` };
+        peer = String(args.peer_id || '');
+        sc = String(args.scope || '') as 'group' | 'c2c';
+        if (!peer || !sc) return { ok: false, msg: '请给 session_id, 或 scope+peer_id' };
+        let rec = manager.findByPeer(sc, peer);
+        if (!rec) {
+          // 会话未创建(懒创建): 用主人身份 getOrCreate 建起来再唤醒(2026-09-10 主人定)
+          rec = await manager.getOrCreate(sc, peer, 'master', { scope: sc, targetId: peer });
+          if (!rec) return { ok: false, msg: `会话创建失败: ${sc} ${peer.slice(0, 8)}…` };
+        }
         sid = rec.sessionId;
       }
       const r = await wakeSessionAgent(manager, sid, loggerLike(exec as never), text);
