@@ -772,6 +772,27 @@ export class SessionManager {
     }
   }
 
+  /**
+   * 宿主持久化恢复会话(重启后唤起): 进程内无活 agent 时, 用宿主 registry.resume 把
+   * 持久化会话拉回内存(与 getOrCreate 的 resume 路径同源)。web/hub 会话也能这样唤起。
+   * @returns agent 或 undefined(会话不存在/恢复失败)
+   */
+  async resumeHostAgent(sessionId: string): Promise<{ agent: DshAgent } | undefined> {
+    try {
+      const agent = this.agents.get(sessionId);
+      if (agent) return { agent };
+      const handle = await this.agents.resume({
+        resumeSessionId: sessionId,
+      }).catch(() => undefined);
+      if (!handle) return undefined;
+      this.logger.info(`resumeHostAgent: session=${sessionId.slice(0, 8)}… ok`);
+      return { agent: handle.agent };
+    } catch (err) {
+      this.logger.warn?.(`resumeHostAgent: ${sessionId.slice(0, 8)}… ${err instanceof Error ? err.message : String(err)}`);
+      return undefined;
+    }
+  }
+
   /** 列出本 bot 全部活跃会话(通用插件能力: 供 session_list/跨会话唤醒等按 id 寻址) */
   listSessions(): Array<Pick<SessionRecord, 'sessionId' | 'scope' | 'peerId' | 'senderId' | 'lastActivity' | 'agentPreset'>> {
     const out: Array<Pick<SessionRecord, 'sessionId' | 'scope' | 'peerId' | 'senderId' | 'lastActivity' | 'agentPreset'>> = [];

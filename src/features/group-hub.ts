@@ -188,7 +188,7 @@ export async function wakeSessionAgent(
       logger.info(`[group-hub] 唤醒 agent(${sessionId.slice(0, 8)}…) ok`);
       return 'ok';
     }
-    // ② 宿主全局 registry(web/hub 等非 QQ 会话): 直接对 agent followup
+    // ② 宿主全局 registry(web/hub 等非 QQ 会话): 进程内活 agent → 直接 followup
     const host = manager.findHostAgent(sessionId);
     if (host) {
       const a = host.agent as { followup?: (m: unknown) => void };
@@ -197,7 +197,17 @@ export async function wakeSessionAgent(
       logger.info(`[group-hub] 唤醒宿主 agent(${sessionId.slice(0, 8)}…) ok`);
       return 'ok';
     }
-    logger.warn?.(`[group-hub] 会话未找到(唤醒): ${sessionId.slice(0, 8)}…`);
+    // ③ 宿主持久化恢复(重启后唤起): 会话持久化在宿主, resume 拉回内存再 followup
+    //    —— 与入站 getOrCreate 的 resume 路径同源: 重启后第一条消息就是这么唤起对话的
+    const resumed = await manager.resumeHostAgent(sessionId);
+    if (resumed) {
+      const a = resumed.agent as { followup?: (m: unknown) => void };
+      if (typeof a.followup !== 'function') return 'no-followup';
+      a.followup(msg);
+      logger.info(`[group-hub] resume+唤醒 agent(${sessionId.slice(0, 8)}…) ok`);
+      return 'ok';
+    }
+    logger.warn?.(`[group-hub] 会话未找到且无法恢复(唤醒): ${sessionId.slice(0, 8)}…`);
     return 'no-session';
   } catch (err) {
     logger.warn?.(`[group-hub] 唤醒异常: ${err instanceof Error ? err.message : String(err)}`);
