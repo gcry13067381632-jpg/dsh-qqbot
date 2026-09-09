@@ -213,7 +213,8 @@ export function startJoinRequestPolling(
     }
 
     // ② 唤醒 LLM(伪造入站消息走 handleInbound, AI 按主人指令处理)
-    if (poll.wakeLlm !== false && first) {
+    //    notifyGroup=false: 只注入群组管理器会话, 不在原群(普通群会话)发提醒
+    if (poll.wakeLlm !== false && poll.notifyGroup !== false && first) {
       const now2 = new Date();
       const pad = (n: number): string => String(n).padStart(2, '0');
       const ts = `${now2.getFullYear()}-${pad(now2.getMonth() + 1)}-${pad(now2.getDate())} ${pad(now2.getHours())}:${pad(now2.getMinutes())}`;
@@ -243,7 +244,7 @@ export function startJoinRequestPolling(
   timer.unref?.();
   void pollOnce();
   const poll = config.groupAdmin?.pollJoinRequests;
-  logger.info(`[join-poll] started (enabled=${poll?.enabled} interval=${poll?.intervalMin}min minCount=${poll?.minCount} wakeLlm=${poll?.wakeLlm})`);
+  logger.info(`[join-poll] started (enabled=${poll?.enabled} interval=${poll?.intervalMin}min minCount=${poll?.minCount} wakeLlm=${poll?.wakeLlm} notifyGroup=${poll?.notifyGroup})`);
 
   return () => {
     clearInterval(timer);

@@ -2491,7 +2491,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             + '</div>'
             + '<div class="dk-row" style="gap:8px;flex-wrap:wrap">'
             + '<span style="font-size:12px;color:#666;display:inline-flex;align-items:center;gap:4px">间隔 <input type="number" id="dk-ga-interval" min="1" value="' + (state.gaInterval || 5) + '" style="width:52px;font-size:12px;padding:2px 4px"> 分钟</span>'
-            + '<span style="font-size:12px;color:#666;display:inline-flex;align-items:center;gap:4px">新增≥<input type="number" id="dk-ga-mincount" min="1" value="' + (state.gaMinCount || 1) + '" style="width:44px;font-size:12px;padding:2px 4px">个才唤醒</span>'
+            + '<span style="font-size:12px;color:#666;display:inline-flex;align-items:center;gap:4px">攒够<input type="number" id="dk-ga-mincount" min="1" value="' + (state.gaMinCount || 1) + '" style="width:44px;font-size:12px;padding:2px 4px">个才提醒</span>'
             + '<button class="dk-btn ok" id="dk-ga-save" style="margin-left:auto">💾 保存设置</button>'
             + '</div>'
             + '<div class="dk-msg" style="line-height:1.5;color:#888">轮询=定时拉各群审批列表, 有新增就唤醒AI提醒你(默认1个也报, 不攒死); 大量申请靠轮询周期自然攒批。保存即热更新, 不用重启。</div>'

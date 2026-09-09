@@ -211,6 +211,8 @@ export interface GroupAdminConfig {
     wakeLlm: boolean;
     /** 轮询到待审批时是否注入群组管理器会话(web 可见) */
     hubNotify: boolean;
+    /** 是否同时在原群(普通群会话)发提醒。false=只注入群组管理器会话, 普通群不打扰 */
+    notifyGroup: boolean;
   };
 }
 
@@ -458,12 +460,14 @@ const groupAdminSchema = Schema.object({
     minCount: Schema.number().min(1).default(2).description('待审批人数≥此值才唤醒 LLM 处理(攒够一批再报, 防打扰)'),
     wakeLlm: Schema.boolean().default(true).description('达到阈值后唤醒 LLM 处理(伪造【审批轮询】入站消息; AI 按主人指令批/拒)'),
     hubNotify: Schema.boolean().default(true).description('轮询到待审批时是否同时注入群组管理器会话(web 可见; 不勾=只在原群内提醒)'),
+    notifyGroup: Schema.boolean().default(true).description('是否同时在原群(普通群会话)发提醒。false=只注入群组管理器会话, 普通群不打扰'),
   }).default({
     enabled: false,
     intervalMin: 5,
     minCount: 2,
     wakeLlm: true,
     hubNotify: true,
+    notifyGroup: true,
   }).description('入群申请轮询(事件兜底)'),
 }).default({
   enabled: false,
@@ -473,7 +477,7 @@ const groupAdminSchema = Schema.object({
   notifyInGroup: true,
   hubSessionId: '',
   hubNotify: true,
-  pollJoinRequests: { enabled: false, intervalMin: 5, minCount: 2, wakeLlm: true, hubNotify: true },
+  pollJoinRequests: { enabled: false, intervalMin: 5, minCount: 2, wakeLlm: true, hubNotify: true, notifyGroup: true },
 }).description('QQ 群管理');
 
 /** Web 设置页可编辑项的 schema(behavior/sticker.gates/injectRules/groupPrompt/schedule) */
