@@ -21,6 +21,7 @@ import { dataRootOf, migrateLegacyData, stickerDirOf } from './data-root.js';
 import { configureStickerStore } from '../features/sticker-store.js';
 import { initStickerGate, bindStickerGates, flushStickerGate, getStickerGate, StickerGateDenied } from '../features/sticker-gate.js';
 import { startScheduler } from '../features/scheduler.js';
+import { startJoinRequestPolling } from '../features/poll-join-requests.js';
 import { configureScheduleStore, getScheduleStore } from '../features/schedule-store.js';
 import { setChannelBridge } from '../channel-tools.js';
 import { QqApprovalController, setApprovalDispatch, makeApprovalListener, registerApprovalController } from '../features/qq-approval.js';
@@ -472,6 +473,7 @@ export async function bootstrapGateway(
 
   // ── 生命周期 ──
   let stopScheduler: (() => void) | undefined;
+  let stopJoinPoll: (() => void) | undefined;
   // 会话自设定时任务(schedule-store 系, schedule_timer 工具创建)
   let scheduleTicker: ReturnType<typeof setInterval> | undefined;
   const scheduleInFlight = new Set<string>();
@@ -485,6 +487,10 @@ export async function bootstrapGateway(
 
       // M3 定时唤醒调度器(与 bot 同生命周期; 任务到点 followup → 回复经出站链路主动推送)
       stopScheduler = startScheduler(manager, config, logger);
+
+      // 入群申请轮询(2026-09-09 主人定, 事件驱动兜底): 定时拉各群审批列表,
+      // 有新增就唤醒 LLM 提醒主人; live config 控制(Web 设置热更, 无需重启)。
+      stopJoinPoll = startJoinRequestPolling(manager, config, logger);
 
       // 会话自设定时任务 ticker(30s): due → injectToPeer 注入原会话 → 成功 markDone;
       // 失败(会话不在)连续≥3次自动停用; once 到期滞留 >24h 清理防堆积。
@@ -556,6 +562,7 @@ export async function bootstrapGateway(
         questionController?.dispose();
         botplayController?.clear();
         stopScheduler?.();
+        stopJoinPoll?.();
         if (scheduleTicker) { clearInterval(scheduleTicker); scheduleTicker = undefined; }
         clearInterval(botplaySweeper);
         flushStickerGate();
