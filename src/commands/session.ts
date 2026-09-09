@@ -4,6 +4,8 @@
 import type { SlashCommand } from '@tencent-connect/qqbot-nodejs';
 import type { CommandDeps } from './types.js';
 import { getScopePeer } from '../shared/index.js';
+import { resolveCommandTarget } from '../features/botplay.js';
+import { sendPresetCard } from '../features/preset-switcher.js';
 
 /** /bot-reset /bot-clear — 重置当前会话 */
 export function resetCommand({ manager }: CommandDeps): SlashCommand {
@@ -70,7 +72,10 @@ export function presetSwitchCommand({ manager }: CommandDeps): SlashCommand {
       const { scope, peerId } = getScopePeer(cmdCtx);
       const args = String((cmdCtx.command?.raw ?? '').trim());
       if (!args) {
-        return '用法: /preset <id> — 热切换人格(不丢历史)\n/presets 查看可用人格';
+        // 无参 → 发人格切换按钮卡片(点按钮热切; 仿 /botplay 目录卡翻页)
+        const { target } = resolveCommandTarget(cmdCtx as never);
+        if (!target.targetId) return '无法定位当前会话, 请稍后再试~';
+        return sendPresetCard(target, scope, peerId, 0);
       }
       const list = await manager.listPresets();
       const hit = list.find((p) => p.id === args && !p.broken);

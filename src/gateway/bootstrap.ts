@@ -30,6 +30,7 @@ import { handleGroupJoinRequestEvent } from '../features/group-join-request.js';
 import { handleGroupMemberAddEvent, handleGroupAddRobotEvent } from '../features/group-hub.js';
 import { registerSessionManager, setBotOnline } from '../features/session-registry.js';
 import { BotplayController, registerBotplayController, setBotplayTriggerImpl, setBotplayCatalogImpl } from '../features/botplay.js';
+import { PresetSwitcherController, setPresetCardImpl } from '../features/preset-switcher.js';
 import { buildCommandList } from '../commands/index.js';
 import { SettingsReader } from '../model/settings-reader.js';
 
@@ -400,6 +401,9 @@ export async function bootstrapGateway(
   registerBotplayController(myNs, botplayController);
   setBotplayTriggerImpl((target, eventId, triggererId) => botplayController!.trigger(target, eventId, triggererId));
   setBotplayCatalogImpl((target, page) => botplayController!.sendCatalog(target, page));
+  // 预设切换卡片(2026-09-10): /preset 无参发按钮卡, 点击热切人格(仿 botplay 翻页)
+  const presetSwitcher = new PresetSwitcherController(manager, sender, logger);
+  setPresetCardImpl((target, scope, peerId, page) => presetSwitcher.sendCard(target, scope, peerId, page ?? 0));
   // 指令型按钮(Phase2): 点击后执行斜杠命令(不经 AI)。复用 buildCommandList 的 handler,
   // 模拟一个最小命令 ctx(command 名称/空参 + 消息壳), 返回 handler 结果文本。
   botplayController.setCommandExecutor(async (cmdName, target) => {
@@ -439,7 +443,11 @@ export async function bootstrapGateway(
       const target = replyTargetOfInteraction(ev, ctx, manager);
       let consumed = false;
       try {
-        if (approvalController) consumed = await approvalController.handleInteraction(ev, target);
+        if (presetSwitcher) {
+          const scope = target.scope === 'group' ? 'group' : 'c2c';
+          consumed = await presetSwitcher.handleInteraction(ev, target, scope, target.targetId);
+        }
+        if (!consumed && approvalController) consumed = await approvalController.handleInteraction(ev, target);
         if (!consumed && questionController) consumed = await questionController.handleInteraction(ev, target);
         if (!consumed && botplayController) consumed = await botplayController.handleInteraction(ev, target);
       } catch (err) {

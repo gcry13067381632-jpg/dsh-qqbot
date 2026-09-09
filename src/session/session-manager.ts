@@ -195,6 +195,13 @@ export class SessionManager {
     return override || this.config.preset;
   }
 
+  /** 当前会话实际生效的人格(展示用): 会话记录 agentPreset(已挂载) > effectivePreset */
+  getEffectivePreset(scope: ChatScope, peerId: string): string | undefined {
+    const key = this.sessionKey(scope, peerId);
+    const record = this.sessions.get(key);
+    return record?.agentPreset || this.effectivePreset(key);
+  }
+
   /**
    * 热切换预设(2026-09-10 主人确认: 设置页就是这么热切的):
    * 直接调宿主 agentPresets.recompose(agent.ctx, id) —— 重绑 agent 的 scope 父级
