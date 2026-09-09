@@ -1888,7 +1888,9 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
       setInterval(refreshBadge, 20000)
 
       // ── 面板状态(每个实例独立保存, 切回不丢) ──
-      var state = { ns: '', accts: [], gid: '', groups: [], tab: 'chat', sendScope: 'group', sendTo: '', sendName: '', sendText: '', insertCtx: true, targetQ: '', c2cs: [], joins: null, mutes: null, members: null, muteSecs: '60', bindGid: '', bindName: '', msg: '', busy: '', wantPeer: null, lookedUp: false, detected: null, detectedHit: null, chatItems: [], chatMore: false, chatBusy: '', chatErr: '', chatOldest: 0, chatText: '', chatIns: true, outMode: '', outRev: undefined, bpEvents: [], bpSel: null, bpDraft: null }
+      var state = { ns: '', accts: [], gid: '', groups: [], tab: 'chat', sendScope: 'group', sendTo: '', sendName: '', sendText: '', insertCtx: true, targetQ: '', c2cs: [], joins: null, mutes: null, members: null, muteSecs: '60', bindGid: '', bindName: '', msg: '', busy: '', wantPeer: null, lookedUp: false, detected: null, detectedHit: null, chatItems: [], chatMore: false, chatBusy: '', chatErr: '', chatOldest: 0, chatText: '', chatIns: true, outMode: '', outRev: undefined, bpEvents: [], bpSel: null, bpDraft: null, rosterSel: {}, rosterScope: 'all', rosterQ: '' }
+      // 📇 群组管理 M1: 勾选集合本地持久化(刷新/重开不丢, 供后续群发/批量操作使用)
+      try { var _rs = localStorage.getItem('qqs-roster-sel'); if (_rs) { var _rso = JSON.parse(_rs); if (_rso && typeof _rso === 'object') state.rosterSel = _rso } } catch (e) {}
       var chatFlash = '' // 发送结果/错误提示(短时展示, 不被列表计数覆盖)
       // @ mention(输入框敲 @ 弹成员候选): 群聊目标才启用
       var atM = { members: [], open: false, kw: '', idx: 0, range: null, key: '' }
@@ -1979,7 +1981,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         state.groups = []
         var q = state.ns ? 'ns=' + encodeURIComponent(state.ns) : ''
         api('group/accounts', q).then(function (d) {
-          state.groups = (d && Array.isArray(d.groups) ? d.groups : []).map(function (g) { return { gid: g.gid, name: g.name || '', from: g.from || '' } })
+          state.groups = (d && Array.isArray(d.groups) ? d.groups : []).map(function (g) { return { gid: g.gid, name: g.name || '', from: g.from || '', lastAt: (g && g.lastAt) || 0 } })
           // 期望目标(wantPeer)命中则选中它, 否则回落第一个
           var wantGid = (state.wantPeer && state.wantPeer.scope === 'group') ? state.wantPeer.peerId : ''
           if (state.groups.some(function (g) { return g.gid === state.gid })) { /* 保持现选 */ }
@@ -2045,6 +2047,86 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         if (state.sendName) return state.sendName
         var c = null; state.c2cs.forEach(function (x) { if (x.id === state.sendTo) c = x })
         return c ? (c.name || c.id.slice(0, 10)) : '(未选)'
+      }
+      // ── 📇 群组管理 M1: 台账勾选(机器人见过的群/私聊人, 复用 state.groups+state.c2cs) ──
+      function rosterRows() {
+        var rows = []
+        state.groups.forEach(function (g) { rows.push({ key: 'group:' + g.gid, scope: 'group', id: g.gid, name: g.name || '', lastSeen: (g && g.lastAt) || 0, count: 0 }) })
+        state.c2cs.forEach(function (c) { rows.push({ key: 'c2c:' + c.id, scope: 'c2c', id: c.id, name: c.name || '', lastSeen: (c && c.lastSeen) || 0, count: (c && c.count) || 0 }) })
+        var sel = state.rosterScope
+        var q = String(state.rosterQ || '').trim().toLowerCase()
+        return rows.filter(function (r) {
+          if (sel !== 'all' && r.scope !== sel) return false
+          if (!q) return true
+          return (r.name || '').toLowerCase().indexOf(q) >= 0 || r.id.toLowerCase().indexOf(q) >= 0
+        }).sort(function (a, b) { return (b.lastSeen || 0) - (a.lastSeen || 0) })
+      }
+      function fmtRosterTime(ts) {
+        if (!ts) return ''
+        try { var d = new Date(ts); var mm = d.getMonth() + 1; var hh = d.getHours() < 10 ? '0' + d.getHours() : d.getHours(); var mi = d.getMinutes() < 10 ? '0' + d.getMinutes() : d.getMinutes(); return mm + '/' + d.getDate() + ' ' + hh + ':' + mi } catch (e) { return '' }
+      }
+      function rosterSelN() { var n = 0; for (var k in state.rosterSel) { if (state.rosterSel[k]) n++ } return n }
+      function renderRosterList() {
+        if (!panel || !open) return
+        var box = panel.querySelector('#dk-roster-list')
+        if (!box) return
+        var rows = rosterRows()
+        var stat = panel.querySelector('#dk-roster-stat')
+        if (stat) stat.textContent = '共 ' + rows.length + ' 条 · 已选 ' + rosterSelN()
+        if (!rows.length) {
+          box.innerHTML = '<div class="dk-empty">' + ((state.rosterScope === 'all' && !String(state.rosterQ || '').trim()) ? '台账还是空的: 机器人进过群/私聊过后会自动累积到这里。' : '没有匹配项。') + '</div>'
+          return
+        }
+        var html = ''
+        rows.forEach(function (r) {
+          var on = !!state.rosterSel[r.key]
+          var tail = r.id.length > 10 ? '…' + r.id.slice(-6) : r.id
+          var nm = r.name || '(未知名)'
+          html += '<label class="dk-item" style="cursor:pointer;background:' + (on ? '#f1ecff' : 'transparent') + '">'
+            + '<input type="checkbox" data-rkey="' + r.key + '"' + (on ? ' checked' : '') + ' style="accent-color:#7c6cf0;flex:none">'
+            + '<span style="flex:1;min-width:0;display:flex;gap:6px;align-items:baseline;flex-wrap:wrap"><b>' + esc(nm) + '</b>'
+            + '<span style="color:#aaa;font-size:11px">' + (r.scope === 'group' ? '👥 群' : '👤 私聊') + ' · ' + esc(tail) + '</span></span>'
+            + '<span style="color:#9aa0a8;font-size:11px;flex:none">' + fmtRosterTime(r.lastSeen) + '</span></label>'
+        })
+        box.innerHTML = html
+      }
+      function rosterToggle(key) {
+        if (!key) return
+        if (state.rosterSel[key]) delete state.rosterSel[key]
+        else state.rosterSel[key] = true
+        try { localStorage.setItem('qqs-roster-sel', JSON.stringify(state.rosterSel)) } catch (e) {}
+        renderRosterList()
+      }
+      function bindRosterEvents() {
+        if (!panel) return
+        var qEl = panel.querySelector('#dk-roster-q')
+        if (qEl) qEl.oninput = function (e) { state.rosterQ = e.target.value; renderRosterList() }
+        var scopes = panel.querySelectorAll('input[name="dk-rscope"]')
+        scopes.forEach(function (r) { r.onchange = function () { state.rosterScope = r.value; renderRosterList() } })
+        var ref = panel.querySelector('#dk-roster-refresh')
+        if (ref) ref.onclick = function () {
+          var q2 = panel.querySelector('#dk-roster-q'); if (q2) q2.value = ''
+          state.rosterQ = ''; refreshAll()
+        }
+        var allB = panel.querySelector('#dk-roster-all')
+        if (allB) allB.onclick = function () {
+          rosterRows().forEach(function (r) { state.rosterSel[r.key] = true })
+          try { localStorage.setItem('qqs-roster-sel', JSON.stringify(state.rosterSel)) } catch (e) {}
+          renderRosterList()
+        }
+        var clr = panel.querySelector('#dk-roster-clear')
+        if (clr) clr.onclick = function () {
+          state.rosterSel = {}
+          try { localStorage.setItem('qqs-roster-sel', JSON.stringify(state.rosterSel)) } catch (e) {}
+          renderRosterList()
+        }
+        var box = panel.querySelector('#dk-roster-list')
+        if (box) box.onclick = function (e) {
+          var cb = e.target
+          while (cb && cb !== box && !(cb.tagName === 'INPUT' && cb.type === 'checkbox')) cb = cb.parentNode
+          if (!cb || cb === box) return
+          rosterToggle(cb.getAttribute('data-rkey'))
+        }
       }
       function sendNow() {
         var t = (state.sendText || '').trim()
@@ -2170,6 +2252,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           return '<option value="' + esc(c.id) + '"' + (c.id === state.sendTo ? ' selected' : '') + '>' + esc(label) + '</option>'
         }).join('')
         var tabs = '<div class="dk-tab">'
+          + '<button data-t="roster" class="' + (state.tab === 'roster' ? 'on' : '') + '">📇 群组管理</button>'
           + '<button data-t="chat" class="' + (state.tab === 'chat' ? 'on' : '') + '">💬 聊天</button>'
           + '<button data-t="join" class="' + (state.tab === 'join' ? 'on' : '') + '">📥 入群审批<span class="dk-join-badge" style="display:none;background:#ff4d4f;color:#fff;border-radius:8px;font-size:11px;padding:0 5px;margin-left:4px">0</span></button>'
           + '<button data-t="mute" class="' + (state.tab === 'mute' ? 'on' : '') + '">🔇 禁言</button>'
@@ -2243,6 +2326,22 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           body += '<div class="dk-list" id="dk-member-list"></div>'
           body += '<div style="font-weight:700;font-size:13px;margin:8px 0 4px">② 正在禁言中</div>'
           body += '<div class="dk-list" id="dk-mute-list"></div>'
+        } else if (state.tab === 'roster') {
+          body += '<div class="dk-row" style="font-weight:700;font-size:13px;margin:2px 0">📇 台账:机器人见过的群 / 个人(私聊+见过的群成员)</div>'
+          body += '<div class="dk-row">范围: '
+            + '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px"><input type="radio" name="dk-rscope" value="all"' + (state.rosterScope === 'all' ? ' checked' : '') + '> 全部</label>'
+            + '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px"><input type="radio" name="dk-rscope" value="c2c"' + (state.rosterScope === 'c2c' ? ' checked' : '') + '> 👤 个人</label>'
+            + '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px"><input type="radio" name="dk-rscope" value="group"' + (state.rosterScope === 'group' ? ' checked' : '') + '> 👥 群</label>'
+            + '<span style="flex:1"></span>'
+            + '<button class="dk-btn" id="dk-roster-refresh" title="重新拉取群注册表+聊天台账">🔄 刷新</button></div>'
+          body += '<div class="dk-row" style="margin:2px 0 4px">'
+            + '<input class="qqs-txt" id="dk-roster-q" placeholder="🔍 搜昵称/群名/ID…" value="' + esc(state.rosterQ || '') + '" style="flex:1;box-sizing:border-box;font-size:12px;padding:4px 8px">'
+            + '<span class="dk-msg" id="dk-roster-stat" style="white-space:nowrap"></span></div>'
+          body += '<div class="dk-row" style="margin:0 0 4px">'
+            + '<button class="dk-btn" id="dk-roster-all">全选(当前范围)</button>'
+            + '<button class="dk-btn" id="dk-roster-clear">清空</button>'
+            + '<span class="dk-msg" style="flex:1;text-align:right">勾选集合用途待开发(后续: 群发/批量操作目标)</span></div>'
+          body += '<div class="dk-list" id="dk-roster-list"></div>'
         } else if (state.tab === 'out') {
           var om = state.outMode || 'adaptive'
           if (om === 'nothink') body += '<div class="dk-msg" style="color:#c23131;margin:2px 0">⚠️ 当前为「完全不思考」(设置页开启): QQ 入站不唤醒 AI。发 /outmode adaptive 可唤醒。</div>'
@@ -2322,6 +2421,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         if (state.tab === 'chat') renderChatList()
         if (state.tab === 'join') renderJoinList()
         if (state.tab === 'mute') { renderMemberList(); renderMuteList() }
+        if (state.tab === 'roster') { renderRosterList(); bindRosterEvents() }
         // 首次进入聊天 tab 自动拉最新一页
         if (state.tab === 'chat' && !state.chatItems.length && !state.chatBusy) loadChat(true)
         setTimeout(layoutPanel, 0)
