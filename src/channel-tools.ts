@@ -23,13 +23,25 @@ import { loadExtensionTools } from './features/extension-store.js';
 const DIAG_FILE = process.env.QQBOT_DIAG_FILE || '';
 /** 大文件异步发送阈值: 本地文件 >= 5MB 时走后台任务(SDK 分片上传耗时, 避免阻塞 LLM 回合) */
 const FILE_ASYNC_MIN = 5 * 1024 * 1024;
+/** 等回合空闲的最长时间(ms); 与 QQ 入站 debounce 排队/group-hub safeAppend 同款语义 */
+const TURN_WAIT_MS = 60_000;
 let bgSeq = 0;
 function fmtMB(n: number): string { return (n / 1048576).toFixed(1) + 'MB'; }
-/** 把后台任务结果作为 user/message 写回会话(不唤醒, 与入群申请通知同款; 失败静默) */
-function notifySession(sess: unknown, text: string): void {
+/**
+ * 把后台任务结果作为 user/message 写回会话(不唤醒, 与入群申请通知同款; 失败静默)。
+ * 🔒 回合安全(主人硬约束 2026-09-09): LLM 回合进行中严禁 session.append(拆散 tool_calls 坏记录),
+ *    先 agent.whenIdle() 等回合结束再写(与 QQ 入站 debounce 排队同款); 无 whenIdle/超时放弃。
+ */
+async function notifySession(agent: unknown, text: string): Promise<void> {
   try {
-    const session = sess as { append?: (t: string, d: unknown, o?: unknown) => unknown };
+    const a = agent as { whenIdle?: () => Promise<void>; session?: { append?: (t: string, d: unknown, o?: unknown) => unknown } };
+    const session = a?.session;
     if (!session || typeof session.append !== 'function') return;
+    if (typeof a.whenIdle === 'function') {
+      try {
+        await Promise.race([a.whenIdle(), new Promise((r) => setTimeout(r, TURN_WAIT_MS))]);
+      } catch { /* whenIdle 超时/异常 → 放弃写回(不坏记录) */ }
+    }
     session.append('user/message', {
       id: 'bg-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8),
       role: 'user',
@@ -181,10 +193,10 @@ export async function apply(ctx: Context): Promise<void> {
             const st = statSync(lp);
             const fname = (lp.split(String.fromCharCode(92)).pop() || '').split('/').pop() || 'file';
             const seq = ++bgSeq;
-            const sess = ((rec.agent as { session?: unknown } | undefined)?.session);
+            const agent = rec.agent as unknown;
             void ch.sender.sendMedia(rec.replyTarget, args.kind as never, { localPath: lp } as never)
-              .then((r) => {
-                notifySession(sess, '[系统] 后台任务 #' + seq + ' 完成：已发送 ' + fname + '(' + fmtMB(st.size) + ')。');
+              .then(async (r) => {
+                await notifySession(agent, '[系统] 后台任务 #' + seq + ' 完成：已发送 ' + fname + '(' + fmtMB(st.size) + ')。');
                 if (r && r.id) {
                   try {
                     const store = getStickerStore(ch.manager.stickerDataDir);
@@ -194,9 +206,9 @@ export async function apply(ctx: Context): Promise<void> {
                 }
                 diag('bgSend #' + seq + ' ok ' + fname);
               })
-              .catch((e) => {
+              .catch(async (e) => {
                 const msg = e instanceof Error ? e.message : String(e);
-                notifySession(sess, '[系统] 后台任务 #' + seq + ' 失败：' + msg + '（未发送完成, 可重试或改用小文件）');
+                await notifySession(agent, '[系统] 后台任务 #' + seq + ' 失败：' + msg + '（未发送完成, 可重试或改用小文件）');
                 diag('bgSend #' + seq + ' fail ' + fname + ': ' + msg);
               });
             return { ok: true, msg: '📤 大文件 ' + fname + '(' + fmtMB(st.size) + ') 已提交后台任务 #' + seq + '——分片上传耗时较长, 完成/失败后会有系统消息通知' };

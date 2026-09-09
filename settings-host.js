@@ -1752,16 +1752,19 @@ export function apply(ctx) {
     }
   });
 
-const WHY_MAP = { busy: '目标会话回合活跃(思考/流式中),已跳过注入', 'no-session': '未找到该群/私聊的活跃会话', 'no-msg': '构造消息失败', failed: '写入失败' };
+const WHY_MAP = { busy: '目标会话回合活跃,已等待至回合结束仍超时(跳过注入)', 'no-session': '未找到该群/私聊的活跃会话', 'no-msg': '构造消息失败', failed: '写入失败' };
 
-  // 安全闸: 目标会话 LLM 回合活跃(turn/start 已开、turn/end 未闭合——覆盖思考中/流式输出/工具执行)
+  // 安全闸(兜底用): 目标会话 LLM 回合活跃(turn/start 已开、turn/end 未闭合——覆盖思考中/流式输出/工具执行)
   // 时禁止外部往该会话插入任何消息(含模拟用户消息), 防止把正在生成的回合流搞乱(曾因此写坏会话)。
+  // 与 QQ 插件入站逻辑(debounce.ts 的 turnActive 排队)一致: 活跃时【等待回合结束】再插入, 而非跳过。
+  // ⚠️ 只作 waitTurnIdle 的兜底轮询: 它回看最近 3000 条事件找 turn/start..turn/end(曾用 400 太小,
+  // 长回合流式/tool 事件一多就漏判"空闲"导致插进 tool_calls↔tool_result 中间, INVALID_REQUEST)。
   // 查不到则放行(append 自身有 reenter 兜底)。
   function sessionTurnActive(sess) {
     try {
       const seq = typeof sess?.seq === 'number' ? sess.seq : -1;
       if (seq <= 0 || typeof sess.snapshotEvents !== 'function') return false;
-      const tail = sess.snapshotEvents(Math.max(0, seq - 400), seq);
+      const tail = sess.snapshotEvents(Math.max(0, seq - 3000), seq);
       let lastStart = -1;
       let lastEnd = -1;
       for (const ev of tail) {
@@ -1772,11 +1775,98 @@ const WHY_MAP = { busy: '目标会话回合活跃(思考/流式中),已跳过注
     } catch { return false; }
   }
 
-  // 线B(用户代发→插入上下文): 往目标 QQ 会话 append 一条 user/message 模拟用户消息, 不唤醒、不开回合。
-  // 文本以「用户代你发送: 」开头(只进 web 流, QQ 收到干净原文); 主人下次真人消息开回合时, 该
-  // user/message 作为历史被 deriveMessages 组装进上下文 → bot 自然看到"主人代我发了这句"。
-  // 活跃回合/找不到会话时跳过并在 audit 留痕。
-  async function appendUserRelayToPeer(ns, scope, peerId, text) {
+  /**
+   * 等目标会话 LLM 回合结束再返回。
+   * 主路径: 宿主 agent.whenIdle()(权威: 空闲立即返回、回合活跃时等 turn/end —— 与入群通知
+   * safeAppendUserMessage 同款)。⚠️ 不能先用 sessionTurnActive 当第一判断: 它只回看 400 条事件,
+   * 长回合(流式/tool 事件多)时窗口内查不到 turn/start 会误判"空闲", 正是历史事故的漏网点。
+   * 超时(60s, 防 turn/end 丢失卡死)或宿主无 whenIdle → 回落 800ms 轮询, 仍超时返回 false。
+   */
+  const TURN_WAIT_MS = 60_000;
+  async function waitTurnIdle(agent, sess) {
+    // ① 权威: whenIdle —— 回合空闲立即 resolve; 活跃时等 turn/end 后再 resolve
+    if (agent && typeof agent.whenIdle === 'function') {
+      let idle = false;
+      try {
+        await Promise.race([
+          agent.whenIdle().then(() => { idle = true; }),
+          new Promise((r) => setTimeout(r, TURN_WAIT_MS)),
+        ]);
+      } catch { /* whenIdle 异常按未空闲处理 */ }
+      if (idle) return true;
+    }
+    // ② 兜底轮询: 与 QQ 入站 debounce 排队同款(800ms 重查, 等 turn/end), 超 60s 放弃
+    if (sess && typeof sess.snapshotEvents === 'function') {
+      const t0 = Date.now();
+      for (;;) {
+        if (!sessionTurnActive(sess)) return true;
+        if (Date.now() - t0 >= TURN_WAIT_MS) return false;
+        await new Promise((r) => setTimeout(r, 800));
+      }
+    }
+    return true; // 无检测能力 → 放行(append 自身有 reenter 兜底)
+  }
+
+  // ── 线B(用户代发/后台通知 → 插入上下文)异步队列(2026-09-09) ──
+  // 与 QQ 入站 debounce 排队同款语义: **先收下消息立即返回, 不阻塞任何 HTTP 请求/事件**,
+  // 回合活跃时攒在 per-peer 队列里, 回合结束后(whenIdle/turnActive=false)再逐条 append。
+  // 避免把 dock 发送请求挂在 waitTurnIdle 上 60s+(曾导致"第二条消息发不出去")。
+  //
+  // 性能护栏:
+  //  - 队列按 peer 分 key, 单 peer 上限 RELAY_QUEUE_MAX(超限丢最老), 防止内存无限膨胀;
+  //  - 队列空即删 key(不残留); drain 有 in-flight 去重, 同 key 不并发重复消费;
+  //  - 等待靠 whenIdle 事件驱动(回合结束才 resolve, 不空转); 兜底 800ms 轮询只在无 whenIdle 时用;
+  //  - waitTurnIdle 自身 60s 超时防 turn/end 丢失卡死, 超时该条放弃(不硬塞坏记录)。
+  const RELAY_QUEUE_MAX = 200;
+  const relayQueues = new Map(); // key = ns|scope|peerId → [{ ns, scope, peerId, kind:'relay'|'notice', text }]
+  const relayDraining = new Set(); // 正在 drain 的 key(防同 key 并发重复消费)
+
+  function relayQueueKey(ns, scope, peerId) { return ns + '|' + scope + '|' + peerId; }
+
+  /** 入队一条待写上下文的消息(立即返回; 后台 drain 回合结束后落盘) */
+  function enqueueRelayWrite(ns, scope, peerId, kind, text) {
+    const key = relayQueueKey(ns, scope, peerId);
+    let q = relayQueues.get(key);
+    if (!q) { q = []; relayQueues.set(key, q); }
+    if (q.length >= RELAY_QUEUE_MAX) q.shift(); // 防内存膨胀: 超限丢最老
+    q.push({ ns, scope, peerId, kind, text });
+    void drainRelayQueue(key);
+  }
+
+  /** 后台串行消费某 peer 的待写队列。
+   *  - 单条 busy(回合卡死/超时): 保留队列并 break, 等下次入队再触发 drain 重试 —— 防整个队列
+   *    逐条各等 60s 超时空挂; 回合只是暂时活跃(正常结束)时下条入队即重试成功。
+   *  - 单条 fail(no-session / no-msg / append 异常): 丢弃该条, 继续下一条。 */
+  async function drainRelayQueue(key) {
+    if (relayDraining.has(key)) return;
+    relayDraining.add(key);
+    try {
+      for (;;) {
+        const q = relayQueues.get(key);
+        const item = q && q[0];
+        if (!item) { relayQueues.delete(key); break; } // 队列空 → 删 key, 不残留
+        let st = 'fail';
+        try {
+          st = await appendOneRelayItem(item);
+        } catch { st = 'fail'; }
+        if (st === 'busy') break; // 回合长时间卡死: 保留剩余队列, 下条入队再重试(不空挂)
+        q.shift();
+        if (st === 'fail') {
+          // 写失败(no-session / no-msg / append 异常): 不阻塞队列, 丢弃并继续
+          try {
+            const { bots } = parsePatch();
+            const bot = bots.find((b) => b.id === item.ns);
+            if (bot && bot.cwd) audit(bot.cwd, { ev: 'relay.drain-skip', ns: item.ns, scope: item.scope, peerId: item.peerId, kind: item.kind, reason: 'drain-failed' });
+          } catch { /* audit 失败不阻断 */ }
+        }
+      }
+    } finally {
+      relayDraining.delete(key);
+    }
+  }
+
+  /** 等回合结束 + 把单条消息 append 进会话(不唤醒、不开回合)。返回 'ok' | 'busy' | 'fail' */
+  async function appendOneRelayItem({ ns, scope, peerId, kind, text }) {
     const reg = await import('./dist/features/session-registry.js');
     let rec = typeof reg.findRecordByPeerWeb === 'function' ? reg.findRecordByPeerWeb(ns, scope, peerId) : undefined;
     // 活跃表 miss(会话被 idle 回收/未建立)→ 与入群申请通知/定时任务同款: getOrCreate 恢复/重建会话(不开回合),
@@ -1784,45 +1874,46 @@ const WHY_MAP = { busy: '目标会话回合活跃(思考/流式中),已跳过注
     if (!rec && typeof reg.getOrCreateByPeerWeb === 'function') {
       try { rec = await reg.getOrCreateByPeerWeb(ns, scope, peerId, 'master'); } catch { /* 恢复失败按 no-session 走 */ }
     }
-    if (!rec || !rec.agent) return 'no-session';
+    if (!rec || !rec.agent) return 'fail';
     const agent = rec.agent;
     const sess = agent && (agent.session || (agent.ctx && agent.ctx.session));
     const appendFn = sess && typeof sess.append === 'function' ? sess.append.bind(sess) : undefined;
-    if (!appendFn) return 'no-session';
-    if (sessionTurnActive(sess)) return 'busy'; // 🔒 LLM 回合活跃(思考/流式中), 不插入
-    const llm = await import('@deepseek-ai/dsh-llm');
-    const relayText = `用户代你发送: ${text}`;
-    const msg = llm.createUserMessage
-      ? llm.createUserMessage({ content: [{ type: 'text', text: relayText }], source: { kind: 'user' } })
-      : undefined;
-    if (!msg) return 'no-msg';
-    // 与 agent-loop turn()/入群申请通知同款: user/message 的 data 就是消息体本身(不包 message 层)。
-    appendFn('user/message', msg, { surfaceOp: 'append' });
-    return null;
-  }
-
-  // 后台任务结果通知写回会话(与通道工具 bgSend notifySession 同款形状: source kind user, 文本 [系统] 后台任务…)
-  // dock 解码时按 isBg 显示为 bot 侧气泡 + 「后台任务」来源标。
-  async function appendNoticeToPeer(ns, scope, peerId, text) {
-    try {
-      const reg = await import('./dist/features/session-registry.js');
-      let rec = typeof reg.findRecordByPeerWeb === 'function' ? reg.findRecordByPeerWeb(ns, scope, peerId) : undefined;
-      if (!rec && typeof reg.getOrCreateByPeerWeb === 'function') {
-        try { rec = await reg.getOrCreateByPeerWeb(ns, scope, peerId, 'master'); } catch { /* 忽略 */ }
-      }
-      if (!rec || !rec.agent) return false;
-      const agent = rec.agent;
-      const sess = agent && (agent.session || (agent.ctx && agent.ctx.session));
-      const appendFn = sess && typeof sess.append === 'function' ? sess.append.bind(sess) : undefined;
-      if (!appendFn || sessionTurnActive(sess)) return false;
+    if (!appendFn) return 'fail';
+    // 🔒 等 LLM 回合结束(与 QQ 入站排队同款; 超时=busy 由 drain 保留重试)
+    if (!(await waitTurnIdle(agent, sess))) return 'busy';
+    if (kind === 'relay') {
+      // 用户代发: 文本以「用户代你发送: 」开头(只进 web 流, QQ 收到干净原文); 主人下次真人消息
+      // 开回合时该 user/message 作为历史被 deriveMessages 组装进上下文 → bot 自然看到"主人代我发了这句"。
+      const llm = await import('@deepseek-ai/dsh-llm');
+      const relayText = `用户代你发送: ${text}`;
+      const msg = llm.createUserMessage
+        ? llm.createUserMessage({ content: [{ type: 'text', text: relayText }], source: { kind: 'user' } })
+        : undefined;
+      if (!msg) return 'fail';
+      // 与 agent-loop turn()/入群申请通知同款: user/message 的 data 就是消息体本身(不包 message 层)。
+      appendFn('user/message', msg, { surfaceOp: 'append' });
+    } else {
+      // 后台任务结果通知(与通道工具 bgSend notifySession 同款形状: source kind user, 文本 [系统] 后台任务…)
       appendFn('user/message', {
         id: 'bg-' + Date.now().toString(36) + '-' + Math.floor(Math.random() * 1e9).toString(36),
         role: 'user',
         content: [{ type: 'text', text: String(text || '') }],
         source: { kind: 'user' },
       }, { surfaceOp: 'append' });
-      return true;
-    } catch { return false; }
+    }
+    return 'ok';
+  }
+
+  // 线B 入口: 用户代发→插入上下文(入队即返回, 不阻塞请求)
+  async function appendUserRelayToPeer(ns, scope, peerId, text) {
+    enqueueRelayWrite(ns, scope, peerId, 'relay', text);
+    return null; // 已入队; 实际写入由后台 drain 在回合结束后完成
+  }
+
+  // 后台任务结果通知写回会话(入队即返回, 不阻塞请求)
+  async function appendNoticeToPeer(ns, scope, peerId, text) {
+    enqueueRelayWrite(ns, scope, peerId, 'notice', text);
+    return true;
   }
 
   // 入群申请红点汇总(悬浮球 dock 用): 遍历所有已配置实例, 返回各实例待审申请数(计数不上报明细)

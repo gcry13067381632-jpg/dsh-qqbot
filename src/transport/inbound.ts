@@ -167,11 +167,17 @@ export async function handleInbound(
   // 组装好的完整 agentBody(含时间戳/发送者标签/历史)以 user/message append 进会话,
   // surfaceOp='append' 不唤醒 —— 下次 web 对话或真人消息唤醒时, AI 自然看到这段记录。
   if ((config as { outboundMode?: string }).outboundMode === 'nothink') {
-    const sess = (record.agent as unknown as {
+    const a = record.agent as unknown as {
+      whenIdle?: () => Promise<void>;
       session?: { append?: (type: string, data: unknown, opts?: { surfaceOp?: string }) => unknown };
-    } | undefined)?.session;
+    } | undefined;
+    const sess = a?.session;
     if (sess && typeof sess.append === 'function') {
       try {
+        // 🔒 等 LLM 回合结束再 append(主人硬约束 2026-09-09): 回合活跃时严禁 append(拆散 tool_calls 坏记录)
+        if (typeof a.whenIdle === 'function') {
+          try { await Promise.race([a.whenIdle(), new Promise((r) => setTimeout(r, 60_000))]); } catch { /* 超时/异常放弃写回 */ }
+        }
         record.lastInboundAt = Date.now();
         sess.append('user/message', message, { surfaceOp: 'append' });
         logger.info(`[nothink] 已 append(不唤醒): key=${scope}:${peerId}`);

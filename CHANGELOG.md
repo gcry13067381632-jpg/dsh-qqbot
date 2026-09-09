@@ -4,6 +4,14 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [1.0.1] - 2026-09-09
+
+### 修复
+- **「用户代你发送」不再插队拆散 LLM 回合**(web 会话注入安全): 此前 dock 代发/后台通知往会话 append 模拟用户消息时, 若 LLM 正回合活跃(思考/流式/工具调用), 消息可能被插进 tool_calls↔tool_result 中间, 导致下一轮组包报 `INVALID_REQUEST insufficient tool messages` 写坏会话。
+  - 所有往会话 append 用户消息的路径统一改为**等回合结束再写入**(先 `agent.whenIdle()` 等回合空闲, 60s 超时兜底), 与 QQ 插件入站排队逻辑同款, 不再跳过丢消息。
+  - 覆盖: dock 群发/私聊代发、媒体代发、大文件后台任务通知、botplay 静默记录、nothink 入站记录、入群申请通知。
+- **dock 聊天可连续发送多条**: 代发「记入上下文」改为**异步入队**(per-peer 队列上限 200、空即清理、whenIdle 事件驱动不空转、回合卡死时保留队列稍后重试), 请求立即返回, 不再因等待回合结束而把发送请求挂起。
+
 ## [0.9.9] - 2026-09-08
 
 ### 新增

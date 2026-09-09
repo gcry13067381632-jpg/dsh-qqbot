@@ -480,12 +480,21 @@ export class BotplayController {
       }
     }
     if (mode === 'append_silent') {
-      // 记录不唤醒: 复用 group-join-request.ts:216 姿势 —— session.append 只落上下文
-      const sess = (record.agent as unknown as {
+      // 记录不唤醒: 复用 group-hub safeAppendUserMessage 姿势 —— 先等回合空闲再 session.append 只落上下文
+      // 🔒 硬约束(主人定 2026-09-09): LLM 回合进行中严禁 append(拆散 tool_calls 坏记录)
+      const a = record.agent as unknown as {
+        whenIdle?: () => Promise<void>;
         session?: { append?: (type: string, data: unknown, opts?: { surfaceOp?: string }) => unknown };
-      } | undefined)?.session;
+      } | undefined;
+      const sess = a?.session;
       if (!sess || typeof sess.append !== 'function') return;
       try {
+        // 等回合结束(空闲立即返回; 活跃时宿主等 turn/end; 超时 60s 放弃, 不硬塞坏记录)
+        if (typeof a.whenIdle === 'function') {
+          try {
+            await Promise.race([a.whenIdle(), new Promise((r) => setTimeout(r, 60_000))]);
+          } catch { return; }
+        }
         const { createUserMessage } = await import('@deepseek-ai/dsh-llm');
         const msg = createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } });
         sess.append('user/message', msg, { surfaceOp: 'append' });
