@@ -1886,7 +1886,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
       setInterval(refreshBadge, 20000)
 
       // ── 面板状态(每个实例独立保存, 切回不丢) ──
-      var state = { ns: '', accts: [], gid: '', groups: [], tab: 'chat', sendScope: 'group', sendTo: '', sendName: '', sendText: '', insertCtx: true, targetQ: '', c2cs: [], joins: null, mutes: null, members: null, muteSecs: '60', bindGid: '', bindName: '', msg: '', busy: '', wantPeer: null, lookedUp: false, detected: null, detectedHit: null, chatItems: [], chatMore: false, chatBusy: '', chatErr: '', chatOldest: 0, chatText: '', chatIns: true, outMode: '', outRev: undefined, bpEvents: [], bpSel: null, bpDraft: null, rosterSel: {}, rosterScope: 'all', rosterQ: '', hubSid: '', hubRev: undefined, hubBusy: '', hubMsg: '', gaEnabled: false, gaPoll: false, gaPollWake: true, gaHubNotify: true, gaInterval: 5, gaMinCount: 1, gaMsg: '', gaBusy: '' }
+      var state = { ns: '', accts: [], gid: '', groups: [], tab: 'chat', sendScope: 'group', sendTo: '', sendName: '', sendText: '', insertCtx: true, targetQ: '', c2cs: [], joins: null, mutes: null, members: null, muteSecs: '60', bindGid: '', bindName: '', msg: '', busy: '', wantPeer: null, lookedUp: false, detected: null, detectedHit: null, chatItems: [], chatMore: false, chatBusy: '', chatErr: '', chatOldest: 0, chatText: '', chatIns: true, outMode: '', outRev: undefined, bpEvents: [], bpSel: null, bpDraft: null, rosterSel: {}, rosterScope: 'all', rosterQ: '', hubSid: '', hubRev: undefined, hubBusy: '', hubMsg: '', gaEnabled: false, gaPoll: false, gaPollWake: true, gaHubNotify: true, gaNotifyGroup: true, gaInterval: 5, gaMinCount: 1, gaMsg: '', gaBusy: '' }
       // 📇 群组管理 M1: 勾选集合本地持久化(刷新/重开不丢, 供后续群发/批量操作使用)
       try { var _rs = localStorage.getItem('qqs-roster-sel'); if (_rs) { var _rso = JSON.parse(_rs); if (_rso && typeof _rso === 'object') state.rosterSel = _rso } } catch (e) {}
       var chatFlash = '' // 发送结果/错误提示(短时展示, 不被列表计数覆盖)
@@ -2147,6 +2147,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           state.gaPoll = read('#dk-ga-poll')
           state.gaPollWake = read('#dk-ga-pollwake')
           state.gaHubNotify = read('#dk-ga-hubnotify')
+          state.gaNotifyGroup = read('#dk-ga-notifygroup')
           state.gaInterval = num('#dk-ga-interval', 5)
           state.gaMinCount = num('#dk-ga-mincount', 1)
           saveGroupAdmin()
@@ -2177,12 +2178,14 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           state.gaPoll = poll.enabled === true
           state.gaPollWake = poll.wakeLlm !== false
           state.gaHubNotify = poll.hubNotify !== false
+          state.gaNotifyGroup = poll.notifyGroup !== false
           state.gaInterval = poll.intervalMin || 5
           state.gaMinCount = poll.minCount || 1
           var e1 = panel && panel.querySelector('#dk-ga-enabled'); if (e1) e1.checked = state.gaEnabled
           var e2 = panel && panel.querySelector('#dk-ga-poll'); if (e2) e2.checked = state.gaPoll
           var e3 = panel && panel.querySelector('#dk-ga-pollwake'); if (e3) e3.checked = state.gaPollWake
           var e4 = panel && panel.querySelector('#dk-ga-hubnotify'); if (e4) e4.checked = state.gaHubNotify
+          var e4b = panel && panel.querySelector('#dk-ga-notifygroup'); if (e4b) e4b.checked = state.gaNotifyGroup
           var e5 = panel && panel.querySelector('#dk-ga-interval'); if (e5) e5.value = state.gaInterval
           var e6 = panel && panel.querySelector('#dk-ga-mincount'); if (e6) e6.value = state.gaMinCount
         }).catch(function () {})
@@ -2205,6 +2208,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
                 minCount: state.gaMinCount,
                 wakeLlm: state.gaPollWake,
                 hubNotify: state.gaHubNotify,
+                notifyGroup: state.gaNotifyGroup,
               },
             })
             patch.groupAdmin = ga
@@ -2488,6 +2492,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             + '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px"><input type="checkbox" id="dk-ga-poll"' + (state.gaPoll ? ' checked' : '') + '> 轮询审批</label>'
             + '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px"><input type="checkbox" id="dk-ga-pollwake"' + (state.gaPollWake ? ' checked' : '') + '> 唤醒AI</label>'
             + '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px"><input type="checkbox" id="dk-ga-hubnotify"' + (state.gaHubNotify ? ' checked' : '') + '> 注入群管会话</label>'
+            + '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px" title="取消勾选=只注入群组管理器会话, 普通群会话不再收到审批提醒"><input type="checkbox" id="dk-ga-notifygroup"' + (state.gaNotifyGroup ? ' checked' : '') + '> 通知普通群</label>'
             + '</div>'
             + '<div class="dk-row" style="gap:8px;flex-wrap:wrap">'
             + '<span style="font-size:12px;color:#666;display:inline-flex;align-items:center;gap:4px">间隔 <input type="number" id="dk-ga-interval" min="1" value="' + (state.gaInterval || 5) + '" style="width:52px;font-size:12px;padding:2px 4px"> 分钟</span>'
