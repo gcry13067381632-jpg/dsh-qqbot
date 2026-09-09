@@ -1050,38 +1050,58 @@ export async function apply(ctx: Context): Promise<void> {
         const r = await wakeSessionAgent(manager, sid, loggerLike(exec as never), body);
         let extra = '';
         if (args.send_qq !== false) {
-          // 目标 peer: 活跃会话直接取记录; 潜在群(未创建)从群注册表按 sessionIdFor 反查
+          // 目标 peer: ⚠️ 不能只问 findManagerBySessionId 返回的 manager——它可能经 findHostAgent 命中
+          // 错误实例(宿主 registry 全局), 导致 rec=undefined → 静默不发(2026-09-10 04:35 实测)。
+          // 改为: 遍历全部实例, 找 findBySessionId 真正命中的记录取 scope/peerId。
           let qScope: 'group' | 'c2c' | undefined;
           let qPeer = '';
-          const rec = manager.findBySessionId(sid);
-          if (rec) {
-            qScope = rec.scope;
-            qPeer = rec.peerId;
-          } else {
+          let ownerManager: SessionManager | undefined;
+          for (const m of managersOf()) {
             try {
-              const raw = readFileSync(groupRegistryPath(manager.cwd), 'utf8');
-              const reg = JSON.parse(raw) as Record<string, unknown>;
-              for (const gid of Object.keys(reg ?? {})) {
-                if (manager.sessionIdFor('group', gid) === sid) { qScope = 'group'; qPeer = gid; break; }
-              }
-            } catch { /* 无注册表则跳过 */ }
+              const r2 = m.findBySessionId(sid);
+              if (r2) { ownerManager = m; qScope = r2.scope; qPeer = r2.peerId; break; }
+            } catch { /* 单实例异常跳过 */ }
           }
-          if (qScope && qPeer) {
-            extra = await sendQQWithMedia(manager, qScope, qPeer, body, String(args.media || ''), exec as never);
+          if (!ownerManager) {
+            // 潜在群(未创建): 从各实例群注册表按 sessionIdFor 反查
+            for (const m of managersOf()) {
+              try {
+                const raw = readFileSync(groupRegistryPath(m.cwd), 'utf8');
+                const reg = JSON.parse(raw) as Record<string, unknown>;
+                for (const gid of Object.keys(reg ?? {})) {
+                  if (m.sessionIdFor('group', gid) === sid) { ownerManager = m; qScope = 'group'; qPeer = gid; break; }
+                }
+                if (ownerManager) break;
+              } catch { /* 无注册表则跳过 */ }
+            }
+          }
+          if (ownerManager && qScope && qPeer) {
+            extra = await sendQQWithMedia(ownerManager, qScope, qPeer, body, String(args.media || ''), exec as never);
           }
         }
         return { ok: r === 'ok', msg: `${map[r] ?? r} (${sid.slice(0, 8)}…)${extra}` };
       }
-      // ② peer 寻址: registry 按 scope+peer 找目标实例(跨全部实例), 找不到回退任意实例
+      // ② peer 寻址: registry 按 scope+peer 找目标实例(跨全部实例), 找不到回退当前执行实例
       const peer = String(args.peer_id || '');
       const sc = String(args.scope || '') as 'group' | 'c2c';
       if (!peer || !sc) return { ok: false, msg: '请给 session_id, 或 scope+peer_id' };
       let manager = findManagerByPeer(sc, peer);
-      if (!manager) manager = managersOf()[0];
+      if (!manager) {
+        // 回退: 当前执行上下文所属实例(QQ 会话内调 session_wake 时, 目标大概率同实例)
+        const curCh = channelOf(exec as never);
+        if (curCh?.manager && curCh.manager.findByPeer(sc, peer)) manager = curCh.manager;
+        else if (curCh?.manager) manager = curCh.manager;
+      }
       if (!manager) return { ok: false, msg: '找不到会话管理器实例(无已注册实例)' };
       let rec = manager.findByPeer(sc, peer);
       if (!rec) {
-        // 会话未创建(懒创建): 用主人身份 getOrCreate 建起来再唤醒(2026-09-10 主人定)
+        // ⚠️ 2026-09-10 主人实测: c2c openid 按 appId 隔离(鲸鱼娘=E9020753…, 白毛=B901EA3C…),
+        //    乱 getOrCreate 会把假会话建进错误实例(sender=master), 再用错 appId 发送 →
+        //    官方「资源不存在(用户/群已注销)」。因此: c2c 无真实会话时不再乱建, 明确指引;
+        //    group 潜在群(注册表里有)仍允许懒创建。
+        if (sc === 'c2c') {
+          return { ok: false, msg: `❌ 未找到该私聊对象的真实会话(${peer.slice(0, 8)}…): 请先让对方主动私聊本 bot 一次(dock「💬聊天」里能直接发), 或用 session_id 寻址。原因: openid 按 bot 应用隔离, 乱建会话会发到错误实例` };
+        }
         rec = await manager.getOrCreate(sc, peer, 'master', { scope: sc, targetId: peer });
         if (!rec) return { ok: false, msg: `会话创建失败: ${sc} ${peer.slice(0, 8)}…` };
       }
