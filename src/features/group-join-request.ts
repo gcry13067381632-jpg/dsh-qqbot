@@ -24,6 +24,7 @@ import type { ImQQBotConfig } from '../config.js';
 import type { Logger } from '../types.js';
 import type { SessionManager } from '../session/index.js';
 import { notifyGroupHub, safeAppendUserMessage } from './group-hub.js';
+import { verifyHuman } from '../api/group-admin.js';
 
 /** 官方 GROUP_JOIN_REQUEST 事件体(与本项目用到的字段) */
 export interface GroupJoinRequestEvent {
@@ -167,7 +168,7 @@ export async function handleGroupJoinRequestEvent(
     return true;
   }
 
-  const verify = ev.verify_info?.verify_message || ev.verify_info?.method || '';
+  const verify = verifyHuman(ev.verify_info);
   const item: PendingJoinRequest = {
     group_openid: gid,
     join_request_id: jid,

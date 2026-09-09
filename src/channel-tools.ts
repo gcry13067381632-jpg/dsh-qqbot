@@ -18,6 +18,7 @@ import { isStickerGateDenied } from './features/sticker-gate.js';
 import { getScheduleStore } from './features/schedule-store.js';
 import { switchOutboundMode } from './features/outbound-mode-switch.js';
 import { loadExtensionTools } from './features/extension-store.js';
+import { verifyHuman } from './api/group-admin.js';
 
 /** 诊断日志路径: 默认关闭; 需要排查时设环境变量 QQBOT_DIAG_FILE 指向日志文件 */
 const DIAG_FILE = process.env.QQBOT_DIAG_FILE || '';
@@ -828,7 +829,7 @@ export async function apply(ctx: Context): Promise<void> {
       if (!r.ok) return { ok: false, msg: r.err.human };
       const list = r.data.list;
       if (list.length === 0) return { ok: true, msg: '当前没有待审批的入群申请 ✓' };
-      const lines = list.map((j, i) => `${i + 1}. ${j.username ?? '?'} (${j.member_openid}) 来源:${j.apply_source ?? '?'} 验证:${j.verify_info?.verify_message ?? j.verify_info?.method ?? '-'}${j.risk_tips ? ` ⚠️${j.risk_tips}` : ''}`);
+      const lines = list.map((j, i) => `${i + 1}. ${j.username ?? '?'} (${j.member_openid}) 来源:${j.apply_source ?? '?'} 验证:${verifyHuman(j.verify_info) || '-'}${j.risk_tips ? ` ⚠️${j.risk_tips}` : ''}`);
       return { ok: true, msg: `入群申请 ${list.length} 条:\n${lines.join('\n')}` };
     },
   });

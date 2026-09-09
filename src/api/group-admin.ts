@@ -48,6 +48,26 @@ export interface JoinRequest {
   verify_info?: { method?: string; verify_message?: string; review_qa_list?: Array<{ question: string; answer: string }> };
 }
 
+/** 官方 verify_info.method 枚举 → 中文(用户可见)。未知枚举回落原文 */
+const VERIFY_METHOD_HUMAN: Record<string, string> = {
+  admin_review_qa: '问题验证(需管理员审核)',
+  admin_review: '管理员审核',
+  free_join: '自由进群',
+  qa: '问题验证',
+};
+
+/**
+ * 入群申请的"验证信息"人话化:
+ *   - verify_message 有值 → 直接显示用户填的答案(如「我是小号」);
+ *   - 否则 method 有值 → 翻译成中文(admin_review_qa 这类英文枚举不该露给用户);
+ *   - 都没有 → ''(无验证, 调用方显示 '-' 或不显示)。
+ */
+export function verifyHuman(vi?: { method?: string; verify_message?: string }): string {
+  if (vi?.verify_message) return vi.verify_message;
+  if (vi?.method) return VERIFY_METHOD_HUMAN[vi.method] ?? `验证方式:${vi.method}`;
+  return '';
+}
+
 export interface MuteState {
   global_rule?: { mode?: 'none' | 'always' | 'schedule'; schedule_rules?: unknown[]; recurring_rules?: unknown[] };
   members?: Array<{ member_openid: string; mute_expire_at?: string; username?: string; union_openid?: string }>;

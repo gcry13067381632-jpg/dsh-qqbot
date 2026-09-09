@@ -23,6 +23,7 @@ import { handleInbound } from '../transport/inbound.js';
 import { pushPendingJoinRequest, type PendingJoinRequest } from './group-join-request.js';
 import { notifyGroupHub } from './group-hub.js';
 import { groupRegistryPath } from '../api/group-admin.js';
+import { verifyHuman } from '../api/group-admin.js';
 import { dataRootOf } from '../gateway/data-root.js';
 
 /** 轮询 tick: 30s 精度足够(分钟级间隔) */
@@ -164,7 +165,7 @@ export function startJoinRequestPolling(
           apply_source: it.apply_source,
           invited_by: it.invited_by,
           risk_tips: it.risk_tips,
-          verify_message: it.verify_info?.verify_message || it.verify_info?.method || '',
+          verify_message: verifyHuman(it.verify_info),
           seen_at: new Date().toISOString(),
           notified: false,
         }));
