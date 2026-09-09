@@ -9,11 +9,20 @@
  * 切换实现走 outbound-mode-switch 注册表(index.ts 注册): 改 live config 立即热生效 +
  * settings 持久化 → dock/设置面板与 live 三方一致。
  *
+ * 切换后通知 AI(回合安全, 2026-09-09 主人定/修复):
+ *   斜杠命令不经 LLM → AI 不知道模式被切。用宿主的 agent.inject 注入一条
+ *   "模式已切换" 消息(不唤醒)。⚠️ 必须在 AI 回合结束后注入:
+ *   回合中(assistant tool_calls 未结算)往会话塞消息会把 tool_calls 与其 tool 结果
+ *   拆开 → 下次请求 INVALID_REQUEST(insufficient tool messages)。
+ *   做法: 先回执给主人, 后台 await agent.whenIdle()(回合结束)后再 inject ——
+ *   与 QQ 入站"回合中攒消息、turn/end 后整批进上下文"同一安全语义。
  */
 import type { SlashCommand } from '@tencent-connect/qqbot-nodejs';
+import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import type { CommandDeps } from './types.js';
 import { normalizeOutboundMode, switchOutboundMode } from '../features/outbound-mode-switch.js';
 import type { ImQQBotConfig } from '../config.js';
+import { getScopePeer } from '../shared/index.js';
 
 const LABEL: Record<string, string> = {
   adaptive: '适配主动(默认): 收到真人消息前5条带引用回你, 之后自动转独立消息',
@@ -26,7 +35,41 @@ function currentOf(config: ImQQBotConfig): string {
   return normalizeOutboundMode(config.outboundMode);
 }
 
-export function outModeCommand({ config }: CommandDeps): SlashCommand {
+/** 回合结束后注入"模式已切换"(fire-and-forget; 命令先回执不等回合) */
+async function noteModeChange(manager: CommandDeps['manager'], cmdCtx: unknown, mode: string): Promise<void> {
+  try {
+    const { scope, peerId } = getScopePeer(cmdCtx as never);
+    const record = manager.findByPeer(scope, peerId);
+    const agent = record?.agent as
+      | ({ whenIdle?: () => Promise<void>; inject?: (m: unknown) => void } & {
+          session?: { append?: (type: string, data: unknown, opts?: { surfaceOp?: string }) => unknown };
+        })
+      | undefined;
+    if (!agent) return;
+    const text = `[主人切换了出站模式] 现在: ${mode} — ${LABEL[mode] ?? ''}`;
+    const msg = createUserMessage({
+      content: [{ type: 'text', text }],
+      source: { kind: 'user' },
+    });
+    const doInject = (): void => {
+      if (typeof agent.inject === 'function') {
+        agent.inject(msg); // 宿主回合安全注入: 不唤醒, 排到下个 step 组包
+        return;
+      }
+      const sess = agent.session;
+      if (sess && typeof sess.append === 'function') {
+        sess.append('user/message', msg, { surfaceOp: 'append' });
+      }
+    };
+    // 等当前回合结束再注入(回合空闲时 whenIdle 立即返回)
+    await (typeof agent.whenIdle === 'function' ? agent.whenIdle().catch(() => undefined) : Promise.resolve());
+    doInject();
+  } catch {
+    /* 通知失败不影响切换本身 */
+  }
+}
+
+export function outModeCommand({ manager, config }: CommandDeps): SlashCommand {
   return {
     name: 'outmode',
     description: '查看/切换出站模式(用法: /outmode [adaptive|passive|silent|nothink])',
@@ -42,10 +85,10 @@ export function outModeCommand({ config }: CommandDeps): SlashCommand {
       }
       const want = normalizeOutboundMode(args.toLowerCase());
       const r = await switchOutboundMode(want);
-      // ⚠️ 2026-09-09 修复: 不再往会话 append"模式已切换"消息——
-      //    若在 AI 回合中(工具调用未结算)append, 会把 assistant tool_calls 与其
-      //    tool 结果拆开, 下次请求报 INVALID_REQUEST(insufficient tool messages)。
-      //    切换有命令回执即可, 出站模式无需写进 AI 上下文。
+      if (r.ok) {
+        // 先回执; 后台等回合结束再通知 AI(回合安全, 不拆 tool_calls)
+        void noteModeChange(manager, cmdCtx, r.mode);
+      }
       return r.ok ? `✅ 出站模式已切换: **${r.mode}**\n${LABEL[r.mode] ?? ''}` : `切换失败: ${r.msg}`;
     },
   };
