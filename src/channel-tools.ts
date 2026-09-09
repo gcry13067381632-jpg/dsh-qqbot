@@ -1020,7 +1020,7 @@ export async function apply(ctx: Context): Promise<void> {
           if (src?.rec?.sessionId) from = src.rec.sessionId.slice(0, 8) + '…';
         }
       } catch { /* 忽略 */ }
-      const body = `【来自会话 ${from}】\n${text}`;
+      const body = `【来自会话 ${from}】\n${text}${args.media ? `\n[附带图片: ${args.media}]` : ''}`;
       const map: Record<string, string> = {
         ok: '✅ 已发送并唤醒',
         'no-session': `❌ 会话不存在: 目标会话不在任何已注册实例中(或已重建/换绑)`,
