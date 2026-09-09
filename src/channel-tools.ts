@@ -926,20 +926,17 @@ export async function apply(ctx: Context): Promise<void> {
       const tail = (s: string | undefined, n = 10): string => (s && s.length > n ? '…' + s.slice(-n) : (s ?? ''));
       const lines = list.map((s, i) => `${i + 1}. [${s.scope}] peer=${tail(s.peerId)} sender=${tail(s.senderId, 8)} id=${s.sessionId}${s.agentPreset ? ` (${s.agentPreset})` : ''} 活跃=${new Date(s.lastActivity).toLocaleTimeString()}`);
       // 潜在会话: 群注册表里的群可能还没 getOrCreate(无活跃记录), 但 sessionId 可确定性算出
-      const mc = manager as { cwd?: string };
-      if (mc.cwd) {
-        try {
-          const raw = readFileSync(groupRegistryPath(mc.cwd), 'utf8');
-          const reg = JSON.parse(raw) as Record<string, { name?: string }>;
-          const ids = new Set(list.map((s) => s.sessionId));
-          const pend: string[] = [];
-          for (const gid of Object.keys(reg ?? {})) {
-            const sid = manager.sessionIdFor('group', gid);
-            if (!ids.has(sid)) pend.push(`[潜在群] ${reg[gid]?.name ?? ''}(${tail(gid)}) id=${sid} 活跃=未创建`);
-          }
-          if (pend.length) lines.push(...pend);
-        } catch { /* 无注册表/读失败则跳过 */ }
-      }
+      try {
+        const raw = readFileSync(groupRegistryPath(manager.cwd), 'utf8');
+        const reg = JSON.parse(raw) as Record<string, { name?: string }>;
+        const ids = new Set(list.map((s) => s.sessionId));
+        const pend: string[] = [];
+        for (const gid of Object.keys(reg ?? {})) {
+          const sid = manager.sessionIdFor('group', gid);
+          if (!ids.has(sid)) pend.push(`[潜在群] ${reg[gid]?.name ?? ''}(${tail(gid)}) id=${sid} 活跃=未创建`);
+        }
+        if (pend.length) lines.push(...pend);
+      } catch { /* 无注册表/读失败则跳过 */ }
       if (lines.length === 0) return { ok: true, msg: '当前无活跃会话, 也无已注册群' };
       return { ok: true, msg: `会话 ${lines.length} 个:\n${lines.join('\n')}` };
     },
