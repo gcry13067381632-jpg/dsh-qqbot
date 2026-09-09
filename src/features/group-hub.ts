@@ -81,7 +81,18 @@ export async function safeAppendUserMessage(
         ]);
       } catch { /* whenIdle 异常按未空闲处理 */ }
       if (!idle) {
-        logger.warn?.('[group-hub] 回合未在等待窗口内空闲, 放弃 append(避免坏聊天记录)');
+        // 回合未在等待窗口内空闲: 降级宿主 inject 排队(回合安全, 不唤醒), 而不是放弃丢消息。
+        // inject = send(msg,'next-step',wakeup:false) → 排队到下一次 pre-step 组包, 不拆 tool_calls。
+        logger.warn?.('[group-hub] 回合未空闲, 降级 inject 排队(避免坏记录且不丢消息)');
+        if (typeof a.inject === 'function') {
+          try {
+            a.inject(msg);
+            return 'ok';
+          } catch (err) {
+            logger.warn?.(`[group-hub] inject 兜底失败: ${err instanceof Error ? err.message : String(err)}`);
+            return 'fail';
+          }
+        }
         return 'busy';
       }
     }
