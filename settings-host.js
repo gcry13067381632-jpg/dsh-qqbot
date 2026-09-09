@@ -882,14 +882,41 @@ export function apply(ctx) {
       const sessionId = (u.searchParams.get('sessionId') || '').trim();
       if (!sessionId) return writeJson(res, 400, { error: 'sessionId 必填' });
       const { bots } = parsePatch();
+      const botByNs = new Map();
+      for (const bot of bots) {
+        if (bot.disabled || !bot.cfg?.appId || !bot.cfg?.cwd) continue;
+        botByNs.set(bot.id, bot);
+      }
       const hits = [];
+      const seen = new Set();
+      // 按实例台账补昵称(dataRoot/表情包/known-chats.jsonl)
+      const nameOf = (ns, scope, peerId) => {
+        const bot = botByNs.get(ns);
+        if (!bot) return '';
+        try {
+          const cwd = bot.cfg.dataRoot || bot.cfg.cwd;
+          const ld = chatLedgerNames(join(cwd, '表情包')).get(scope + ':' + peerId);
+          return (ld && ld.name) || '';
+        } catch { return '' }
+      };
+      const pushHit = (ns, scope, peerId, name, via) => {
+        const key = ns + ':' + scope + ':' + peerId;
+        if (seen.has(key)) return;
+        seen.add(key);
+        hits.push({ ns, scope, peerId, name, via });
+      };
+      // ① 权威: 真实会话记录(唯一可靠源 —— fork 后 sessionId 为 randomUUID, derive 推导会 miss)
+      const sessReg = await import('./dist/features/session-registry.js');
+      for (const r of sessReg.findSessionBySessionIdWeb(sessionId)) {
+        pushHit(r.ns, r.scope, r.peerId, nameOf(r.ns, r.scope, r.peerId), 'session');
+      }
+      // ② 兜底: 确定性推导(会话记录未建立/被回收时, 从注册表+台账推导; 与权威命中自动去重)
       for (const bot of bots) {
         if (bot.disabled || !bot.cfg?.appId || !bot.cfg?.cwd) continue;
         const appId = bot.cfg.appId;
         const cwd = bot.cfg.dataRoot || bot.cfg.cwd;
         const ns = bot.id;
         const ledger = chatLedgerNames(join(cwd, '表情包'));
-        // 群: 注册表 + 台账
         const groups = readGroupsJson(cwd);
         const gids = new Set([...Object.keys(groups), ...[...ledger.keys()].filter((k) => k.startsWith('group:')).map((k) => k.slice(6))]);
         for (const gid of gids) {
@@ -897,14 +924,13 @@ export function apply(ctx) {
           if (deriveSessionIdOf(appId, 'group', gid) !== sessionId) continue;
           const regMeta = groups[gid];
           const ld = ledger.get('group:' + gid);
-          hits.push({ ns, scope: 'group', peerId: gid, name: (regMeta && regMeta.name) || (ld && ld.name) || '' });
+          pushHit(ns, 'group', gid, (regMeta && regMeta.name) || (ld && ld.name) || '', 'derive');
         }
-        // 私聊: 台账 c2c
-        for (const [key, ld] of ledger) {
-          if (!key.startsWith('c2c:')) continue;
-          const openid = key.slice(4);
+        for (const [key2, ld] of ledger) {
+          if (!key2.startsWith('c2c:')) continue;
+          const openid = key2.slice(4);
           if (!openid || deriveSessionIdOf(appId, 'c2c', openid) !== sessionId) continue;
-          hits.push({ ns, scope: 'c2c', peerId: openid, name: ld.name || '' });
+          pushHit(ns, 'c2c', openid, ld.name || '', 'derive');
         }
       }
       writeJson(res, 200, { ok: true, sessionId, hits });
