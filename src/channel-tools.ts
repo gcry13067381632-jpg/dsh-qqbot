@@ -978,10 +978,25 @@ export async function apply(ctx: Context): Promise<void> {
     }
     const ga = groupAdminOf(exec as never);
     if (ga) {
-      const sr = scope === 'group'
-        ? await ga.client.sendGroupText(peer, body)
-        : await ga.client.sendC2cText(peer, body);
-      sent.push(sr.ok ? `📨已发到QQ ${scope === 'group' ? '群' : '私聊'}` : `⚠️QQ发送失败: ${sr.err.human}`);
+      if (scope === 'c2c') {
+        // c2c 主动推送必须走官方 is_wakeup 召回通道(30天窗), 自建 REST sendC2cText 无 is_wakeup
+        // → 被动回复窗口外不投递(web LLM 已唤醒但 QQ 收不到, 2026-09-10 主人实测 bug)。
+        // 优先 ch.sender.sendC2cWakeup(SDK sendWakeup); 无 sender 才退自建 REST。
+        if (ch?.sender && typeof ch.sender.sendC2cWakeup === 'function') {
+          try {
+            await ch.sender.sendC2cWakeup({ scope, targetId: peer }, body);
+            sent.push('📨已发到QQ 私聊');
+          } catch (err) {
+            sent.push(`⚠️QQ私聊发送失败: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        } else {
+          const sr = await ga.client.sendC2cText(peer, body);
+          sent.push(sr.ok ? '📨已发到QQ 私聊(降级)' : `⚠️QQ发送失败: ${sr.err.human}`);
+        }
+      } else {
+        const sr = await ga.client.sendGroupText(peer, body);
+        sent.push(sr.ok ? '📨已发到QQ 群' : `⚠️QQ发送失败: ${sr.err.human}`);
+      }
     } else {
       sent.push('⚠️群管理未开启');
     }

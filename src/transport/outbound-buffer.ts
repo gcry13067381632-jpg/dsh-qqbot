@@ -46,6 +46,8 @@ export interface QQBotSender {
   recallLast(target: ReplyTarget): Promise<boolean>;
   /** 撤本 bot 发给该 peer 的最近第 index 条(index=1 最近一条, 2 倒数第二条...)；成功返回 true */
   recallByIndex(target: ReplyTarget, index: number): Promise<boolean>;
+  /** c2c 主动召回消息(官方 is_wakeup:true, 30天窗; 群聊目标应走 sendMarkdown)。2026-09-10 修跨会话 c2c 发送 */
+  sendC2cWakeup(target: ReplyTarget, content: string): Promise<unknown>;
 }
 
 /**

@@ -304,6 +304,8 @@ export async function bootstrapGateway(
     },
     recallLast: (target) => doRecall(target, 1),
     recallByIndex: (target, index) => doRecall(target, index),
+    // c2c 主动召回(官方 is_wakeup:true; 群聊调用会抛, 由调用方保证只用于 c2c)
+    sendC2cWakeup: (target, content) => bot.sendWakeup(target, content),
   };
 
   // 把发送能力注入 SessionManager，供 QQ 会话 provide qqChannel 服务给通道工具
