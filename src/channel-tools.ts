@@ -944,12 +944,13 @@ export async function apply(ctx: Context): Promise<void> {
 
   const sessionWakeTool = defineTool({
     name: 'session_wake',
-    description: '跨会话(写,需谨慎): 向指定会话发送一条消息并唤醒该会话的 LLM(AI 开回合主动处理)。可用 session_list 查目标 id; 也支持按 peerId(群/私聊) 寻址。仅主人明确要求时调用。',
+    description: '跨会话(写,需谨慎): 向指定会话发送一条消息并唤醒该会话的 LLM(给 AI 看); 同时把带来源标注的消息通过 QQBot 通道发到该会话绑定的群/私聊(给人看)。可用 session_list 查目标 id; 也支持按 peerId(群/私聊) 寻址。仅主人明确要求时调用。',
     parameters: {
       session_id: { type: 'string', description: '目标会话 id(完整 sessionId, 来自 session_list)' },
       peer_id: { type: 'string', description: '或按 peer 寻址: 群 openid/私聊 openid(需带 scope)' },
       scope: { type: 'string', enum: ['group', 'c2c'], description: 'peer_id 寻址时的范围(group=群 / c2c=私聊)' },
       text: { type: 'string', required: true, description: '要发送并唤醒 AI 的消息内容' },
+      send_qq: { type: 'boolean', description: '是否同时发到绑定的 QQ 群/私聊(给人看, 默认 true)。false=只唤醒 LLM 不走 QQ 通道' },
     },
     output: {
       schema: {
@@ -964,7 +965,7 @@ export async function apply(ctx: Context): Promise<void> {
       const ch = channelOf(exec as never);
       const manager = ch?.manager;
       if (!manager) return { ok: false, msg: '找不到会话管理器实例' };
-      // 寻址: 优先 sessionId; 否则 scope+peerId
+      // 解析目标会话: 优先 session_id; 否则 scope+peer_id(未创建则 getOrCreate 建起来)
       let sid = String(args.session_id || '');
       let sc: 'group' | 'c2c' | undefined;
       let peer = '';
@@ -974,12 +975,12 @@ export async function apply(ctx: Context): Promise<void> {
         if (!peer || !sc) return { ok: false, msg: '请给 session_id, 或 scope+peer_id' };
         let rec = manager.findByPeer(sc, peer);
         if (!rec) {
-          // 会话未创建(懒创建): 用主人身份 getOrCreate 建起来再唤醒(2026-09-10 主人定)
           rec = await manager.getOrCreate(sc, peer, 'master', { scope: sc, targetId: peer });
           if (!rec) return { ok: false, msg: `会话创建失败: ${sc} ${peer.slice(0, 8)}…` };
         }
         sid = rec.sessionId;
       }
+      // 唤醒 LLM(给 AI 看)
       const r = await wakeSessionAgent(manager, sid, loggerLike(exec as never), text);
       const map: Record<string, string> = {
         ok: '✅ 已发送并唤醒',
@@ -987,7 +988,38 @@ export async function apply(ctx: Context): Promise<void> {
         'no-followup': '❌ 该会话 agent 不支持 followup 唤醒',
         fail: '❌ 唤醒异常',
       };
-      return { ok: r === 'ok', msg: `${map[r] ?? r} (${sid.slice(0, 8)}…)` };
+      let extra = '';
+      // 同时发到绑定的 QQ 群/私聊(给人看): 默认开; 目标 peer 从 session_id 反查或直接用 peer_id
+      if (args.send_qq !== false) {
+        let qScope = sc;
+        let qPeer = peer;
+        if (!qPeer || !qScope) {
+          const rec = manager.findBySessionId(sid);
+          if (rec) {
+            qScope = rec.scope;
+            qPeer = rec.peerId;
+          }
+        }
+        if (qScope && qPeer) {
+          // 来源标注(便于对方直接会话): 取本执行会话 id, 拿不到用 'web'
+          let from = 'web';
+          try {
+            const src = findSessionRec(ch, exec as never);
+            if (src?.rec?.sessionId) from = src.rec.sessionId.slice(0, 8) + '…';
+          } catch { /* 忽略 */ }
+          const ga = groupAdminOf(exec);
+          if (ga) {
+            const body = `【来自会话 ${from}】\n${text}`;
+            const sr = qScope === 'group'
+              ? await ga.client.sendGroupText(qPeer, body)
+              : await ga.client.sendC2cText(qPeer, body);
+            extra = sr.ok ? `；📨 已发到QQ ${qScope === 'group' ? '群' : '私聊'}` : `；⚠️ QQ发送失败: ${sr.err.human}`;
+          } else {
+            extra = '；⚠️ 群管理未开启, 未发QQ';
+          }
+        }
+      }
+      return { ok: r === 'ok', msg: `${map[r] ?? r} (${sid.slice(0, 8)}…)${extra}` };
     },
   });
 
