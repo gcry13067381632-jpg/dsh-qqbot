@@ -68,6 +68,9 @@ export async function sendRichOutbound(
   cwd: string | undefined,
   logError?: (msg: string) => void,
   resolveTarget?: () => ReplyTarget,
+  /** 逐文本块目标(2026-09-10 主人定 passive 收尾): 传 (块序号i, 总块数total)=>ReplyTarget,
+   *  用于「正文块>5 时第 6 块起转主动发送」; undefined=所有块用 resolveTarget/固定 target */
+  chunkTarget?: (i: number, total: number) => ReplyTarget,
 ): Promise<void> {
   const eff = (): ReplyTarget => (resolveTarget ? resolveTarget() : target);
   const hasRecall = containsRecall(text);
@@ -120,7 +123,10 @@ export async function sendRichOutbound(
       const chunks = chunkMarkdownText(clean, limit).map((c) => String(c || '')).filter((c) => c.trim());
       for (let ci = 0; ci < chunks.length; ci++) {
         const chunk = chunks[ci] as string;
-        if (chunk.trim()) await bot.sendMarkdown(eff(), chunk);
+        if (!chunk.trim()) continue;
+        // 逐块目标: passive 收尾(正文块>5 第6块起转主动)由 chunkTarget 决定; 缺省用 eff()
+        const tgt = chunkTarget ? chunkTarget(ci, chunks.length) : eff();
+        await bot.sendMarkdown(tgt, chunk);
         if (ci < chunks.length - 1) await new Promise((r) => setTimeout(r, 500));
       }
     }
@@ -140,6 +146,8 @@ export class OutboundBuffer {
     streamingEnabled: boolean,
     private readonly cwd: string | undefined = undefined,
     private readonly resolveTarget?: () => ReplyTarget,
+    /** 逐文本块目标(2026-09-10 passive 收尾; 正文块>5 第6块起转主动) */
+    private readonly chunkTarget?: (i: number, total: number) => ReplyTarget,
   ) {
     this.writer = streamingEnabled
       ? new StreamingWriter({ bot, target: record.replyTarget, logger, throttleMs: STREAM_THROTTLE_MS })
@@ -178,6 +186,7 @@ export class OutboundBuffer {
         this.cwd,
         (m) => this.logger.error(m),
         this.resolveTarget,
+        this.chunkTarget,
       );
     } catch (err) {
       this.logger.error(`im-qqbot: flush failed: ${err instanceof Error ? err.message : String(err)}`);

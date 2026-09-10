@@ -63,9 +63,8 @@ class OutboundRouter {
   ) {}
 
   /** 出站目标(每次实际发送前逐条调用, [RECALL] 除外):
-   *  passive → 同一入站消息(msg_id)前 ADAPTIVE_MAX_PASSIVE 条带 msg_id 被动回复,
-   *   超出自动转主动(去 msg_id) —— 2026-09-10 主人定: 正文块>5 时最后一块(总结)以主动模式发送,
-   *   既保留引用感又不被 QQ 回复上限吞;
+   *  passive → 一律带 msg_id 回复(其余行为不变; 唯一例外: 回合主回复正文块>5 时
+   *   第 6 块起转主动, 见 chunkTargetFn——2026-09-10 主人定);
    *  adaptive(默认)/active → 智能: 最近 5 分钟内收到过消息
    *  (lastActivity 新鲜)且同一条入站消息(msg_id)回复未超过 ADAPTIVE_MAX_PASSIVE 条 → 带 msg_id
    *  被动回复(有引用感); 超出/无近期入站(定时推送等) → 自动去 msg_id 转主动(防 QQ 吞/引用失效)。
@@ -73,29 +72,39 @@ class OutboundRouter {
   private resolveTarget(record: SessionRecord): ReplyTarget {
     const rt = record.replyTarget;
     const mode = this.config.outboundMode || 'adaptive';
-    // 未超 5 条的被动窗口判定(两模式共用; passive 恒走"前5条被动"窗口, 不判断消息新鲜度)
-    const passiveQuota = (): ReplyTarget => {
-      if (!rt.msgId) return { scope: rt.scope, targetId: rt.targetId };
-      const key = record.sessionKey;
-      let st = this.adaptiveState.get(key);
-      if (!st || st.msgId !== rt.msgId) {
-        // 新入站消息(msg_id 变化)→ 重置被动配额
-        st = { msgId: rt.msgId, passiveCount: 0 };
-        this.adaptiveState.set(key, st);
-      }
-      if (st.passiveCount < ADAPTIVE_MAX_PASSIVE) {
-        st.passiveCount += 1;
-        return rt;
-      }
-      // 已连续被动 5 条 → 本条起转主动(去掉 msg_id, 不再被 QQ 回复上限吞)
-      return { scope: rt.scope, targetId: rt.targetId };
-    };
-    if (mode === 'passive') return passiveQuota();
+    if (mode === 'passive') return rt;
     if (!rt.msgId) return { scope: rt.scope, targetId: rt.targetId };
     // 仅真实入站(QQ 收到消息)后 5 分钟内算「最近收到消息」; 定时注入不刷新 lastInboundAt → 直接主动
     const recent = Date.now() - (record.lastInboundAt || 0) <= ADAPTIVE_RECENT_MS;
     if (!recent) return { scope: rt.scope, targetId: rt.targetId };
-    return passiveQuota();
+    const key = record.sessionKey;
+    let st = this.adaptiveState.get(key);
+    if (!st || st.msgId !== rt.msgId) {
+      // 新入站消息(msg_id 变化)→ 重置被动配额
+      st = { msgId: rt.msgId, passiveCount: 0 };
+      this.adaptiveState.set(key, st);
+    }
+    if (st.passiveCount < ADAPTIVE_MAX_PASSIVE) {
+      st.passiveCount += 1;
+      return rt;
+    }
+    // 已连续被动 5 条 → 本条起转主动(去掉 msg_id, 不再被 QQ 回复上限吞)
+    return { scope: rt.scope, targetId: rt.targetId };
+  }
+
+  /** 主动目标(去 msg_id 独立发送): 回合主回复正文块>5 时的收尾块用 */
+  private activeTarget(record: SessionRecord): ReplyTarget {
+    const rt = record.replyTarget;
+    return { scope: rt.scope, targetId: rt.targetId };
+  }
+
+  /**
+   * 回合主回复的「块级目标」: passive 模式正文块>5 时前 5 块被动、第 6 块起(含最后总结)转主动。
+   * 返回 undefined = 不启用(adaptive 走自身 resolveTarget 计数, 无需此处干预)。
+   */
+  private chunkTargetFn(record: SessionRecord): ((i: number, total: number) => ReplyTarget) | undefined {
+    if ((this.config.outboundMode || 'adaptive') !== 'passive') return undefined;
+    return (i, total) => (total > 5 && i >= 5) ? this.activeTarget(record) : this.resolveTarget(record);
   }
 
   /** 事件分发入口 */
@@ -160,6 +169,7 @@ class OutboundRouter {
         this.shouldStream(record),
         this.config.cwd,
         () => this.resolveTarget(record),
+        this.chunkTargetFn(record),
       );
       this.buffers.set(sessionId, buffer);
     }
@@ -249,6 +259,7 @@ class OutboundRouter {
         this.config.cwd,
         (m) => this.logger.error(m),
         () => this.resolveTarget(_record),
+        this.chunkTargetFn(_record),
       );
     } catch (err) {
       this.logger.error(`im-qqbot: ${tag} failed: ${err instanceof Error ? err.message : String(err)}`);
