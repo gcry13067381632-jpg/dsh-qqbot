@@ -99,12 +99,14 @@ class OutboundRouter {
   }
 
   /**
-   * 回合主回复的「块级目标」: passive 模式正文块>5 时前 5 块被动、第 6 块起(含最后总结)转主动。
+   * 回合主回复的「块级目标」: passive 模式正文块>5 时仅最后一块(总结)转主动发送,
+   * 中途不改模式(前 total-1 块全被动带引用) —— 2026-09-10 主人最终语义:
+   * 回合结束判断最后一个正文块>5 → 获取其内容单独主动发到 QQ。
    * 返回 undefined = 不启用(adaptive 走自身 resolveTarget 计数, 无需此处干预)。
    */
   private chunkTargetFn(record: SessionRecord): ((i: number, total: number) => ReplyTarget) | undefined {
     if ((this.config.outboundMode || 'adaptive') !== 'passive') return undefined;
-    return (i, total) => (total > 5 && i >= 5) ? this.activeTarget(record) : this.resolveTarget(record);
+    return (i, total) => (total > 5 && i === total - 1) ? this.activeTarget(record) : this.resolveTarget(record);
   }
 
   /** 事件分发入口 */
