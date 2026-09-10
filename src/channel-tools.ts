@@ -19,7 +19,7 @@ import { getScheduleStore } from './features/schedule-store.js';
 import { switchOutboundMode } from './features/outbound-mode-switch.js';
 import { loadExtensionTools } from './features/extension-store.js';
 import { verifyHuman, groupRegistryPath } from './api/group-admin.js';
-import { wakeSessionAgent } from './features/group-hub.js';
+import { wakeSessionAgent, safeAppendUserMessage } from './features/group-hub.js';
 import { managersOf, findManagerByPeer, findManagerBySessionId } from './features/session-registry.js';
 
 /** 诊断日志路径: 默认关闭; 需要排查时设环境变量 QQBOT_DIAG_FILE 指向日志文件 */
@@ -1005,12 +1005,13 @@ export async function apply(ctx: Context): Promise<void> {
 
   const sessionWakeTool = defineTool({
     name: 'session_wake',
-    description: '跨会话(写,需谨慎): 向指定会话发送一条消息并唤醒该会话的 LLM(给 AI 看); 同时把带来源标注的消息通过 QQBot 通道发到该会话绑定的群/私聊(给人看)。可用 session_list 查目标 id; 也支持按 peerId(群/私聊) 寻址。仅主人明确要求时调用。',    parameters: {
+    description: '跨会话(写,需谨慎): 向指定会话发送一条消息; mode=wake(默认)唤醒该会话的 LLM(给 AI 看), mode=append 只把消息写进该会话上下文不唤醒(省 token, 喇叭模式, AI 下次回合自然看到)。同时把带来源标注的消息通过 QQBot 通道发到该会话绑定的群/私聊(给人看)。可用 session_list 查目标 id; 也支持按 peerId(群/私聊) 寻址。仅主人明确要求时调用。',    parameters: {
       session_id: { type: 'string', description: '目标会话 id(完整 sessionId, 来自 session_list)' },
       peer_id: { type: 'string', description: '或按 peer 寻址: 群 openid/私聊 openid(需带 scope)' },
       scope: { type: 'string', enum: ['group', 'c2c'], description: 'peer_id 寻址时的范围(group=群 / c2c=私聊)' },
-      text: { type: 'string', required: true, description: '要发送并唤醒 AI 的消息内容' },
-      send_qq: { type: 'boolean', description: '是否同时发到绑定的 QQ 群/私聊(给人看, 默认 true)。false=只唤醒 LLM 不走 QQ 通道' },
+      text: { type: 'string', required: true, description: '要发送的消息内容(唤醒模式会作为用户消息喂给 AI)' },
+      mode: { type: 'string', enum: ['wake', 'append'], description: 'wake=唤醒 LLM 开回合(默认); append=只追加上下文不唤醒(省 token, 喇叭模式)' },
+      send_qq: { type: 'boolean', description: '是否同时发到绑定的 QQ 群/私聊(给人看, 默认 true)。false=只处理 LLM 侧不走 QQ 通道' },
       media: { type: 'string', description: '跨群发图: 图片本地路径或 http(s) URL, 随消息发到目标群(需 send_qq=true)' },
     },
     output: {
@@ -1037,17 +1038,33 @@ export async function apply(ctx: Context): Promise<void> {
       } catch { /* 忽略 */ }
       const body = `【来自会话 ${from}】\n${text}${args.media ? `\n[附带图片: ${args.media}]` : ''}`;
       const map: Record<string, string> = {
-        ok: '✅ 已发送并唤醒',
+        ok: String(args.mode || 'wake') === 'append' ? '✅ 已写入上下文(未唤醒)' : '✅ 已发送并唤醒',
         'no-session': `❌ 会话不存在: 目标会话不在任何已注册实例中(或已重建/换绑)`,
         'no-followup': '❌ 该会话 agent 不支持 followup 唤醒',
-        fail: '❌ 唤醒异常',
+        'no-append': '❌ 该会话 agent 不支持上下文追加',
+        'no-agent': '❌ 找不到目标会话 agent',
+        busy: '⏳ 目标会话正忙(回合进行中且无安全注入通道)',
+        fail: '❌ 处理异常',
       };
       const sid = String(args.session_id || '');
       if (sid) {
         // ① session_id 寻址: module 级注册表跨全部实例精确命中(重启后仍可查)
         const manager = findManagerBySessionId(sid);
         if (!manager) return { ok: false, msg: `❌ 会话不存在: ${sid.slice(0, 8)}…(不在任何已注册实例)` };
-        const r = await wakeSessionAgent(manager, sid, loggerLike(exec as never), body);
+        const mode = String(args.mode || 'wake');
+        let r: string;
+        if (mode === 'append') {
+          // 喇叭模式: 只把消息写进目标会话上下文, 不唤醒 LLM(省 token)。
+          // 需取到目标 agent: 优先记录 agent; 否则宿主 registry 活 agent。
+          const rec0 = manager.findBySessionId(sid);
+          const targetAgent = rec0?.agent
+            ?? manager.findHostAgent(sid)?.agent
+            ?? (await manager.resumeHostAgent(sid).catch(() => undefined))?.agent;
+          if (!targetAgent) r = 'no-session';
+          else r = await safeAppendUserMessage(targetAgent, body, loggerLike(exec as never));
+        } else {
+          r = await wakeSessionAgent(manager, sid, loggerLike(exec as never), body);
+        }
         let extra = '';
         if (args.send_qq !== false) {
           // 目标 peer: ⚠️ 不能只问 findManagerBySessionId 返回的 manager——它可能经 findHostAgent 命中
@@ -1106,7 +1123,15 @@ export async function apply(ctx: Context): Promise<void> {
         if (!rec) return { ok: false, msg: `会话创建失败: ${sc} ${peer.slice(0, 8)}…` };
       }
       const sid2 = rec.sessionId;
-      const r = await wakeSessionAgent(manager, sid2, loggerLike(exec as never), body);
+      const mode2 = String(args.mode || 'wake');
+      let r: string;
+      if (mode2 === 'append') {
+        r = rec.agent
+          ? await safeAppendUserMessage(rec.agent, body, loggerLike(exec as never))
+          : 'no-session';
+      } else {
+        r = await wakeSessionAgent(manager, sid2, loggerLike(exec as never), body);
+      }
       let extra = '';
       if (args.send_qq !== false) {
         extra = await sendQQWithMedia(manager, sc, peer, body, String(args.media || ''), exec as never);
