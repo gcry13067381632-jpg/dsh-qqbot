@@ -14,6 +14,7 @@ import type { SessionManager } from '../session/index.js';
 import type { ChatScope } from '../types.js';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { ledgerPath } from './chat-ledger.js';
 
 const managers = new Map<string, SessionManager>();
 
@@ -138,7 +139,7 @@ export function managersOf(): SessionManager[] {
   return [...managers.values()];
 }
 
-/** 按 scope+peer 找目标实例的 manager(先活跃表; 再按群注册表归属匹配; 最后回退任意一个已注册) */
+/** 按 scope+peer 找目标实例的 manager(先活跃表; 再按群注册表/c2c台账归属匹配; 最后回退任意一个已注册) */
 export function findManagerByPeer(scope: ChatScope, peerId: string): SessionManager | undefined {
   // ① 活跃会话表精确命中
   for (const m of managers.values()) {
@@ -153,6 +154,27 @@ export function findManagerByPeer(scope: ChatScope, peerId: string): SessionMana
         const reg = readJSONRegistry(m.cwd);
         if (reg && Object.prototype.hasOwnProperty.call(reg, peerId)) return m;
       } catch { /* 单实例异常跳过 */ }
+    }
+  }
+  // ②' c2c 台账归属匹配(2026-09-10 主人定): openid 按 bot 应用(appId)隔离,
+  //    同一 QQ 用户在不同 bot 下 openid 不同。会话未创建时, 用"谁的台账见过这个
+  //    c2c openid"定归属 → 找到正确的实例才能用对的 appId 发送(否则官方报资源不存在)。
+  //    台账 = {dataDir}/known-chats.jsonl(chat-ledger append), dock 私聊对象同源。
+  if (scope === 'c2c' && peerId) {
+    for (const m of managers.values()) {
+      try {
+        const raw = readFileSync(ledgerPath(m.stickerDataDir), 'utf8');
+        let hit = false;
+        for (const l of raw.split('\n')) {
+          const t = l.trim();
+          if (!t) continue;
+          try {
+            const o = JSON.parse(t) as { scope?: string; id?: string };
+            if (o?.scope === 'c2c' && o.id === peerId) { hit = true; break; }
+          } catch { /* 坏行跳过 */ }
+        }
+        if (hit) return m;
+      } catch { /* 无台账/读失败则跳过 */ }
     }
   }
   // ③ 回退第一个已注册
