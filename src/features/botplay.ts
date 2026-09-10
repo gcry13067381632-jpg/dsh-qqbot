@@ -243,13 +243,17 @@ export class BotplayController {
     });
 
     const kb = botplayKeyboard(cardId, ev.buttons, perm, ownerIds, triggererId, Number(ev.buttonsPerRow ?? 1) || 1);
-    const prompt = [
-      `## 🎮 ${ev.name}`,
-      '',
-      '点下方按钮完成互动 👇',
-      '',
-      `⏱ 本卡片 ${expireSec} 秒内有效。`,
-    ].join('\n');
+    // 卡片正文: 事件自定义 markdown 模板(contentText)优先, 支持 {name} 占位; 空=默认模板(2026-09-10 M4)
+    const tpl = (ev.contentText && ev.contentText.trim()) || '';
+    const prompt = tpl
+      ? tpl.replace(/\{name\}/g, ev.name)
+      : [
+          `## 🎮 ${ev.name}`,
+          '',
+          '点下方按钮完成互动 👇',
+          '',
+          `⏱ 本卡片 ${expireSec} 秒内有效。`,
+        ].join('\n');
     try {
       await this.sender.sendMarkdownWithKeyboard(target, prompt, kb);
       this.logger.info(`[botplay] 发卡 ok event=${ev.id} card=${cardId} target=${target.scope}:${target.targetId} perm=${perm.type}`);

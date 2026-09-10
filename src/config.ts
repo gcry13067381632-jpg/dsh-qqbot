@@ -153,6 +153,12 @@ export interface BotplayEventConfig {
   id: string;
   /** 显示名(/botplay 列表显示) */
   name: string;
+  /**
+   * 卡片正文 markdown 模板(2026-09-10 M4): 支持 {name} 占位;
+   * 空=默认模板(## 🎮 事件名 + 固定引导文案)。
+   * 可嵌网络图 ![text #wpx #hpx](url); 按钮点击回调由按钮配置驱动。
+   */
+  contentText?: string;
   /** 接受点击数: 0=不限; N=单次触发实例最多点 N 次(点满失效) */
   maxClicks?: number;
   /** 发卡后有效期(秒): 超时按钮不再受理 */
@@ -400,13 +406,14 @@ const botplayPermSchema = Schema.object({
 const botplayEventSchema = Schema.object({
   id: Schema.string().required().description('事件唯一 id(斜杠 /botplay 触发用; 建议 [a-zA-Z0-9_-])'),
   name: Schema.string().required().description('事件显示名(/botplay 列表显示)'),
+  contentText: Schema.string().default('').description('卡片正文 markdown 模板(空=默认模板; 支持 {name} 占位; 可嵌网络图 ![text #宽px #高px](url))'),
   maxClicks: Schema.number().default(0).description('接受点击数: 0=不限; N=单次触发最多点N次(点满失效)'),
   expireSec: Schema.number().default(600).description('发卡后有效期(秒), 超时按钮失效'),
   perm: botplayPermSchema,
   buttonsPerRow: Schema.number().min(1).max(5).default(1).description('每行几个按钮(1~5, 默认1竖排; QQ 上限 5行×5钮)'),
   buttons: Schema.array(botplayButtonSchema).default([]).description('按钮列表(QQ限制: 最多5行)'),
 }).default({
-  id: '', name: '', maxClicks: 0, expireSec: 600,
+  id: '', name: '', contentText: '', maxClicks: 0, expireSec: 600,
   perm: { type: 'all', userIds: [] },
   buttonsPerRow: 1,
   buttons: [],

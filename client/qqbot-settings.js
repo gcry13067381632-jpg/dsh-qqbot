@@ -2839,6 +2839,8 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             body += '<div style="border-top:1px dashed #e2d9ff;margin-top:8px;padding-top:8px">'
             body += '<div class="dk-row"><label style="font-size:12px;color:#555;width:56px">事件名</label><input class="qqs-txt" id="dk-bp-name" value="' + esc(D.name) + '" style="flex:1" placeholder="如: 签到"></div>'
             body += '<div class="dk-row"><label style="font-size:12px;color:#555;width:56px">id</label><input class="qqs-txt" id="dk-bp-id" value="' + esc(D.id) + '" style="flex:1" placeholder="英文/数字/_- (触发用)"></div>'
+            body += '<div class="dk-row" style="align-items:flex-start"><label style="font-size:12px;color:#555;width:56px;padding-top:4px">卡片正文</label>'
+              + '<textarea id="dk-bp-content" placeholder="markdown 模板(可嵌网络图 ![text #宽px #高px](url)); 留空=默认模板(## 🎮 事件名 + 引导)。支持 {name} 占位。" style="flex:1;min-height:64px;font-size:12px;font-family:monospace;box-sizing:border-box;padding:6px;border:1px solid #ddd;border-radius:6px;resize:vertical">' + esc(D.contentText || '') + '</textarea></div>'
             body += '<div class="dk-row"><label style="font-size:12px;color:#555;width:56px">权限</label>'
               + '<select class="qqs-sel" id="dk-bp-perm">' + ['all','triggerer','owner','users'].map(function (p) { return '<option value="' + p + '"' + (D.perm && D.perm.type === p ? ' selected' : '') + '>' + ({ all: '所有人', triggerer: '仅触发者本人(推荐)', owner: '主人白名单', users: '指定openid' }[p]) + '</option>' }).join('') + '</select>'
               + (D.perm && D.perm.type === 'users'
@@ -3037,7 +3039,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         var bpNew = panel.querySelector('#dk-bp-new')
         if (bpNew) bpNew.onclick = function () {
           state.bpSel = null
-          state.bpDraft = { id: '', name: '', maxClicks: 0, expireSec: 600, buttonsPerRow: 1, perm: { type: 'all', userIds: [] }, buttons: [{ id: 'b1', label: '按钮', botAction: { type: 'reply_text', text: '' }, llmEffect: { mode: 'no_append', contextText: '' } }] }
+          state.bpDraft = { id: '', name: '', contentText: '', maxClicks: 0, expireSec: 600, buttonsPerRow: 1, perm: { type: 'all', userIds: [] }, buttons: [{ id: 'b1', label: '按钮', botAction: { type: 'reply_text', text: '' }, llmEffect: { mode: 'no_append', contextText: '' } }] }
           paintBody()
         }
         // 编辑器字段(名称/id/有效期/总次数/权限)
@@ -3045,6 +3047,8 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         if (bpName) bpName.oninput = function (e) { state.bpDraft.name = e.target.value }
         var bpId = panel.querySelector('#dk-bp-id')
         if (bpId) bpId.oninput = function (e) { state.bpDraft.id = e.target.value.trim() }
+        var bpContent = panel.querySelector('#dk-bp-content')
+        if (bpContent) bpContent.oninput = function (e) { state.bpDraft.contentText = e.target.value }
         var bpPerm = panel.querySelector('#dk-bp-perm')
         if (bpPerm) bpPerm.onchange = function (e) {
           state.bpDraft.perm = state.bpDraft.perm || {}
