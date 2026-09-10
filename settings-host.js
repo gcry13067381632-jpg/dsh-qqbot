@@ -848,15 +848,20 @@ export function apply(ctx) {
   function readPendingJson(cwd) {
     try { return JSON.parse(readFileSync(join(cwd, '.qqbot', 'join-pending.json'), 'utf8') || '{}'); } catch { return {}; }
   }
-  // ── botplay 事件独立文件存储(2026-09-10 M4.3): {dataRoot}/.qqbot/botplay-events.json
-  //    (主人定: 事件配置跟随账号 dataRoot, 和群管台账同目录, 不再和 settings 开关挤一起)
+  // ── botplay 事件独立文件存储(2026-09-10 M4.3): {dataRoot}/botplay-events.json
+  //    (主人定: 事件配置放工作目录根, 和「表情包」等平级; 曾放 .qqbot 子目录, 读时兼容迁移)
   function readBotplayEventsFile(cwd) {
-    try { return JSON.parse(readFileSync(join(cwd, '.qqbot', 'botplay-events.json'), 'utf8') || '{}'); } catch { return {}; }
+    try {
+      const root = join(cwd, 'botplay-events.json');
+      if (existsSync(root)) return JSON.parse(readFileSync(root, 'utf8') || '{}');
+      const legacy = join(cwd, '.qqbot', 'botplay-events.json');
+      if (existsSync(legacy)) { try { renameSync(legacy, root); } catch { /* 迁移失败继续读旧 */ } return JSON.parse(readFileSync(legacy, 'utf8') || '{}'); }
+      return {};
+    } catch { return {}; }
   }
   function writeBotplayEventsFile(cwd, events) {
     try {
-      mkdirSync(join(cwd, '.qqbot'), { recursive: true });
-      const f = join(cwd, '.qqbot', 'botplay-events.json');
+      const f = join(cwd, 'botplay-events.json');
       const tmp = f + '.tmp-' + Date.now();
       writeFileSync(tmp, JSON.stringify({ version: 1, events: Array.isArray(events) ? events : [] }, null, 2), 'utf8');
       renameSync(tmp, f);

@@ -15,9 +15,10 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync } from '
 import { join } from 'node:path';
 import type { BotplayEventConfig } from '../config.js';
 
-/** 事件配置文件路径: {dataRoot}/.qqbot/botplay-events.json */
+/** 事件配置文件路径: {dataRoot}/botplay-events.json(2026-09-10 M4.3 主人定:
+ *  存工作目录根, 和「表情包」等平级, 不藏进 .qqbot 子目录) */
 export function botplayEventsPath(dataRoot: string): string {
-  return join(dataRoot, '.qqbot', 'botplay-events.json');
+  return join(dataRoot, 'botplay-events.json');
 }
 
 function loadFile(dataRoot: string): BotplayEventConfig[] | undefined {
@@ -27,6 +28,24 @@ function loadFile(dataRoot: string): BotplayEventConfig[] | undefined {
     const arr = Array.isArray(o) ? o : (o && Array.isArray(o.events) ? o.events : undefined);
     return Array.isArray(arr) ? arr : undefined;
   } catch { return undefined; }
+}
+
+/**
+ * 兜底: 旧位置 {dataRoot}/.qqbot/botplay-events.json 若存在则迁移到根目录
+ * (2026-09-10 早期版本曾放 .qqbot 子目录; 主人要求放根目录后兼容一次迁移)。
+ */
+function migrateLegacyFile(dataRoot: string): boolean {
+  try {
+    const legacy = join(dataRoot, '.qqbot', 'botplay-events.json');
+    if (!existsSync(legacy)) return false;
+    const raw = readFileSync(legacy, 'utf8');
+    const o = JSON.parse(raw) as { events?: BotplayEventConfig[] } | BotplayEventConfig[];
+    const arr = Array.isArray(o) ? o : (o && Array.isArray(o.events) ? o.events : undefined);
+    if (!Array.isArray(arr) || arr.length === 0) return false;
+    saveBotplayEvents(dataRoot, arr);
+    try { renameSync(legacy, legacy + '.migrated-' + Date.now()); } catch { /* 旧文件不删也行 */ }
+    return true;
+  } catch { return false; }
 }
 
 /**
@@ -40,6 +59,11 @@ export function readBotplayEvents(
 ): BotplayEventConfig[] {
   const fromFile = loadFile(dataRoot);
   if (fromFile) return fromFile;
+  // 旧位置迁移兜底(.qqbot 子目录 → 根目录)
+  if (migrateLegacyFile(dataRoot)) {
+    const migrated = loadFile(dataRoot);
+    if (migrated) return migrated;
+  }
   // 首次/文件丢失: 迁移 settings 旧数据(2026-09-10 前 botplayEvents 在 settings.yaml)
   try {
     const legacy = eventsFromSettings();
@@ -54,9 +78,9 @@ export function readBotplayEvents(
 /** 写入事件列表(原子写; 空数组也写, 表示清空) */
 export function saveBotplayEvents(dataRoot: string, events: BotplayEventConfig[]): boolean {
   try {
-    const dir = join(dataRoot, '.qqbot');
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     const file = botplayEventsPath(dataRoot);
+    const dir = file.slice(0, Math.max(file.lastIndexOf('\\'), file.lastIndexOf('/')));
+    if (dir && !existsSync(dir)) mkdirSync(dir, { recursive: true });
     const tmp = file + '.tmp-' + Date.now();
     writeFileSync(tmp, JSON.stringify({ version: 1, events }, null, 2), 'utf8');
     renameSync(tmp, file);
