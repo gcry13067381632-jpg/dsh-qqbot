@@ -294,6 +294,21 @@ export class GroupAdminClient {
   }
 
   /**
+   * 向私聊(c2c)发送 markdown 卡片 + 可选 keyboard(2026-09-10 主人要求卡片支持私聊)。
+   * 官方 c2c 与群共用同一套 markdown/keyboard 结构, 仅 base path 不同。
+   */
+  async sendC2cCard(
+    userOpenid: string,
+    markdown: string,
+    keyboard?: Record<string, unknown>,
+  ): Promise<ApiResult<{ id?: string }>> {
+    const msgSeq = Math.floor(Date.now() / 1000) % 1000000;
+    const body: Record<string, unknown> = { msg_type: 2, markdown: { content: markdown }, msg_seq: msgSeq };
+    if (keyboard && keyboard.content) body.keyboard = keyboard;
+    return this.call('POST', `/v2/users/${encodeURIComponent(userOpenid)}/messages`, body);
+  }
+
+  /**
    * 撤回机器人自己发的消息(官方撤回窗口 2 分钟, 仅能撤自己发的)。
    * msgId: 发送成功时返回的 msg_id(群消息)或 id(私聊消息)。
    */

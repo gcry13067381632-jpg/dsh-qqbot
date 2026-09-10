@@ -10,6 +10,7 @@
  */
 import type { InjectRuleConfig } from '../config.js';
 import type { Logger, RawAttachment } from '../types.js';
+import { inferMediaKind } from './media-kind.js';
 
 /** 单轮累计注入预算(字符), 防爆上下文 */
 const BUDGET_CHARS = 1500;
@@ -34,11 +35,14 @@ const LEGACY_IMAGE_RULE: InjectRuleConfig = {
   prompt: '上方消息包含图片链接(URL)，请直接把该URL传给桥接视觉工具（modlens_read_image / analyze_image）看图并描述内容，不要只复述链接。',
 };
 
-/** 消息是否含附件图片(URL 兜底: content_type 是 MIME 如 image/jpeg) */
+/** 消息是否含附件图片。
+ *  ⚠️ 2026-09-10 根因修复（主人实测：自定义小提醒配了「消息里带图片」却**永不触发**）：
+ *     QQ 群聊里图片附件的 `content_type` 实测是 `'file'`（不是 `image/jpeg`），
+ *     原判定要求 content_type 含 'image' 或 URL 带图片扩展名 —— 两条都不成立 → hasImage=false
+ *     → 规则不命中；又因"存在启用的 hasImage 规则"而不追加内置兜底 → 读图提示彻底消失。
+ *     现统一走 inbound 同款 `inferMediaKind()`（单一真源），不再各写一份判定。 */
 function hasImage(msg: RuleMsg): boolean {
-  return (msg.attachments ?? []).some(a =>
-    (a.url && String(a.content_type ?? '').toLowerCase().includes('image')) || (a.url && /\.(jpe?g|png|gif|webp|bmp)(\?|$)/i.test(a.url)),
-  );
+  return (msg.attachments ?? []).some(a => !!a.url && inferMediaKind(a) === 'image');
 }
 
 /** 消息正文是否含 http(s) 链接 */

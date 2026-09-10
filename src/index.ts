@@ -100,16 +100,31 @@ export async function apply(ctx: Context, config: ImQQBotConfig): Promise<void> 
   }
 
   // ── 设置面板 host 桥(单包自含, 原 dsh-qqbot-settings 独立包合并而来) ──
-  // 桥是标准 cordis 插件(需要 settings/webServer/agentPresets 服务, 仅 web profile 有);
-  // 这里用 ctx.plugin 动态装载, 服务缺失时 fail-soft(纯 yml/非 web 环境跳过, 不拖垮插件树)。
+  // ⚠️ 2026-09-10 关键修复: 原用 ctx.plugin({name, inject, apply}) 装载 —— 在 dsh 环境下
+  //    桥的 apply 从未被调用(实测 ~/.dsh/qqbot-bridge-diag.log 不生成, 所有
+  //    /api/qqbot-settings/* 全 404, 前端设置页报 "not found" is not valid JSON)。
+  //    原因: cordis Service 必须声明式注入(同 2026-09-04 那次 ctx.settings 直读拿不到的坑),
+  //    改为 dsh 官方姿势 ctx.inject(deps, cb) —— 官方样板 dsh-bash-local / dsh-agent-default-model
+  //    均写作 ctx.inject(["settings"], (settingsCtx) => {...})。
+  //    agentPresets 不再作为等待依赖(桥内对该服务已有判空降级), 避免宿主未提供时永久不 apply。
   try {
     const bridgeUrl = new URL('../settings-host.js', import.meta.url).href;
     const bridgeMod = (await import(bridgeUrl)) as {
       name?: string; inject?: string[]; apply?: (ctx: Context) => unknown;
     };
     if (bridgeMod && typeof bridgeMod.apply === 'function') {
-      ctx.plugin({ name: bridgeMod.name ?? 'qqbot-settings', inject: bridgeMod.inject, apply: bridgeMod.apply });
-      logger.info('[im-qqbot] settings host 桥已装载(单包)');
+      const declared = Array.isArray(bridgeMod.inject) ? bridgeMod.inject : [];
+      const required = declared.filter((s) => s !== 'agentPresets');
+      const deps = required.length > 0 ? required : ['settings', 'webServer'];
+      ctx.inject(deps, (serverCtx: Context) => {
+        try {
+          bridgeMod.apply!(serverCtx);
+          logger.info(`[im-qqbot] settings host 桥已 apply(ctx.inject ${deps.join('+')})`);
+        } catch (err) {
+          logger.warn?.(`im-qqbot: settings host 桥 apply 异常: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      });
+      logger.info(`[im-qqbot] settings host 桥已装载(ctx.inject 姿势, deps=${deps.join('+')})`);
     } else {
       logger.warn('[im-qqbot] settings-host.js 缺少 apply, 桥跳过');
     }
@@ -157,7 +172,10 @@ async function installLiveSettings(ctx: Context, live: ImQQBotConfig, logger: Lo
       // 出站模式: adaptive=适配主动(默认; active 旧值归一 adaptive); passive=全被动; silent=不出站; nothink=不思考(仅设置页)
       if (next.outboundMode === 'adaptive' || next.outboundMode === 'passive' || next.outboundMode === 'silent' || next.outboundMode === 'nothink') live.outboundMode = next.outboundMode;
       else if (next.outboundMode === 'active') live.outboundMode = 'adaptive';
-      if (Array.isArray(next.botplayEvents)) live.botplayEvents = next.botplayEvents;
+      // botplay 事件: 真相源已迁到 {dataRoot}/botplay-events.json(2026-09-10 M4.3);
+      // ⚠️ 仅当 settings 提供了**非空**数组时才覆盖 live, 否则空数组会把文件装载的事件清掉
+      //    (实测症状: dock 保存后 /botplay 报"还没有装配任何互动事件")。
+      if (Array.isArray(next.botplayEvents) && next.botplayEvents.length > 0) live.botplayEvents = next.botplayEvents;
       logger.info('[im-qqbot] 设置已同步(live): dataRoot/behavior/sticker/injectRules/groupPrompt/schedule/groupAdmin/approvals/botplayEvents');
     } catch (err) {
       logger.warn?.(`im-qqbot: 设置同步失败: ${err instanceof Error ? err.message : String(err)}`);

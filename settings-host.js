@@ -106,18 +106,31 @@ function dirOf(u, key) {
 
 const MIME = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp' };
 
-/** 注册一条路由, 统一 fence + method 检查 */
+/** 注册一条路由, 统一 fence + method 检查。
+ * ⚠️ 2026-09-10 关键修复: 同 path 只向 dsh webServer register 一次, 多 method 内部按
+ *    req.method 分发。原实现对每个 route() 调用各 register 一次 —— dsh webServer 对同一
+ *    path 重复 register 会抛错, 导致 apply 从该处中断, 其后所有路由全部未注册
+ *    (实测: /group/botplay-events 的 GET+POST 同路径 → 其后 30 个路由缺失,
+ *     dock 聊天视图/群发/审批全挂)。route() 本就接受 method 数组, 这里补按 path 去重。 */
+const routeByPath = new Map();
 function route(ctx, method, path, handler) {
-  const methods = Array.isArray(method) ? method : [method];
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'exact',
-    path,
-    handler: async (req, res) => {
-      if (!isTrusted(req)) return writeJson(res, 403, { error: 'refused: same-origin loopback only' });
-      if (!methods.includes(req.method)) return writeJson(res, 405, { error: 'method not allowed' });
-      try { await handler(req, res); } catch (e) { writeJson(res, 500, { error: String(e?.message ?? e) }); }
-    },
-  }), `qqbot-settings: ${path}`);
+  const methods = (Array.isArray(method) ? method : [method]).map((m) => String(m).toUpperCase());
+  let reg = routeByPath.get(path);
+  if (!reg) {
+    reg = { handlers: new Map() };
+    routeByPath.set(path, reg);
+    ctx.effect(() => ctx.webServer.register({
+      kind: 'exact',
+      path,
+      handler: async (req, res) => {
+        if (!isTrusted(req)) return writeJson(res, 403, { error: 'refused: same-origin loopback only' });
+        const h = reg.handlers.get(String(req.method || '').toUpperCase());
+        if (!h) return writeJson(res, 405, { error: 'method not allowed' });
+        try { await h(req, res); } catch (e) { writeJson(res, 500, { error: String(e?.message ?? e) }); }
+      },
+    }), `qqbot-settings: ${path}`);
+  }
+  for (const m of methods) reg.handlers.set(m, handler);
 }
 
 export function apply(ctx) {
@@ -1197,27 +1210,36 @@ export function apply(ctx) {
   });
 
   // ── 自定义 markdown 卡片发送(2026-09-10 主人实测: markdown 嵌网络图+按钮可渲染):
-  //     接收 {ns?, gid, markdown, keyboard?} → sendGroupCard; 群发走 broadcast/create(type=markdown)。
+  //     接收 {ns?, gid | openid, markdown, keyboard?} → 群用 sendGroupCard / 私聊用 sendC2cCard;
+  //     群发走 broadcast/create(type=markdown)。openid 支持为 2026-09-10 主人要求(卡片可选私聊目标)。
   route(ctx, 'POST', '/api/qqbot-settings/chat/send-card', async (req, res) => {
     const body = await readJsonBody(req);
     if (!body || typeof body !== 'object') return writeJson(res, 400, { error: 'bad body' });
     const gid = String(body.gid || '').trim();
+    const openid = String(body.openid || '').trim();
     const md = String(body.markdown || '').trim();
-    if (!gid || !md) return writeJson(res, 400, { error: 'gid 与 markdown 必填' });
+    if (!gid && !openid) return writeJson(res, 400, { error: 'gid 或 openid 必填' });
+    if (!md) return writeJson(res, 400, { error: 'markdown 必填' });
     if (md.length > 8000) return writeJson(res, 400, { error: 'markdown 过长(最多 8000 字符)' });
     try {
       const gc = await groupClientOf(String(body.ns || ''));
       if (!gc) return writeJson(res, 400, { error: '找不到该账号实例' });
       const kb = body.keyboard && body.keyboard.content && Array.isArray(body.keyboard.content.rows) ? body.keyboard : undefined;
-      const r = await gc.client.sendGroupCard(gid, md, kb);
-      audit(gc.bot.cwd, { ev: 'chat.send-card', ns: gc.bot.id, gid, mdLen: md.length, kbRows: kb ? kb.content.rows.length : 0, ok: r.ok, code: r.ok ? undefined : (r.err && r.err.code) });
-      writeJson(res, 200, r.ok ? { ok: true, msg: '✅ 卡片已发送', id: r.data && r.data.id } : { ok: false, err: r.err });
+      const r = openid
+        ? await gc.client.sendC2cCard(openid, md, kb)
+        : await gc.client.sendGroupCard(gid, md, kb);
+      audit(gc.bot.cwd, { ev: 'chat.send-card', ns: gc.bot.id, gid, openid, mdLen: md.length, kbRows: kb ? kb.content.rows.length : 0, ok: r.ok, code: r.ok ? undefined : (r.err && r.err.code) });
+      writeJson(res, 200, r.ok
+        ? { ok: true, msg: '✅ 卡片已发送' + (openid ? '(私聊)' : '(群)'), id: r.data && r.data.id }
+        : { ok: false, err: r.err });
     } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
   });
 
   // ── botplay 事件独立文件存储(M4.3): GET 读 / POST 写, 均按 ns 取 dataRoot ──
+  // ⚠️ 2026-09-10 修复: NSQ 参数是 URL 对象(内部调 u.searchParams.get), 原写法 NSQ(req.url)
+  //    传了字符串 → "Cannot read properties of undefined (reading 'get')" 500。
   route(ctx, 'GET', '/api/qqbot-settings/group/botplay-events', async (req, res) => {
-    const ns = NSQ(req.url);
+    const ns = NSQ(new URL(req.url ?? '/', 'http://x'));
     const bot = nsBot(ns);
     if (!bot || !bot.cwd) return writeJson(res, 400, { error: '找不到该账号实例' });
     const fromFile = readBotplayEventsFile(bot.cwd);
@@ -1266,8 +1288,11 @@ export function apply(ctx) {
     if (!body || typeof body !== 'object') return writeJson(res, 400, { error: 'bad body' });
     const text = String(body.text || '').trim();
     const targets = Array.isArray(body.targets) ? body.targets : [];
-    if (!text) return writeJson(res, 400, { error: 'text 必填' });
-    if (text.length > 2000) return writeJson(res, 400, { error: '文本过长(最多 2000 字符)' });
+    // 卡片群发(2026-09-10 主人要求): type=card 时 text 为 markdown 正文, 另带 keyboard
+    const wantCard = body.type === 'card';
+    if (!text) return writeJson(res, 400, { error: wantCard ? 'markdown 必填' : 'text 必填' });
+    if (text.length > (wantCard ? 8000 : 2000)) return writeJson(res, 400, { error: wantCard ? 'markdown 过长(最多 8000 字符)' : '文本过长(最多 2000 字符)' });
+    const kb = wantCard && body.keyboard && body.keyboard.content && Array.isArray(body.keyboard.content.rows) ? body.keyboard : undefined;
     if (targets.length === 0) return writeJson(res, 400, { error: 'targets 至少一个(勾选群/私聊)' });
     if (targets.length > 200) return writeJson(res, 400, { error: '目标太多(最多 200)' });
     for (const t of targets) {
@@ -1278,12 +1303,13 @@ export function apply(ctx) {
       if (!bot) return writeJson(res, 400, { error: '找不到该账号实例(请先在账号页配置 appId/appSecret)' });
       const bm = await broadcastMod();
       const task = bm.createTask(bot.cwd, {
-        type: body.type === 'markdown' ? 'markdown' : 'text',
+        type: wantCard ? 'card' : (body.type === 'markdown' ? 'markdown' : 'text'),
         content: text,
+        keyboard: kb,
         targets: targets.map((t) => ({ scope: t.scope, peerId: t.peerId, name: t.name ? String(t.name) : undefined })),
         created_by: 'dock',
       });
-      audit(bot.cwd, { ev: 'group.broadcast.create', ns: bot.id, task_id: task.task_id, targets: targets.length });
+      audit(bot.cwd, { ev: 'group.broadcast.create', ns: bot.id, task_id: task.task_id, targets: targets.length, type: wantCard ? 'card' : 'text' });
       writeJson(res, 200, { ok: true, task });
     } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
   });
@@ -1426,10 +1452,19 @@ export function apply(ctx) {
   function chatLocalRawUrl(p) {
     return '/api/qqbot-settings/chat/raw-media?p=' + encodeURIComponent(p);
   }
-  // 附件行/URL 归属类型: 文件名/URL fname 扩展名优先(voice/image/file), 无扩展名看行标签与上下文
-  // 语音上下文(- ASR:/[Voice message])→ voice; 默认 image(QQ 图消息常走 [附件: url] 无扩展名)
+  // 附件行/URL 归属类型: 行内**显式类型标签**优先, 其次文件名/URL fname 扩展名, 最后行标签与上下文
+  // ⚠️ 2026-09-10 根因修复(主人实测: "视频还是附件形式, 图片也变成附件了"):
+  //   QQ 群聊里图片/视频的 content_type 实测可能是 `'file'`(不是 image/jpeg) —— 官方取值表:
+  //   voice / image/jpeg|png|gif / video/mp4 / file(=群文件)。端上(media-kind.ts)已按
+  //   MIME→扩展名→宽高→URL 特征(appid/orgfmt) 推断真实类型, 并以 `- Image: 名 → url` 注入 Layer 4。
+  //   这里必须认这些**显式前缀**, 否则 `- File:` 会把图片/视频判成 📎 附件(图片不显示、视频不能播)。
   function chatAttachmentKind(line, hasVoiceCtx, defaultKind) {
     const l = String(line || '');
+    // ① 显式类型标签(我方注入格式, 最权威)
+    if (/^-\s*(?:Image|图片)\s*:/i.test(l) || /^\[(?:Image|图片)\s*:/i.test(l)) return 'image';
+    if (/^-\s*(?:Video|视频)\s*:/i.test(l) || /^\[(?:Video|视频)\s*:/i.test(l)) return 'video';
+    if (/^-\s*(?:Voice|语音|音频)\s*:/i.test(l) || /^\[(?:Voice|语音|音频)\s*:/i.test(l)) return 'voice';
+    if (/^-\s*(?:File|文件)\s*:/i.test(l) || /^\[(?:File|文件)\s*:/i.test(l)) return 'file';
     // 从行内或 URL fname 参数取文件名
     let name = '';
     const fm = l.match(/fname=([^&\s]+)/);
@@ -1484,8 +1519,9 @@ export function apply(ctx) {
         const lk = chatLocalExtKind(lp[1]);
         if (lk) { images.push({ url: chatLocalRawUrl(lp[1]), kind: lk }); continue; }
       }
-      // 附件描述行: "- Attachment URLs: …" / "- File: …" / "[附件: …]" / "[文件: …]" / "[图片: …]" / "[Attachment: name -> …]"
-      if (/^-\s*Attachment URLs:/i.test(raw) || /^-\s*File:/i.test(raw) || /^\[(图片|附件|文件|语音|视频|音频):/i.test(raw) || /^\[Attachment:|^\[File:/i.test(raw)) {
+      // 附件描述行: "- Image: …" / "- Video: …" / "- Voice: …" / "- File: …" / "- Attachment URLs: …"
+      //            / "[图片: …]" / "[视频: …]" / "[附件: …]" / "[Attachment: name -> …]" / Layer1 的英文标签行
+      if (/^-\s*Attachment URLs:/i.test(raw) || /^-\s*(Image|Video|Voice|File)s?:/i.test(raw) || /^\[(图片|附件|文件|语音|视频|音频):/i.test(raw) || /^\[(Attachment|File|Image|Video):/i.test(raw)) {
         const urls = raw.match(QQ_URL_RE) || [];
         let got = 0;
         for (const u of urls) {
@@ -1495,6 +1531,10 @@ export function apply(ctx) {
           else if (QQ_MEDIA_RE.test(u)) { images.push({ url: u, kind: k }); got++; }
         }
         if (!got) {
+          // Layer 1 的英文描述行(`[Image: 名 800×600]` / `[Video: 名]` / `[File: 名 (1.2MB)]`)不含 URL,
+          // 其媒体由 Layer 4 的 `- Image:/- Video:/- File:` 行承载 → 直接丢弃, 避免显示成
+          // `📎 [Image: 名 800×600]` 这种丑文本(主人 2026-09-10 实测反馈)。
+          if (/^\[(Image|Video|File):/i.test(raw)) continue;
           // 无 URL 的 File/附件描述行(如 "- File: a.zip (3.0MB)")→ 保留可读文本, 不给空占位
           const desc = raw
             .replace(/^-\s*File:\s*/i, '').replace(/^\[File:\s*/i, '')
@@ -1548,6 +1588,12 @@ export function apply(ctx) {
   function chatSplitHistoryBlock(body) {
     const out = [];
     let cur = null;
+    // ⚠️ 2026-09-10 修复(主人实测: 当前消息的语音被挂到了上一条历史消息上):
+    //   Layer 4 的媒体元数据行(`- Attachment URLs:` / `- File:` …)排在 `[Current message]` 之后、
+    //   带昵称的当前消息之前 —— 原逻辑"无昵称行并入上一个气泡"会把它算到上一条历史消息头上。
+    //   改为: 这类 `- ` 开头的元数据行先暂存(pendingMeta), 等下一个带昵称的消息出现时归属它
+    //   (即"元数据行属于它下面那条消息"), 找不到归属时才丢弃。
+    let pendingMeta = [];
     const flush = () => {
       if (cur) {
         const t = cur.lines.join('\n').trim();
@@ -1560,9 +1606,12 @@ export function apply(ctx) {
       if (!s) continue;
       if (/^\[Chat history begins\]$/.test(s) || /^\[Chat history ends\]$/.test(s) || /^\[Current message\]$/.test(s) || /^\[当前时间/.test(s)) continue;
       if (/^\[系统提示\]/.test(s)) { flush(); return out; } // 系统注入段, 之后都不属于群聊内容
+      // 媒体元数据行: 暂存, 等归属给下面那条带昵称的消息
+      // (Layer 4 现输出 `- Image:/- Video:/- Voice:/- File:` 单数前缀, 此处一并覆盖)
+      if (/^-\s*(Attachment URLs|Files?|Images?|ASR|Voices?|Videos?)\s*[:：]/i.test(s)) { pendingMeta.push(s); continue; }
       const m = s.match(/^\[([^\]\n]*?)\s*\([A-Za-z0-9_-]{6,}\)\](.*)$/);
-      if (m) { flush(); cur = { sender: m[1].trim(), lines: [m[2].trim()].filter(Boolean) }; }
-      else { if (cur) cur.lines.push(s); else { flush(); cur = { sender: '', lines: [s] }; } }
+      if (m) { flush(); cur = { sender: m[1].trim(), lines: [m[2].trim(), ...pendingMeta].filter(Boolean) }; pendingMeta = []; }
+      else { if (cur) cur.lines.push(...pendingMeta, s); else { flush(); cur = { sender: '', lines: [...pendingMeta, s] }; } pendingMeta = []; }
     }
     flush();
     return out;
@@ -1581,6 +1630,15 @@ export function apply(ctx) {
     const mm = chatSplitMedia(chatDisplayClean(b, nameByMid));
     return { sender, mm };
   }
+  // 🔍 临时诊断(2026-09-10): 把含媒体标记的入站原文落盘到 ~/.dsh/qqbot-chat-raw.jsonl ——
+  //    用于核对 Layer1/Layer4 实际注入格式与 dock 解析结果(主人验收通过后删除本函数与调用)。
+  function chatRawDiag(raw0) {
+    try {
+      const s = String(raw0 || '');
+      if (!/(Image|Video|Voice|File|Attachment|图片|视频|语音|文件|附件)|multimedia\.nt\.qq\.com|qpic\.cn/i.test(s)) return;
+      appendFileSync(join(homedir(), '.dsh', 'qqbot-chat-raw.jsonl'), JSON.stringify({ t: Date.now(), body: s.slice(0, 5000) }) + '\n');
+    } catch { /* 诊断失败不影响主流程 */ }
+  }
   // 解码一条会话事件为聊天条目(群打包会展开成多条); 非聊天事件/噪声返回 null
   function chatDecodeEvent(ev, scope, nameByMid, fallbackSender) {
     if (!ev || typeof ev.type !== 'string') return null;
@@ -1591,6 +1649,7 @@ export function apply(ctx) {
       if (src.kind === 'plugin') return null; // runtime context / 系统注入等, 非真人对话
       const raw0 = chatTextOf(data.content);
       if (!raw0) return null;
+      chatRawDiag(raw0);
       const raw = chatPeelTimeHead(raw0);
       const isRelay = /^用户代你发送: /.test(raw);
       // 后台任务/面板大文件完成通知([系统] 后台任务…)→ 显示为 bot 侧气泡并打来源标; 其余系统注入滤掉
@@ -1704,7 +1763,22 @@ export function apply(ctx) {
         if (low === 0) { reachedEnd = true; break; }
         high = low - 1;
       }
-      items.reverse(); // 升序(旧→新)
+      // ⚠️ 2026-09-10 修复(主人实测"同一批次的历史消息会倒序"):
+      //   原为 items.reverse() —— 倒扫时同一打包块([Chat history begins]…[Chat history ends])
+      //   拆出的多条共用同一个 ev.seq, 块内本就是旧→新; 整体 reverse 会把"块内顺序"也翻反,
+      //   表现为"整批之间顺序对、批内倒序"。
+      //   改为: 按 seq 分块 → 块间倒序(旧→新), 块内保持原顺序。
+      {
+        const blocks = [];
+        for (const it of items) {
+          const last = blocks[blocks.length - 1];
+          if (last && last.seq === it.seq) last.arr.push(it);
+          else blocks.push({ seq: it.seq, arr: [it] });
+        }
+        blocks.reverse();
+        items.length = 0;
+        for (const b of blocks) for (const one of b.arr) items.push(one);
+      }
       // QQ 媒体域的语音 URL → 经 /chat/voice-play 转 mp3 播放(浏览器解不了 SILK)
       for (const it of items) {
         if (!Array.isArray(it.images)) continue;
@@ -2214,5 +2288,45 @@ const WHY_MAP = { busy: '目标会话回合活跃,已等待至回合结束仍超
       writeJson(res, r.ok ? 200 : 404, r);
     } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
   });
+
+  // ── 🚀 群发任务「后台自动推进」(2026-09-10 修: 原设计靠 client 每次 list 驱动, 页面不动就永久卡 queued) ──
+  // 每 5s 扫全部实例, 有 queued/sending 任务就推进一步(串行 → 天然限频); 单实例失败不影响其他实例。
+  try {
+    const BC_TICK_MS = 5000;
+    let bcTickRunning = false; // 定时器自身防重入: 上一轮未跑完不叠加(2026-09-10)
+    const bcTick = async () => {
+      if (bcTickRunning) return;
+      bcTickRunning = true;
+      try {
+      let bots = [];
+      try { bots = parsePatch().bots || []; } catch { return; }
+      for (const b of bots) {
+        try {
+          if (b.disabled) continue;
+          const bot = nsBot(b.id);
+          if (!bot || !bot.cwd) continue;
+          const bm = await broadcastMod();
+          const tasks = bm.listTasks(bot.cwd);
+          const active = tasks.find((t) => t.state === 'queued' || t.state === 'sending');
+          if (!active) continue;
+          const gc = await groupClientOf(b.id);
+          if (!gc) continue;
+          await bm.advanceTask(bot.cwd, active.task_id, gc.client);
+          audit(bot.cwd, { ev: 'group.broadcast.auto-advance', ns: b.id, task_id: active.task_id });
+        } catch (e) {
+          try {
+            const bot2 = nsBot(b.id);
+            if (bot2 && bot2.cwd) audit(bot2.cwd, { ev: 'group.broadcast.auto-advance-failed', ns: b.id, error: String((e && e.message) || e) });
+          } catch { /* ignore */ }
+        }
+      }
+      } finally { bcTickRunning = false; }
+    };
+    ctx.effect(() => {
+      const timer = setInterval(() => { bcTick().catch(() => {}); }, BC_TICK_MS);
+      timer.unref?.();
+      return () => { try { clearInterval(timer); } catch { /* ignore */ } };
+    }, 'qqbot-settings: 群发任务后台自动推进');
+  } catch { /* 定时器失败不影响插件 */ }
 
 }

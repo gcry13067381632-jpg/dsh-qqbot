@@ -588,6 +588,18 @@ export function listBotplayEventsAny(): Array<BotplayEventConfig & { ns: string 
   return out;
 }
 
+/**
+ * 取指定实例的事件列表(命令层 /botplay 用)。
+ * ⚠️ 2026-09-10 修复: 事件存储自 M4.3 起已迁到 {dataRoot}/botplay-events.json, 但命令层仍在读
+ *    config.botplayEvents(settings 层, 迁移后已被清空) → /botplay 永远报"还没有装配任何互动事件"。
+ *    控制器 listEvents() 是现读文件的(支持热更), 这里直接复用其数据源, 单一真相源。
+ * 控制器未注册(插件未就绪)时返回 undefined, 调用方回退 config.botplayEvents。
+ */
+export function listBotplayEventsOfNs(ns: string): BotplayEventConfig[] | undefined {
+  const c = botplayControllers.get(ns);
+  return c ? c.listEvents() : undefined;
+}
+
 /** 会话定位 → ReplyTarget(命令层用; senderId 即触发者) */
 export function resolveCommandTarget(
   cmdCtx: { message?: { kind?: string; groupOpenid?: string; senderId?: string; messageId?: string } },

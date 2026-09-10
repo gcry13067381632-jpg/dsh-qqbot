@@ -14,7 +14,7 @@ import { handleInbound, createOutboundHandler } from '../transport/index.js';
 import type { ToolsRegistryLike } from '../transport/tool-presenter.js';
 import type { QQBotSender } from '../transport/outbound-buffer.js';
 import { buildUserAgent } from '../shared/index.js';
-import type { ImQQBotConfig } from '../config.js';
+import type { ImQQBotConfig, BotplayEventConfig } from '../config.js';
 import type { Logger } from '../types.js';
 import { setupMiddlewares } from './middleware-setup.js';
 import { dataRootOf, migrateLegacyData, stickerDirOf } from './data-root.js';
@@ -391,7 +391,18 @@ export async function bootstrapGateway(
   logger.info(`[im-qqbot] QQ 远程提问接线就绪(${enableUserQuestions ? '启用' : '关闭'})`);
 
   // ── botplay 互动事件装配器(2026-09-08, Phase1 MVP) ──
-  // 事件配置从 live config.botplayEvents 现读 → dock「🎮」装配器保存即热更(同 settings ns)。
+  // 事件配置真相源 = {dataRoot}/botplay-events.json (2026-09-10 M4.3 起, 控制器现读支持热更)。
+  // ⚠️ 修复: 启动时把文件内容回填 config.botplayEvents —— 命令层/其他消费者仍读该字段,
+  //    而 settings 层自迁移后已被清空(空数组), 若不回填会导致 /botplay 查不到任何事件。
+  try {
+    const seeded = readBotplayEvents(dataRootOf(config), () => (Array.isArray(config.botplayEvents) ? config.botplayEvents : []));
+    if (Array.isArray(seeded) && seeded.length > 0) {
+      (config as { botplayEvents?: BotplayEventConfig[] }).botplayEvents = seeded;
+      logger.info(`[im-qqbot] botplay 事件已从文件装载: ${seeded.length} 个`);
+    }
+  } catch (err) {
+    logger.warn?.(`[im-qqbot] botplay 事件文件装载失败: ${err instanceof Error ? err.message : String(err)}`);
+  }
   // /botplay 命令 → triggerBotplay 模块级注册表 → 这里实现(带 sender/manager)发卡。
   botplayController = new BotplayController(
     manager,

@@ -11,7 +11,7 @@
  */
 import type { SlashCommand } from '@tencent-connect/qqbot-nodejs';
 import type { CommandDeps } from './types.js';
-import { triggerBotplay, botplayCatalog, resolveCommandTarget } from '../features/botplay.js';
+import { triggerBotplay, botplayCatalog, resolveCommandTarget, listBotplayEventsOfNs } from '../features/botplay.js';
 
 export function botplayCommand({ config }: CommandDeps): SlashCommand {
   return {
@@ -20,7 +20,11 @@ export function botplayCommand({ config }: CommandDeps): SlashCommand {
     usage: '/botplay [事件名]',
     handler: async (cmdCtx) => {
       const args = String((cmdCtx.command?.raw ?? '').trim());
-      const events = Array.isArray(config.botplayEvents) ? config.botplayEvents : [];
+      // 事件源(2026-09-10 修复): 优先取控制器的现读列表({dataRoot}/botplay-events.json, 支持热更),
+      // 控制器未注册时才回退 config.botplayEvents(settings 层, M4.3 迁移后已清空)。
+      const ns = (String(config.settingsNs ?? '').trim() || 'im-qqbot');
+      const live = listBotplayEventsOfNs(ns);
+      const events = live ?? (Array.isArray(config.botplayEvents) ? config.botplayEvents : []);
       const { target, triggererId } = resolveCommandTarget(cmdCtx as never);
       // 无参 → 发事件目录卡(点按钮直接触发; 事件多自动翻页)
       if (!args) {

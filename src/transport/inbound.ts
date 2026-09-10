@@ -16,6 +16,7 @@ import type { ChatScope, Logger, RawAttachment, ReplyTarget } from '../types.js'
 import type { DownloadedFile } from './attachment.js';
 import { clearGroupHistory } from '../features/history-store.js';
 import { applyInjectRules } from './inject-rules.js';
+import { inferMediaKind, mediaKindLabel } from './media-kind.js';
 
 // ── 类型定义 ──
 
@@ -241,7 +242,12 @@ function assembleAgentBody(
   const dynamicCtx = buildDynamicCtx(msg, state, downloaded);
 
   const base = dynamicCtx ? `${dynamicCtx}${userMessage}` : userMessage;
-  const agentBody = buildAgentBody(base, state.history, isGroup, wasMentioned, batchDispatch, aggregated);
+  // ⚠️ 2026-09-10 去重(主人: "图片链接重复两次"): 聚合/冷却重新派发时, 同一条消息会**既被
+  //   mediaHistoryBuffer 记进历史、又作为当前消息出现** → 同一条消息(含媒体 URL)在上下文里出现
+  //   两遍: 历史里是 `[昵称] [图片: url]`(foldMedia 折叠版), 当前是 Layer4 的 `- Image: 名 → url`。
+  //   按 messageId 剔掉历史中与当前消息重复的那条。
+  const history = (state.history ?? []).filter(h => !h.messageId || h.messageId !== msg.messageId);
+  const agentBody = buildAgentBody(base, history, isGroup, wasMentioned, batchDispatch, aggregated);
 
   return agentBody;
 }
@@ -313,51 +319,33 @@ function buildDynamicCtx(msg: ProcessedMessage, state: MiddlewareState, download
 
   if (!msg.attachments || msg.attachments.length === 0) return '';
 
-  const images = msg.attachments.filter(a => a.content_type === 'image');
-  if (images.length > 0) {
-    const urls = images.map(a => a.url).filter(Boolean);
-    if (urls.length > 0) {
-      lines.push(`- Images: ${urls.join(', ')}`);
+  // 本段(Layer 4)是**附件的唯一权威描述**: 一行一个附件, 含「类型 + 文件名 + 尺寸/大小 + 取值」。
+  // 因此 Layer 1 的 describeAttachments 对带 URL 的附件不再输出(见该函数注释), 保证一个附件只出现一次。
+  //
+  // ⚠️ 2026-09-10 根因修复(主人实测: "视频还是附件形式, 图片也变成附件了"):
+  //   原来按 `content_type` 分流 —— 但 QQ 群聊里**图片/视频的 content_type 实测就是 `'file'`**,
+  //   于是图片视频全被塞进 `- File:` 行, dock(chatAttachmentKind 见 `- File:`)渲染成 `📎 download`。
+  //   改为按 inferMediaKind() 推断真实类型, 用**显式类型前缀**输出:
+  //     `- Image: 名 (850×651) → url` / `- Video: 名 → url` / `- Voice: 名 → url` / `- File: 名 (1.2MB) → 路径|url`
+  //   好处: ① AI 能分清哪个 URL 是图/视频/语音(旧的纯 URL 汇总行做不到, 主人已指出);
+  //        ② dock 认类型前缀 → 图片直显、视频可播、语音可放;
+  //        ③ 语音的 ASR 转录在 Layer 1 的 `[Voice message] 文本` 里, 此处只给 URL(不重复)。
+  for (const att of msg.attachments) {
+    const kind = inferMediaKind(att);
+    // 元信息(文件名 + 图片尺寸 / 文件大小)并入同一行 —— Layer 1 因此不必再重复描述一遍附件。
+    const dim = kind === 'image' && att.width && att.height ? `(${att.width}×${att.height})` : '';
+    const size = kind === 'file' && att.size ? `(${formatFileSize(att.size)})` : '';
+    const meta = [att.filename, dim, size].filter(Boolean).join(' ');
+    const head = meta ? `${meta} ` : '';
+    if (kind === 'file') {
+      // 文件: 有本地落盘路径就给路径(便于 AI 直接读盘), 否则回退原始 URL。
+      const d = downloaded.find(x => x.filename === att.filename);
+      const target = d?.displayPath ?? att.url;
+      if (target) lines.push(`- File: ${head}→ ${target}`);
+      continue;
     }
-  }
-
-  const voices = msg.attachments.filter(a => a.content_type === 'voice');
-  if (voices.length > 0) {
-    const asrTexts = voices.map(a => a.asr_refer_text).filter(Boolean);
-    if (asrTexts.length > 0) {
-      lines.push(`- ASR: ${asrTexts.join(' | ')}`);
-    } else {
-      // 无 ASR 识别结果时才带链接（纯文本模型无法消费音频，链接无意义）
-      const urls = voices.map(a => a.url).filter(Boolean);
-      if (urls.length > 0) {
-        lines.push(`- Voice: ${urls.join(', ')}`);
-      }
-    }
-  }
-
-  const videos = msg.attachments.filter(a => a.content_type === 'video');
-  if (videos.length > 0) {
-    lines.push(`- Videos: ${videos.map(a => a.filename).join(', ')}`);
-  }
-
-  const files = msg.attachments.filter(a => a.content_type === 'file');
-  if (files.length > 0) {
-    for (const file of files) {
-      const d = downloaded.find(x => x.filename === file.filename);
-      if (d) {
-        lines.push(`- File: ${file.filename} → ${d.displayPath}`);
-      } else {
-        lines.push(`- File: ${file.filename} (${formatFileSize(file.size)})`);
-      }
-    }
-  }
-
-  // 兜底：把所有带 URL 的附件链接暴露给 AI（未归类为 image 的也带上），方便桥接工具直接看图/附件
-  const otherUrls = msg.attachments
-    .filter(a => a.content_type !== 'image' && !!a.url)
-    .map(a => a.url);
-  if (otherUrls.length > 0) {
-    lines.push(`- Attachment URLs: ${otherUrls.join(', ')}`);
+    if (!att.url) continue;
+    lines.push(`- ${mediaKindLabel(kind)}: ${head}→ ${att.url}`);
   }
 
   if (lines.length === 0) return '';
@@ -467,10 +455,15 @@ function describeAttachments(
 
   const parts: string[] = [];
 
+  // ⚠️ 2026-09-10 去重(主人: "图片链接重复两次, 那不是又回原来的长上下文咯?"):
+  //   带 URL 的附件已由 Layer 4 的 `- Image: 名 (850×651) → url` 一行完整描述(类型+名+尺寸+URL),
+  //   本层**不再重复输出** —— 只有"没有 URL"的附件才在这里兜底做文字描述(Layer 4 给不出链接时)。
+  //   效果: 当前消息里一个附件只占一行(此前是 `[Image: 名 尺寸]` + `- Image: 名 → url` 两行)。
   for (const att of attachments) {
-    switch (att.content_type) {
-      case 'voice':
-        break;
+    const kind = inferMediaKind(att);
+    if (kind === 'voice') continue; // 语音正文由 `[Voice message] 转录` 承接(不含 URL, 本就不重复)
+    if (att.url) continue;          // 有 URL → Layer 4 已给完整一行
+    switch (kind) {
       case 'image': {
         const dim = att.width && att.height ? ` ${att.width}×${att.height}` : '';
         parts.push(`[Image: ${att.filename}${dim}]`);
@@ -479,11 +472,8 @@ function describeAttachments(
       case 'video':
         parts.push(`[Video: ${att.filename}]`);
         break;
-      case 'file':
-        parts.push(`[File: ${att.filename} (${formatFileSize(att.size)})]`);
-        break;
       default:
-        parts.push(`[Attachment: ${att.filename ?? att.content_type}${att.url ? ` -> ${att.url}` : ''}]`);
+        parts.push(`[File: ${att.filename} (${formatFileSize(att.size)})]`);
         break;
     }
   }

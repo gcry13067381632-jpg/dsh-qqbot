@@ -11,6 +11,7 @@
  */
 import type { Middleware, MiddlewareContext } from '@tencent-connect/qqbot-nodejs';
 import type { HistoryEntry, HistoryStore } from '@tencent-connect/qqbot-nodejs';
+import { inferMediaKind } from '../transport/media-kind.js';
 
 export interface MediaHistoryOptions {
   /** 每群保留的最大条数 */
@@ -28,20 +29,36 @@ export interface MediaHistoryOptions {
 /** 消息最小形状（只读所需字段，避免依赖 SDK 完整类型） */
 interface FoldableMsg {
   content?: string;
-  attachments?: Array<{ content_type?: string; url?: string }>;
+  attachments?: Array<{ content_type?: string; url?: string; asr_refer_text?: string }>;
 }
 
-/** 文本 + 带 URL 附件折叠为一行段（语音 URL 对纯文本模型无意义，跳过） */
+/** 文本 + 带 URL 附件折叠为一行段。
+ *  ⚠️ 2026-09-10 主人纠正两点:
+ *  ① **语音 URL 不能跳过** —— dock 的仿 QQ 聊天界面靠它调 /chat/voice-play 把 SILK 转 mp3 播放;
+ *  ② **语音的 ASR 转录要一并记入** —— 否则历史(冷却派发/批量打包)里只剩一条音频链接,
+ *     AI 看不到"这条语音说了什么"(2026-09-10 主人实测发现)。
+ *  格式约定(与 dock chatSplitMedia 对齐):
+ *    转录独立成一行纯文本 → dock 当普通文本显示(不套 📎 附件样式);
+ *    `[语音: <url>]` 单独一行 → dock 的 chatAttachmentKind 认 `[语音` 判 voice 并建播放器。 */
 function foldMedia(msg: FoldableMsg): string {
   const parts: string[] = [];
   const text = (msg.content ?? '').trim();
   if (text) parts.push(text);
   for (const att of msg.attachments ?? []) {
     if (!att.url) continue;
-    if (att.content_type === 'voice') continue; // 无 ASR 时链接无意义，避免刷屏
-    const label = att.content_type === 'image' ? '图片'
-      : att.content_type === 'video' ? '视频'
-        : att.content_type === 'file' ? '文件' : '附件';
+    // ⚠️ 2026-09-10: 类型一律走 inferMediaKind 推断 —— QQ 群聊图片/视频的 content_type
+    //    实测是 'file', 按 content_type 判断会把历史里的视频/图片折成 `[文件: url]`
+    //    (dock 显示成 📎 附件, 且 AI 也分不清类型)。
+    const kind = inferMediaKind(att);
+    if (kind === 'voice') {
+      const asr = String(att.asr_refer_text ?? '').trim();
+      if (asr) parts.push(asr);                     // 转录(纯文本行)
+      parts.push(`[语音: ${att.url}]`);               // 音频链接(带标签, dock 判 voice)
+      continue;
+    }
+    const label = kind === 'image' ? '图片'
+      : kind === 'video' ? '视频'
+        : kind === 'file' ? '文件' : '附件';
     parts.push(`[${label}: ${att.url}]`);
   }
   return parts.join('\n');

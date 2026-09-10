@@ -1886,7 +1886,16 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
       setInterval(refreshBadge, 20000)
 
       // ── 面板状态(每个实例独立保存, 切回不丢) ──
-      var state = { ns: '', accts: [], gid: '', groups: [], tab: 'chat', sendScope: 'group', sendTo: '', sendName: '', sendText: '', insertCtx: true, targetQ: '', c2cs: [], joins: null, mutes: null, members: null, muteSecs: '60', bindGid: '', bindName: '', msg: '', busy: '', wantPeer: null, lookedUp: false, detected: null, detectedHit: null, chatItems: [], chatMore: false, chatBusy: '', chatErr: '', chatOldest: 0, chatText: '', chatIns: true, outMode: '', outRev: undefined, bpEvents: [], bpSel: null, bpDraft: null, rosterSel: {}, rosterScope: 'all', rosterQ: '', hubSid: '', hubRev: undefined, hubBusy: '', hubMsg: '', gaEnabled: false, gaPoll: false, gaPollWake: true, gaHubNotify: true, gaNotifyGroup: true, gaInterval: 5, gaMinCount: 1, gaMsg: '', gaBusy: '', bcDraft: null, bcTasks: null, cardMd: '', cardBtns: '', cardGid: '', cardBusy: '' }
+      var state = { ns: '', accts: [], gid: '', groups: [], tab: 'chat', sendScope: 'group', sendTo: '', sendName: '', sendText: '', insertCtx: true, targetQ: '', c2cs: [], joins: null, mutes: null, members: null, muteSecs: '60', bindGid: '', bindName: '', msg: '', busy: '', wantPeer: null, lookedUp: false, detected: null, detectedHit: null, chatItems: [], chatMore: false, chatBusy: '', chatErr: '', chatOldest: 0, chatText: '', chatIns: true, outMode: '', outRev: undefined, bpEvents: [], bpSel: null, bpDraft: null, rosterSel: {}, rosterScope: 'all', rosterQ: '', hubSid: '', hubRev: undefined, hubBusy: '', hubMsg: '', gaEnabled: false, gaPoll: false, gaPollWake: true, gaHubNotify: true, gaNotifyGroup: true, gaInterval: 5, gaMinCount: 1, gaMsg: '', gaBusy: '', bcDraft: null, bcTasks: null, cardMd: '', cardBtns: '', cardGid: '', cardBusy: '', cardQ: '', tgGroups: [], tgCur: '' }
+      // 🗂 自定义目标分组(仿 QQ 分组, 2026-09-10 主人要求): localStorage 持久化
+      // 结构: [{ id, name, members: ['group:xxx' | 'c2c:yyy', ...] }]
+      try {
+        var _tg = localStorage.getItem('qqs-target-groups')
+        if (_tg) { var _tgo = JSON.parse(_tg); if (Array.isArray(_tgo)) state.tgGroups = _tgo }
+      } catch (e) {}
+      function saveTgGroups() {
+        try { localStorage.setItem('qqs-target-groups', JSON.stringify(state.tgGroups || [])) } catch (e) {}
+      }
       // 📇 群组管理 M1: 勾选集合本地持久化(刷新/重开不丢, 供后续群发/批量操作使用)
       try { var _rs = localStorage.getItem('qqs-roster-sel'); if (_rs) { var _rso = JSON.parse(_rs); if (_rso && typeof _rso === 'object') state.rosterSel = _rso } } catch (e) {}
       var chatFlash = '' // 发送结果/错误提示(短时展示, 不被列表计数覆盖)
@@ -2069,6 +2078,12 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         var box = panel.querySelector('#dk-roster-list')
         if (!box) return
         var rows = rosterRows()
+        // 🗂 分组筛选(仅"选目标"页生效): 选中某分组 → 只列该组成员(2026-09-10)
+        if (state.tab === 'send' && state.tgCur) {
+          var curG = (state.tgGroups || []).filter(function (g2) { return g2 && g2.id === state.tgCur })[0]
+          var mem = (curG && curG.members) || []
+          rows = rows.filter(function (r) { return mem.indexOf(r.key) >= 0 })
+        }
         var stat = panel.querySelector('#dk-roster-stat')
         if (stat) stat.textContent = '共 ' + rows.length + ' 条 · 已选 ' + rosterSelN()
         if (!rows.length) {
@@ -2125,6 +2140,64 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           if (!cb || cb === box) return
           rosterToggle(cb.getAttribute('data-rkey'))
         }
+        // 🗂 分组管理(仿 QQ 分组, 2026-09-10 主人要求; 选择器页专属元素, 不在时自动跳过)
+        var tgCurGroup = function () { return (state.tgGroups || []).filter(function (g2) { return g2 && g2.id === state.tgCur })[0] }
+        var tgPersistSel = function () { try { localStorage.setItem('qqs-roster-sel', JSON.stringify(state.rosterSel)) } catch (e) {} }
+        var tgSel = panel.querySelector('#dk-tg-sel')
+        if (tgSel) tgSel.onchange = function () { state.tgCur = tgSel.value; paintBody(); bindBodyEvents() }
+        var tgNew = panel.querySelector('#dk-tg-new')
+        if (tgNew) tgNew.onclick = function () {
+          var nm = window.prompt('新建分组名称:', '新分组')
+          if (!nm) return
+          var id = 'tg' + Date.now().toString(36).slice(-5)
+          state.tgGroups.push({ id: id, name: String(nm).slice(0, 20), members: [] })
+          state.tgCur = id
+          saveTgGroups(); paintBody(); bindBodyEvents()
+        }
+        var tgRen = panel.querySelector('#dk-tg-rename')
+        if (tgRen) tgRen.onclick = function () {
+          var cur = tgCurGroup(); if (!cur) return
+          var nm = window.prompt('改名:', cur.name || '')
+          if (!nm) return
+          cur.name = String(nm).slice(0, 20)
+          saveTgGroups(); paintBody(); bindBodyEvents()
+        }
+        var tgDel = panel.querySelector('#dk-tg-del')
+        if (tgDel) tgDel.onclick = function () {
+          var cur = tgCurGroup(); if (!cur) return
+          if (!window.confirm('删除分组「' + (cur.name || '') + '」? (只删分组, 不影响目标本身)')) return
+          state.tgGroups = (state.tgGroups || []).filter(function (g2) { return g2.id !== state.tgCur })
+          state.tgCur = ''
+          saveTgGroups(); paintBody(); bindBodyEvents()
+        }
+        var tgAdd = panel.querySelector('#dk-tg-add')
+        if (tgAdd) tgAdd.onclick = function () {
+          var cur = tgCurGroup(); if (!cur) return
+          var sel = Object.keys(state.rosterSel || {}).filter(function (k) { return state.rosterSel[k] })
+          if (!sel.length) { window.alert('先在下面勾选目标, 再点加入本组'); return }
+          var mem = cur.members || (cur.members = [])
+          var n = 0
+          sel.forEach(function (k) { if (mem.indexOf(k) < 0) { mem.push(k); n++ } })
+          saveTgGroups(); paintBody(); bindBodyEvents()
+          window.alert('已加入 ' + n + ' 个(本组共 ' + mem.length + ' 个)')
+        }
+        var tgRm = panel.querySelector('#dk-tg-remove')
+        if (tgRm) tgRm.onclick = function () {
+          var cur = tgCurGroup(); if (!cur) return
+          var sel = Object.keys(state.rosterSel || {}).filter(function (k) { return state.rosterSel[k] })
+          var before = (cur.members || []).length
+          cur.members = (cur.members || []).filter(function (k) { return sel.indexOf(k) < 0 })
+          saveTgGroups(); paintBody(); bindBodyEvents()
+          window.alert('已移出 ' + (before - cur.members.length) + ' 个')
+        }
+        var tgPickAll = panel.querySelector('#dk-tg-pickall')
+        if (tgPickAll) tgPickAll.onclick = function () {
+          var cur = tgCurGroup(); if (!cur) return
+          ;(cur.members || []).forEach(function (k) { state.rosterSel[k] = true })
+          tgPersistSel(); paintBody(); bindBodyEvents()
+        }
+        var tgGoto = panel.querySelector('#dk-pick-goto')
+        if (tgGoto) tgGoto.onclick = function () { state.tab = 'broadcast'; paintBody(); bindBodyEvents() }
         // 🎯 群组管理器: 设本会话/取消(走 settings groupAdmin.hubSessionId, live 热更)
         var hubSet = panel.querySelector('#dk-hub-set')
         if (hubSet) hubSet.onclick = function () {
@@ -2299,15 +2372,45 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         var el = panel && panel.querySelector('.dk-msg#dk-bc-hint')
         if (el) el.textContent = t || ''
       }
-      function loadBroadcastTasks(advance) {
+      /**
+       * 拉取群发任务列表。
+       * ⚠️ 2026-09-10 修复死循环: 本函数原本无条件 paintBody(), 而 paintBody() 内又会调用本函数
+       *    (roster / broadcast 两个 tab) → 请求返回即重绘、重绘又请求 → 无限重建 DOM,
+       *    表现为 dock 卡死、按钮刚绑定就被替换掉点不动。
+       * 现: ①防重入(bcTaskLoading); ②silent=true 时只更新 state 不重绘(paintBody 内一律用 silent)。
+       */
+      var bcTaskLoading = false
+      function loadBroadcastTasks(advance, silent) {
+        // advance=true 是"推进任务"(会真的发消息), 必须执行, 不被防重入挡
+        // (2026-09-10 修复: 原实现一律挡, paintBody 的静默请求在飞时用户点"确认群发"会被吞 → 任务一直 queued 发不出去)
+        if (bcTaskLoading && !advance) return
+        bcTaskLoading = true
         api('group/broadcast/list' + (advance ? '' : '?noadvance=1')).then(function (d) {
-          if (d && d.ok && Array.isArray(d.tasks)) { state.bcTasks = d.tasks; paintBody() }
-        }).catch(function () {})
+          if (d && d.ok && Array.isArray(d.tasks)) {
+            state.bcTasks = d.tasks
+            if (silent !== true) paintBody()
+          }
+        }).catch(function () {}).then(function () { bcTaskLoading = false })
+      }
+      // 广播子页: 有活跃任务时自动推进(每 3s 一次, 直到无 queued/sending) —— 2026-09-10
+      // 任务推进靠 list 请求驱动(host 侧串行 advanceTask 天然限频), 所以必须有节奏地拉取
+      var bcAdvTimer = null
+      function startBroadcastAdvance() {
+        if (bcAdvTimer) return
+        bcAdvTimer = setInterval(function () {
+          var tasks = state.bcTasks || []
+          var active = tasks.some(function (t) { return t.state === 'queued' || t.state === 'sending' })
+          if (!active) { clearInterval(bcAdvTimer); bcAdvTimer = null; return }
+          loadBroadcastTasks(true, false)
+        }, 3000)
       }
       function bindBroadcastEvents() {
         if (!panel) return
         var sendB = panel.querySelector('#dk-roster-send')
         if (sendB) sendB.onclick = function () { openBroadcastDraft('') }
+        // 广播子页: 跳去「📇 群组管理」勾选目标(2026-09-10)
+        var gotoB = panel.querySelector('#dk-bc-goto')
+        if (gotoB) gotoB.onclick = function () { state.tab = 'roster'; paintBody(); bindBodyEvents() }
         var cc = panel.querySelector('#dk-bc-cancel')
         if (cc) cc.onclick = function () { state.bcDraft = null; paintBody() }
         var cf = panel.querySelector('#dk-bc-confirm')
@@ -2401,49 +2504,65 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
       }
       function bindCardEvents() {
         if (!panel) return
-        var mdEl = panel.querySelector('#dk-card-md')
-        var prevEl = panel.querySelector('#dk-card-preview')
-        var render = function () {
-          if (mdEl && prevEl) prevEl.innerHTML = mdRender(mdEl.value)
-        }
+        var q = function (sel) { return panel.querySelector(sel) }
+        var mdEl = q('#dk-card-md')
+        var prevEl = q('#dk-card-preview')
+        var render = function () { if (mdEl && prevEl) prevEl.innerHTML = mdRender(mdEl.value) }
         if (mdEl) mdEl.oninput = function () { state.cardMd = mdEl.value; render() }
-        var btnsEl = panel.querySelector('#dk-card-btns')
+        var btnsEl = q('#dk-card-btns')
         if (btnsEl) btnsEl.oninput = function () { state.cardBtns = btnsEl.value }
-        var gsel = panel.querySelector('#dk-card-gid')
-        if (gsel) gsel.onchange = function () { state.cardGid = gsel.value }
+        var gsel = q('#dk-card-gid')
+        if (gsel) {
+          // 默认目标同步: 避免"没手动选过"就报未选目标(2026-09-10 修复)
+          if (gsel.value && !state.cardGid) state.cardGid = gsel.value
+          gsel.onchange = function () { state.cardGid = gsel.value }
+        }
+        // 目标搜索(2026-09-10 主人要求): 输入即过滤群/私聊列表
+        var cq = q('#dk-card-q')
+        if (cq) {
+          cq.value = state.cardQ || ''
+          cq.oninput = function () { state.cardQ = cq.value }
+          cq.onchange = function () { state.cardQ = cq.value; paintBody() }
+          cq.onkeydown = function (e) { if (e && e.key === 'Enter') { state.cardQ = cq.value; paintBody() } }
+        }
         render()
-        var sendB = panel.querySelector('#dk-card-send')
-        var hintEl = panel.querySelector('#dk-card-hint')
-        var chHint = function (t) { if (hintEl) hintEl.textContent = t || '' }
+        var chHint = function (t) { var h = q('#dk-card-hint'); if (h) h.textContent = t || '' }
+        // 实时读当前值: DOM 可能被 paintBody 重建, 不能依赖绑定时捕获的引用(2026-09-10 修复发送无反应)
+        var readCard = function () {
+          var m = q('#dk-card-md'), b = q('#dk-card-btns'), g = q('#dk-card-gid')
+          var md = m ? m.value.trim() : String(state.cardMd || '').trim()
+          var btns = parseCardButtons(b ? b.value : (state.cardBtns || ''))
+          var raw = String((g && g.value) || state.cardGid || '')
+          var isC2c = raw.indexOf('c2c:') === 0
+          return { md: md, btns: btns, raw: raw, gid: isC2c ? '' : raw, openid: isC2c ? raw.slice(4) : '' }
+        }
+        var sendB = q('#dk-card-send')
         if (sendB) sendB.onclick = function () {
-          var md = mdEl ? mdEl.value.trim() : ''
-          var btns = parseCardButtons(btnsEl ? btnsEl.value : '')
-          var gid = gsel ? gsel.value : state.cardGid
-          if (!md) { chHint('markdown 内容不能为空'); return }
-          if (!gid) { chHint('请先选目标群'); return }
-          state.cardBusy = 'card'; sendB.disabled = true; chHint('发送中…')
-          var keyboard = btns.length ? { content: { rows: btns.map(function (b) { return { buttons: [{ id: b.id, render_data: { label: b.label, style: 1 }, action: { type: b.isUrl ? 0 : 2, permission: { type: 2 }, data: b.data, enter: !b.isUrl } }] } }) } } : undefined
-          apiPost('chat/send-card', { ns: state.ns || undefined, gid: gid, markdown: md, keyboard: keyboard }).then(function (d) {
+          var v = readCard()
+          if (!v.md) { chHint('markdown 内容不能为空'); return }
+          if (!v.raw) { chHint('请先选目标(群或私聊)'); return }
+          state.cardBusy = 'card'; sendB.disabled = true; chHint(v.openid ? '发送中(私聊)…' : '发送中(群)…')
+          var keyboard = v.btns.length ? { content: { rows: v.btns.map(function (b) { return { buttons: [{ id: b.id, render_data: { label: b.label, style: 1 }, action: { type: b.isUrl ? 0 : 2, permission: { type: 2 }, data: b.data, enter: !b.isUrl } }] } }) } } : undefined
+          apiPost('chat/send-card', { ns: state.ns || undefined, gid: v.gid || undefined, openid: v.openid || undefined, markdown: v.md, keyboard: keyboard }).then(function (d) {
             state.cardBusy = ''; sendB.disabled = false
-            chHint(d && d.ok ? '✅ 卡片已发送!' : ((d && d.err && d.err.human) || (d && d.error) || '发送失败'))
+            chHint(d && d.ok ? ((d.msg || '✅ 卡片已发送!')) : ((d && d.err && d.err.human) || (d && d.error) || '发送失败'))
           }).catch(function () { state.cardBusy = ''; sendB.disabled = false; chHint('发送异常') })
         }
-        // 💾 存为事件: 当前 markdown+按钮 → botplay 事件(写到独立文件, /botplay 一键发卡)
-        var saveB = panel.querySelector('#dk-card-save')
+        // 💾 存为事件: 当前 markdown+按钮 → botplay 事件(独立文件, /botplay 一键发卡)
+        var saveB = q('#dk-card-save')
         if (saveB) saveB.onclick = function () {
-          var md = mdEl ? mdEl.value.trim() : ''
-          var btns = parseCardButtons(btnsEl ? btnsEl.value : '')
-          if (!md) { chHint('markdown 内容不能为空'); return }
-          if (!btns.length) { chHint('请至少配一个按钮(存为事件需要按钮)'); return }
+          var v = readCard()
+          if (!v.md) { chHint('markdown 内容不能为空'); return }
+          if (!v.btns.length) { chHint('请至少配一个按钮(存为事件需要按钮)'); return }
           state.cardBusy = 'save'; saveB.disabled = true; chHint('保存中…')
           api('group/botplay-events', state.ns ? 'ns=' + encodeURIComponent(state.ns) : '').then(function (d) {
             var events = (d && d.ok && Array.isArray(d.events)) ? d.events : []
             var ev = {
               id: 'card' + Date.now().toString(36).slice(-6),
-              name: md.replace(/^#+\s*/, '').split('\n')[0].slice(0, 12) || '卡片',
-              contentText: md, maxClicks: 0, expireSec: 600, buttonsPerRow: 1,
+              name: v.md.replace(/^#+\s*/, '').split('\n')[0].slice(0, 12) || '卡片',
+              contentText: v.md, maxClicks: 0, expireSec: 600, buttonsPerRow: 1,
               perm: { type: 'all', userIds: [] },
-              buttons: btns.map(function (b, i) { return { id: 'b' + (i + 1), label: b.label, style: 1, botAction: b.isUrl ? { type: 'jump_url', text: '', url: b.data } : { type: 'command', text: b.data.replace(/^\//, ''), url: '' }, llmEffect: { mode: 'no_append', contextText: '' } } }),
+              buttons: v.btns.map(function (b, i) { return { id: 'b' + (i + 1), label: b.label, style: 1, botAction: b.isUrl ? { type: 'jump_url', text: '', url: b.data } : { type: 'command', text: b.data.replace(/^\//, ''), url: '' }, llmEffect: { mode: 'no_append', contextText: '' } } }),
             }
             events.push(ev)
             return apiPost('group/botplay-events', { ns: state.ns || 'im-qqbot', events: events }).then(function (d2) {
@@ -2451,6 +2570,25 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
               chHint(d2 && d2.ok ? ('✅ 已存为事件「' + ev.name + '」(id=' + ev.id + '), 群内发 /botplay ' + ev.id + ' 可一键发卡') : '保存失败: ' + ((d2 && (d2.error || d2.msg)) || '未知错误'))
             })
           }).catch(function () { state.cardBusy = ''; saveB.disabled = false; chHint('保存异常') })
+        }
+        // 📤 卡片群发(2026-09-10 主人要求): 把当前卡片群发到「🎯 选目标」勾选的全部目标(二次确认)
+        var bcB = q('#dk-card-broadcast')
+        if (bcB) bcB.onclick = function () {
+          var v = readCard()
+          if (!v.md) { chHint('markdown 内容不能为空'); return }
+          var tg = (typeof rosterSelectedTargets === 'function') ? rosterSelectedTargets() : []
+          if (!tg.length) { chHint('先在「🎯 选目标」里勾选要群发的目标'); return }
+          if (!window.confirm('确认把这卡片群发到 ' + tg.length + ' 个目标?\n\n' + tg.slice(0, 8).map(function (t2) { return '· ' + (t2.name || t2.peerId) }).join('\n') + (tg.length > 8 ? '\n…' : '') + '\n\n(高影响操作, 发送后 2 分钟内可逐目标撤回)')) return
+          state.cardBusy = 'bc'; bcB.disabled = true; chHint('创建群发任务…')
+          var keyboard2 = v.btns.length ? { content: { rows: v.btns.map(function (b) { return { buttons: [{ id: b.id, render_data: { label: b.label, style: 1 }, action: { type: b.isUrl ? 0 : 2, permission: { type: 2 }, data: b.data, enter: !b.isUrl } }] } }) } } : undefined
+          apiPost('group/broadcast/create', { ns: state.ns || undefined, type: 'card', text: v.md, keyboard: keyboard2, targets: tg }).then(function (d) {
+            if (!d || !d.ok || !d.task) { state.cardBusy = ''; bcB.disabled = false; chHint((d && d.error) || '创建失败'); return }
+            return apiPost('group/broadcast/confirm', { ns: state.ns || undefined, task_id: d.task.task_id }).then(function (d2) {
+              state.cardBusy = ''; bcB.disabled = false
+              chHint(d2 && d2.ok ? ('✅ 已确认群发卡片到 ' + tg.length + ' 个目标(后台逐条发送)') : ((d2 && (d2.msg || d2.error)) || '确认失败'))
+              loadBroadcastTasks(false, true)
+            })
+          }).catch(function () { state.cardBusy = ''; bcB.disabled = false; chHint('群发异常') })
         }
       }
       function sendNow() {
@@ -2561,6 +2699,53 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         var cnt = panel.querySelector('#dk-target-count')
         if (cnt) cnt.textContent = q ? ('匹配 ' + shown + '/' + total) : ''
       }
+      // 📤 群发 次级标签栏(2026-09-10 主人要求: 互动事件/卡片并入主级「群发」)
+      // 四个子页共享此栏: ✉️发送消息(send) / 📢广播(broadcast) / 🎮互动事件(bp) / 📝卡片(card)
+      function sendSubTabs() {
+        return '<div class="dk-row" style="gap:4px;margin:4px 0 6px;flex-wrap:wrap;border-bottom:1px dashed #e2d9ff;padding-bottom:6px">'
+          + [['send', '🎯 选目标'], ['broadcast', '📢 广播'], ['bp', '🎮 互动事件'], ['card', '📝 卡片']]
+            .map(function (s) {
+              return '<button class="dk-btn' + (state.tab === s[0] ? ' on' : '') + '" data-subtab="' + s[0] + '">' + s[1] + '</button>'
+            }).join('')
+          + '</div>'
+      }
+      // 🚀 M3 群发面板(确认草稿 + 任务列表); 「📇群组管理」与「📤群发·广播」共用(2026-09-10 抽函数)
+      function broadcastPanel() {
+        if (!state.bcDraft && !(state.bcTasks && state.bcTasks.length)) return ''
+        var out = '<div style="border:1px solid #d3f0d3;border-radius:8px;padding:6px 8px;margin:6px 0;background:#f6fdf6">'
+        if (state.bcDraft) {
+          var bc = state.bcDraft
+          out += '<div class="dk-row"><b style="font-size:13px">🚀 群发确认(M3)</b>'
+            + '<span class="dk-msg" style="flex:1;text-align:right;color:#666;font-size:11px">' + bc.targets.length + ' 个目标</span></div>'
+          out += '<textarea class="qqs-txt" id="dk-bc-text" style="width:100%;box-sizing:border-box;min-height:64px;font-size:12px;margin:2px 0" placeholder="要群发的内容…">' + esc(bc.text) + '</textarea>'
+          out += '<div class="dk-item" style="border:1px solid #eef7ee;border-radius:6px;margin:1px 0;padding:3px 6px;max-height:14vh;overflow:auto">'
+          bc.targets.forEach(function (t2) {
+            out += '<div style="font-size:11px;color:#555;line-height:1.5">' + (t2.scope === 'group' ? '👥' : '👤') + ' ' + esc(t2.name || String(t2.peerId).slice(0, 12)) + ' <span style="color:#aaa">…' + esc(String(t2.peerId).slice(-6)) + '</span></div>'
+          })
+          out += '</div>'
+          out += '<div class="dk-row" style="gap:8px">'
+            + '<button class="dk-btn no" id="dk-bc-cancel">✕ 取消</button>'
+            + '<button class="dk-btn ok" id="dk-bc-confirm">✅ 确认群发(发 ' + bc.targets.length + ' 个目标)</button>'
+            + '<span class="dk-msg" style="flex:1;text-align:right;font-size:11px;color:#c23131">⚠️ 高影响操作: 发送后 2 分钟内可逐目标撤回</span></div>'
+        }
+        if (state.bcTasks && state.bcTasks.length) {
+          out += '<div class="dk-row"><b style="font-size:12px">📋 群发任务</b>'
+            + '<button class="dk-btn" id="dk-bc-refresh" style="margin-left:auto">🔄 刷新进度</button></div>'
+          state.bcTasks.forEach(function (tk) {
+            var stc = { draft: '#888', queued: '#1971c2', sending: '#f08c00', partial_failed: '#e03131', done: '#2f9e44', cancelled: '#868e96' }[tk.state] || '#888'
+            var okN = tk.targets.filter(function (t2) { return tk.results[t2.peerId] && tk.results[t2.peerId].ok }).length
+            out += '<div class="dk-item" style="border:1px solid #eee;border-radius:6px;margin:1px 0;padding:3px 6px;flex-wrap:wrap">'
+              + '<span style="font-size:11px;font-weight:700;color:' + stc + '">' + ({ draft: '草稿', queued: '排队中', sending: '发送中', partial_failed: '部分失败', done: '已完成', cancelled: '已中止' }[tk.state] || tk.state) + '</span>'
+              + '<span style="flex:1;font-size:11px;color:#555;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"> ' + esc(String(tk.payload.content || '').slice(0, 30)) + '</span>'
+              + '<span style="font-size:11px;color:#666">' + okN + '/' + tk.targets.length + '</span>'
+              + (tk.state === 'queued' || tk.state === 'sending' ? '<button class="dk-btn no" data-bccancel="' + esc(tk.task_id) + '" style="margin-left:6px">⏹ 中止</button>' : '')
+              + (tk.state === 'done' || tk.state === 'partial_failed' ? '<button class="dk-btn" data-bcrecall="' + esc(tk.task_id) + '" style="margin-left:6px" title="撤回该任务 2 分钟内已发的消息(逐目标)">↩ 撤回</button>' : '')
+              + '</div>'
+          })
+        }
+        out += '</div>'
+        return out
+      }
       function paintBody() {
         if (!panel || !open) return
         var b = panel.querySelector('.dk-b')
@@ -2582,31 +2767,51 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           + '<button data-t="join" class="' + (state.tab === 'join' ? 'on' : '') + '">📥 入群审批<span class="dk-join-badge" style="display:none;background:#ff4d4f;color:#fff;border-radius:8px;font-size:11px;padding:0 5px;margin-left:4px">0</span></button>'
           + '<button data-t="mute" class="' + (state.tab === 'mute' ? 'on' : '') + '">🔇 禁言</button>'
           + '<button data-t="out" class="' + (state.tab === 'out' ? 'on' : '') + '">⚙️ 出站</button>'
-          + '<button data-t="bp" class="' + (state.tab === 'bp' ? 'on' : '') + '">🎮 互动事件</button>'
-          + '<button data-t="card" class="' + (state.tab === 'card' ? 'on' : '') + '">📝 卡片</button>'
+          + '<button data-t="send" class="' + (['send','broadcast','bp','card'].indexOf(state.tab) >= 0 ? 'on' : '') + '">📤 群发</button>'
           + '</div>'
         var body = tabs
         var status = state.msg ? '<div class="dk-msg" style="color:#2f9e44;margin:4px 0">' + esc(state.msg) + '</div>' : ''
         if (!state.ns || state.accts.length === 0) {
           body += '<div class="dk-empty">还没有配置机器人账号 → 到「账号与预设」页添加后再回来</div>'
         } else if (state.tab === 'send') {
-          body += '<div class="dk-row">目标类型: '
-            + '<label style="display:inline-flex;align-items:center;gap:4px"><input type="radio" name="dk-scope" value="group"' + (state.sendScope !== 'c2c' ? ' checked' : '') + '> 群聊</label> '
-            + '<label style="display:inline-flex;align-items:center;gap:4px"><input type="radio" name="dk-scope" value="c2c"' + (state.sendScope === 'c2c' ? ' checked' : '') + '> 私聊</label></div>'
-          body += '<div class="dk-row" style="margin:2px 0 4px">'
-            + '<input class="qqs-txt" id="dk-target-search" placeholder="' + (state.sendScope === 'c2c' ? '🔍 搜私聊对象(昵称/ID)…' : '🔍 搜群(备注/昵称/ID)…') + '" value="' + esc(state.targetQ || '') + '" style="width:100%;box-sizing:border-box;font-size:12px;padding:4px 8px">'
-            + '<span class="dk-msg" id="dk-target-count"></span></div>'
-          var targetSel = state.sendScope === 'c2c'
-            ? '<select class="qqs-sel" id="dk-c2c" style="min-width:220px">' + (c2cOpts || '<option value="">暂无私聊对象</option>') + '</select>'
-            : groupSelHtml
-          body += '<div class="dk-row" id="dk-target-row">' + targetSel + '</div>'
-          body += '<textarea class="qqs-txt" id="dk-text" rows="3" style="width:100%;box-sizing:border-box;margin:6px 0" placeholder="输入内容…(@某人 用 &lt;@对方openid&gt; 无斜杠)">' + esc(state.sendText) + '</textarea>'
-          body += '<div class="dk-row">'
-            + '<label style="display:inline-flex;align-items:center;gap:5px;font-size:12px;color:#666;cursor:pointer" title="发完后往该会话写入一条「用户代你发送: …」的模拟用户消息(web 流可见、不唤醒、不开回合;标记不会发到 QQ)">'
-            + '<input type="checkbox" id="dk-insctx"' + (state.insertCtx ? ' checked' : '') + '> 🧠 记入 bot 上下文(模拟用户消息·不唤醒)</label>'
+          // 🎯 选目标(2026-09-10 主人要求): 把原「发送消息」改成勾选式的目标选择器,
+          // 分组(群/私聊)+搜索, 与「📇 群组管理」共用同一份勾选(state.rosterSel) → 供 📢 广播 群发。
+          body += sendSubTabs()
+          body += '<div class="dk-row" style="font-weight:700;font-size:13px;margin:4px 0 2px">🎯 选目标(勾选后到「📢 广播」群发)</div>'
+          body += '<div class="dk-row"><span class="dk-msg" style="flex:1;line-height:1.5">勾选要群发的 <b>👥群 / 👤私聊</b> 对象(与「📇 群组管理」共用同一份勾选)。可用 <b>🗂 分组</b> 把常用目标归组(仿 QQ 分组), 选好切到 <b>📢 广播</b> 发送。</span></div>'
+          // 🗂 分组栏(仿 QQ 下拉分组 + 编辑, 2026-09-10 主人要求)
+          var tg = (state.tgGroups || []).filter(function (g2) { return g2 && g2.id })
+          body += '<div class="dk-row" style="gap:6px;margin:2px 0;flex-wrap:wrap">'
+            + '<span style="font-size:12px;color:#666;flex:none">🗂 分组:</span>'
+            + '<select class="qqs-sel" id="dk-tg-sel" style="min-width:140px">'
+            + '<option value="">全部目标</option>'
+            + tg.map(function (g2) { return '<option value="' + esc(g2.id) + '"' + (state.tgCur === g2.id ? ' selected' : '') + '>' + esc(g2.name || g2.id) + '（' + ((g2.members || []).length) + '）</option>' }).join('')
+            + '</select>'
+            + '<button class="dk-btn" id="dk-tg-new">➕ 新建分组</button>'
+            + '<button class="dk-btn" id="dk-tg-rename"' + (state.tgCur ? '' : ' disabled') + '>✏️ 改名</button>'
+            + '<button class="dk-btn no" id="dk-tg-del"' + (state.tgCur ? '' : ' disabled') + '>🗑 删除</button>'
+            + '</div>'
+          body += '<div class="dk-row" style="gap:6px;margin:0 0 4px;flex-wrap:wrap">'
+            + '<button class="dk-btn ok" id="dk-tg-add"' + (state.tgCur ? '' : ' disabled') + ' title="把上面勾选的目标加入当前分组">➕ 勾选的加入本组</button>'
+            + '<button class="dk-btn" id="dk-tg-remove"' + (state.tgCur ? '' : ' disabled') + ' title="把勾选的从当前分组移出">➖ 从本组移出</button>'
+            + '<button class="dk-btn" id="dk-tg-pickall"' + (state.tgCur ? '' : ' disabled') + ' title="勾选当前分组的全部成员">☑ 选中本组</button>'
+            + '<span class="dk-msg" style="font-size:11px;color:#888">分组仅存本机浏览器, 用于快速批量勾选</span>'
+            + '</div>'
+          body += '<div class="dk-row">范围: '
+            + '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px"><input type="radio" name="dk-rscope" value="all"' + (state.rosterScope === 'all' ? ' checked' : '') + '> 全部</label>'
+            + '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px"><input type="radio" name="dk-rscope" value="c2c"' + (state.rosterScope === 'c2c' ? ' checked' : '') + '> 👤 私聊过的人</label>'
+            + '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px"><input type="radio" name="dk-rscope" value="group"' + (state.rosterScope === 'group' ? ' checked' : '') + '> 👥 群</label>'
             + '<span style="flex:1"></span>'
-            + '<button class="dk-btn ok" id="dk-send">🚀 发送到 ' + (state.sendScope === 'c2c' ? ('私聊「' + esc(c2cSelName()) + '」') : '群「' + esc(groupSelName()) + '」') + '</button>'
-            + '<span class="dk-msg">已输 ' + state.sendText.length + '/2000</span></div>'
+            + '<button class="dk-btn" id="dk-roster-refresh" title="重新拉取群注册表+聊天台账">🔄 刷新</button></div>'
+          body += '<div class="dk-row" style="margin:2px 0 4px">'
+            + '<input class="qqs-txt" id="dk-roster-q" placeholder="🔍 搜群名/昵称/ID…" value="' + esc(state.rosterQ || '') + '" style="flex:1;box-sizing:border-box;font-size:12px;padding:4px 8px">'
+            + '<span class="dk-msg" id="dk-roster-stat" style="white-space:nowrap"></span></div>'
+          body += '<div class="dk-row" style="margin:0 0 4px">'
+            + '<button class="dk-btn" id="dk-roster-all">全选(当前范围)</button>'
+            + '<button class="dk-btn" id="dk-roster-clear">清空</button>'
+            + '<span class="dk-msg" style="flex:1;text-align:right;color:#2f9e44">已选 ' + rosterSelN() + ' 个</span>'
+            + '<button class="dk-btn ok" id="dk-pick-goto">📢 去广播 →</button></div>'
+          body += '<div class="dk-list" id="dk-roster-list"></div>'
         } else if (state.tab === 'chat') {
           body += '<div class="dk-row">目标类型: '
             + '<label style="display:inline-flex;align-items:center;gap:4px"><input type="radio" name="dk-scope" value="group"' + (state.sendScope !== 'c2c' ? ' checked' : '') + '> 群聊</label> '
@@ -2694,43 +2899,26 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             + '<span class="dk-msg" style="flex:1;text-align:right;color:#2f9e44">已选 ' + rosterSelN() + ' 个</span>'
             + '<button class="dk-btn ok" id="dk-roster-send">🚀 群发勾选项</button></div>'
           body += '<div class="dk-list" id="dk-roster-list"></div>'
-          // ── M3 群发面板(勾选后弹出) ──
-          if (state.bcDraft || state.bcTasks) {
-            body += '<div style="border:1px solid #d3f0d3;border-radius:8px;padding:6px 8px;margin:6px 0;background:#f6fdf6">'
-            if (state.bcDraft) {
-              var bc = state.bcDraft
-              body += '<div class="dk-row"><b style="font-size:13px">🚀 群发确认(M3)</b>'
-                + '<span class="dk-msg" style="flex:1;text-align:right;color:#666;font-size:11px">' + bc.targets.length + ' 个目标</span></div>'
-              body += '<textarea class="qqs-txt" id="dk-bc-text" style="width:100%;box-sizing:border-box;min-height:64px;font-size:12px;margin:2px 0" placeholder="要群发的内容…">' + esc(bc.text) + '</textarea>'
-              body += '<div class="dk-item" style="border:1px solid #eef7ee;border-radius:6px;margin:1px 0;padding:3px 6px;max-height:14vh;overflow:auto">'
-              bc.targets.forEach(function (t2) {
-                body += '<div style="font-size:11px;color:#555;line-height:1.5">' + (t2.scope === 'group' ? '👥' : '👤') + ' ' + esc(t2.name || t2.peerId.slice(0, 12)) + ' <span style="color:#aaa">…' + esc(t2.peerId.slice(-6)) + '</span></div>'
-              })
-              body += '</div>'
-              body += '<div class="dk-row" style="gap:8px">'
-                + '<button class="dk-btn no" id="dk-bc-cancel">✕ 取消</button>'
-                + '<button class="dk-btn ok" id="dk-bc-confirm">✅ 确认群发(发 ' + bc.targets.length + ' 个目标)</button>'
-                + '<span class="dk-msg" style="flex:1;text-align:right;font-size:11px;color:#c23131">⚠️ 高影响操作: 发送后 2 分钟内可逐目标撤回</span></div>'
-              body += '</div>'
-            }
-            if (state.bcTasks && state.bcTasks.length) {
-              body += '<div class="dk-row"><b style="font-size:12px">📋 群发任务</b>'
-                + '<button class="dk-btn" id="dk-bc-refresh" style="margin-left:auto">🔄 刷新进度</button></div>'
-              state.bcTasks.forEach(function (tk) {
-                var stc = { draft: '#888', queued: '#1971c2', sending: '#f08c00', partial_failed: '#e03131', done: '#2f9e44', cancelled: '#868e96' }[tk.state] || '#888'
-                var okN = tk.targets.filter(function (t2) { return tk.results[t2.peerId] && tk.results[t2.peerId].ok }).length
-                body += '<div class="dk-item" style="border:1px solid #eee;border-radius:6px;margin:1px 0;padding:3px 6px;flex-wrap:wrap">'
-                  + '<span style="font-size:11px;font-weight:700;color:' + stc + '">' + ({ draft: '草稿', queued: '排队中', sending: '发送中', partial_failed: '部分失败', done: '已完成', cancelled: '已中止' }[tk.state] || tk.state) + '</span>'
-                  + '<span style="flex:1;font-size:11px;color:#555;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"> ' + esc((tk.payload.content || '').slice(0, 30)) + '</span>'
-                  + '<span style="font-size:11px;color:#666">' + okN + '/' + tk.targets.length + '</span>'
-                  + (tk.state === 'queued' || tk.state === 'sending' ? '<button class="dk-btn no" data-bccancel="' + esc(tk.task_id) + '" style="margin-left:6px">⏹ 中止</button>' : '')
-                  + (tk.state === 'done' || tk.state === 'partial_failed' ? '<button class="dk-btn" data-bcrecall="' + esc(tk.task_id) + '" style="margin-left:6px" title="撤回该任务 2 分钟内已发的消息(逐目标)">↩ 撤回</button>' : '')
-                  + '</div>'
-              })
-              body += '</div>'
-            }
+          // ── M3 群发面板(与「📤 群发 · 广播」子页共用, 2026-09-10 抽成 broadcastPanel) ──
+          body += broadcastPanel()
+        } else if (state.tab === 'broadcast') {
+          // 📢 广播子页(2026-09-10 主人要求: 群发并入「📤 群发」主标签; 目标复用 📇群组管理 的勾选)
+          body += sendSubTabs()
+          body += '<div class="dk-row" style="font-weight:700;font-size:13px;margin:4px 0 2px">📢 群发广播</div>'
+          var btg = rosterSelectedTargets()
+          body += '<div class="dk-row"><span class="dk-msg" style="flex:1;line-height:1.5">目标来自「📇 群组管理」里勾选的对象(当前已选 <b>' + btg.length + '</b> 个)。群发<b>一律二次确认</b>, 发送后 2 分钟内可逐目标撤回; 任务后台串行推进(天然限频)。</span></div>'
+          body += '<div class="dk-row" style="gap:6px;flex-wrap:wrap">'
+            + '<button class="dk-btn" id="dk-bc-goto">📇 去勾选目标</button>'
+            + '<button class="dk-btn ok" id="dk-roster-send"' + (btg.length ? '' : ' disabled') + ' title="把勾选的目标纳入群发">🚀 群发勾选项</button>'
+            + '</div>'
+          if (btg.length) {
+            body += '<div class="dk-item" style="border:1px solid #eef7ee;border-radius:6px;margin:4px 0;padding:3px 6px;max-height:16vh;overflow:auto">'
+            btg.forEach(function (t2) {
+              body += '<div style="font-size:11px;color:#555;line-height:1.5">' + (t2.scope === 'group' ? '👥' : '👤') + ' ' + esc(t2.name || String(t2.peerId).slice(0, 12)) + ' <span style="color:#aaa">…' + esc(String(t2.peerId).slice(-6)) + '</span></div>'
+            })
             body += '</div>'
           }
+          body += broadcastPanel()
         } else if (state.tab === 'out') {
           var om = state.outMode || 'adaptive'
           if (om === 'nothink') body += '<div class="dk-msg" style="color:#c23131;margin:2px 0">⚠️ 当前为「完全不思考」(设置页开启): QQ 入站不唤醒 AI。发 /outmode adaptive 可唤醒。</div>'
@@ -2742,24 +2930,52 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           body += '被动=始终以「回复你那条」发出, 连发约4~5条后会被QQ吞掉。完全不出站=本机静默, 不向QQ发任何回复(鲸鱼娘可用工具随时切回)。本开关对纯web(没绑QQ)的会话不生效。</div>'
           body += '<span class="dk-msg" id="dk-out-hint" style="color:#2f9e44;margin:4px 0"></span>'
         } else if (state.tab === 'card') {
-          // 📝 自定义 markdown 卡片(2026-09-10): 源码 + 实时预览 + 按钮配置 → 发送到选中群
+          // 📝 自定义 markdown 卡片(2026-09-10): 源码 + 实时预览 + 按钮配置 → 发送到选中群/私聊
+          body += sendSubTabs()
           body += '<div class="dk-row" style="font-weight:700;font-size:13px;margin:4px 0 2px">📝 Markdown 卡片编辑器(自定义互动卡)</div>'
-          body += '<div class="dk-row"><span class="dk-msg" style="flex:1;line-height:1.5">写 markdown(支持 <b>![图 #宽px #高px](网络图URL)</b> 嵌图) → 加按钮(每行一个, 格式 <b>文字|指令</b> 或 <b>文字|url|跳转</b>) → 选目标群发送。markdown 图只能用<b>公网 URL</b>。</span></div>'
-          body += '<div class="dk-row" style="gap:6px;margin:2px 0">目标群: <select class="qqs-sel" id="dk-card-gid" style="flex:1;min-width:0">'
-          body += (state.groups || []).map(function (g) { return '<option value="' + esc(g.id) + '"' + (g.id === state.cardGid ? ' selected' : '') + '>' + esc(g.name || g.id.slice(0, 8)) + '</option>' }).join('')
-          body += '</select></div>'
+          body += '<div class="dk-row"><span class="dk-msg" style="flex:1;line-height:1.5">写 markdown(支持 <b>![图 #宽px #高px](网络图URL)</b> 嵌图) → 加按钮(每行一个, 格式 <b>文字|指令</b> 或 <b>文字|url|跳转</b>) → 选目标发送。markdown 图只能用<b>公网直链图</b>(带扩展名/有 Content-Length 的图床最稳)。</span></div>'
+          // 目标: 群 + 私聊(c2c: 前缀) + 搜索过滤(2026-09-10 主人要求)
+          // ⚠️ 字段名: 群对象用 gid(state.groups = {gid,name,from,lastAt}), 私聊对象用 id(state.c2cs)。
+          //    2026-09-10 修复: 原写成 g.id → String(undefined)="undefined" → 请求打到
+          //    /v2/groups/undefined/messages → 11255 invalid request(群里发不出去)。
+          var cTargets = (state.groups || []).map(function (g) {
+            var gid = String((g && (g.gid || g.id)) || '')
+            return { v: gid, n: (g && g.name) || gid.slice(0, 8), kind: 'group' }
+          }).filter(function (t) { return t.v && t.v !== 'undefined' && t.v !== 'null' })
+          ;(state.c2cs || []).forEach(function (c) {
+            var cid = String((c && (c.id || c.peerId || c.openid)) || '')
+            if (!cid || cid === 'undefined' || cid === 'null') return
+            cTargets.push({ v: 'c2c:' + cid, n: (c.name || ('私聊 ' + cid.slice(0, 8))) + '（私聊）', kind: 'c2c' })
+          })
+          var cq = String(state.cardQ || '').toLowerCase()
+          if (cq) cTargets = cTargets.filter(function (t) { return (t.n + ' ' + t.v).toLowerCase().indexOf(cq) >= 0 })
+          if (!state.cardGid && cTargets.length) state.cardGid = cTargets[0].v   // 默认选中第一项, 避免"未选目标"
+          body += '<div class="dk-row" style="gap:6px;margin:2px 0">目标: <select class="qqs-sel" id="dk-card-gid" style="flex:1;min-width:0">'
+          body += cTargets.map(function (t) { return '<option value="' + esc(t.v) + '"' + (t.v === state.cardGid ? ' selected' : '') + '>' + esc(t.n) + '</option>' }).join('')
+            || '<option value="">(无可选目标)</option>'
+          body += '</select>'
+            + '<input class="qqs-txt" id="dk-card-q" placeholder="🔍 搜群/私聊…" value="' + esc(state.cardQ || '') + '" style="width:120px;font-size:12px;padding:3px 6px">'
+            + '</div>'
           body += '<div style="display:flex;gap:6px;margin:2px 0">'
             + '<textarea id="dk-card-md" placeholder="# 标题&#10;&#10;正文 **加粗**&#10;&#10;![图 #208px #160px](https://example.com/img.png)" style="flex:1;min-height:140px;font-size:12px;font-family:monospace;box-sizing:border-box;padding:6px;border:1px solid #ddd;border-radius:6px;resize:vertical">' + esc(state.cardMd) + '</textarea>'
             + '<div id="dk-card-preview" style="flex:1;min-height:140px;max-height:200px;overflow:auto;border:1px dashed #c9d8ff;border-radius:6px;padding:6px;font-size:12px;background:#fafbff;box-sizing:border-box"></div>'
             + '</div>'
-          body += '<div class="dk-row" style="gap:6px;margin:2px 0"><span style="font-size:12px;color:#888;flex:none">按钮:</span>'
+          body += '<div class="dk-row" style="gap:6px;margin:2px 0 0"><span style="font-size:12px;color:#888;flex:none">按钮:</span>'
             + '<textarea id="dk-card-btns" placeholder="每行一个: 文字|指令&#10;如: 👍 点我|/test 按钮1&#10;跳转: 🔗 GitHub|https://…|url" style="flex:1;min-height:72px;font-size:12px;font-family:monospace;box-sizing:border-box;padding:6px;border:1px solid #ddd;border-radius:6px;resize:vertical">' + esc(state.cardBtns) + '</textarea></div>'
+          // 常显格式说明(2026-09-10 主人要求: 文本怎么写按钮要有说明)
+          body += '<div class="dk-msg" style="font-size:11px;line-height:1.6;color:#666;background:#f8f6ff;border:1px solid #eee7ff;border-radius:6px;padding:4px 8px;margin:2px 0">'
+            + '<b>按钮写法</b>(上面框里一行一个, 竖线 <code>|</code> 分隔):<br>'
+            + '· <b>指令按钮</b> — <code>文字|指令</code>　例: <code>签到|/checkin</code> 或 <code>点我|bot-status</code>(点击后把该指令发给机器人, 带 <code>/</code> 或不带都行)<br>'
+            + '· <b>跳转按钮</b> — <code>文字|网址|url</code>　例: <code>🔗官网|https://qq.com|url</code>(点击直接跳网页)<br>'
+            + '· 每行一个按钮, 最多 25 个(5行×5列, 由"每行按钮"控制布局)</div>'
           body += '<div class="dk-row" style="gap:8px">'
             + '<button class="dk-btn ok" id="dk-card-send"' + (state.cardBusy ? ' disabled' : '') + '>🚀 发送卡片</button>'
             + '<button class="dk-btn" id="dk-card-save"' + (state.cardBusy ? ' disabled' : '') + '>💾 存为事件</button>'
+            + '<button class="dk-btn" id="dk-card-broadcast"' + (state.cardBusy ? ' disabled' : '') + ' title="群发到「🎯 选目标」里勾选的全部目标(二次确认)">📤 群发到勾选目标(' + rosterSelN() + ')</button>'
             + '<span class="dk-msg" style="flex:1;text-align:right;font-size:11px;color:#888">最多 25 按钮(5行×5列)</span></div>'
           body += '<div class="dk-msg" id="dk-card-hint" style="color:#2f9e44;margin:2px 0"></div>'
         } else if (state.tab === 'bp') {
+          body += sendSubTabs()
           body += '<div class="dk-row" style="font-weight:700;font-size:13px;margin:4px 0 2px">🎮 互动事件装配器(/botplay 触发)</div>'
           body += '<div class="dk-row"><span class="dk-msg" style="flex:1">定义事件与按钮 → 保存即热更 → QQ 里发 <b>/botplay 事件名</b> 发卡。点击按钮走 bot 行为(回文本等)并可选影响 AI。</span></div>'
           // 事件列表
@@ -2772,6 +2988,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             var overL = rowc.rows > 5
             body += '<div class="dk-item" style="cursor:pointer;background:' + (sel ? '#f1ecff' : 'transparent') + '" data-bpidx="' + i + '">'
               + '<span style="flex:1"><b>' + esc(ev.name || '(未命名)') + '</b> <span style="color:#888;font-size:11px">/ ' + esc(ev.id || '?') + ' · ' + btnN + ' 按钮·每行' + rowc.per + ' → ' + rowc.rows + '行' + (overL ? ' <b style="color:#e03131">⚠超限</b>' : '') + ' · ' + (ev.perm && ev.perm.type ? esc(ev.perm.type) : 'all') + ' · ' + (ev.expireSec || 600) + 's</span></span>'
+              + '<button class="dk-btn" data-bp2card="' + i + '" title="把此事件的卡片预设(正文+按钮)复制进「📝 卡片」编辑器">📋</button>'
               + '<button class="dk-btn no" data-bpdel="' + i + '">🗑</button></div>'
           })
           body += '</div>'
@@ -2830,7 +3047,13 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         if (state.tab === 'chat') renderChatList()
         if (state.tab === 'join') renderJoinList()
         if (state.tab === 'mute') { renderMemberList(); renderMuteList() }
-        if (state.tab === 'roster') { renderRosterList(); bindRosterEvents(); loadHubState(); loadBroadcastTasks(false) }
+        if (state.tab === 'roster' || state.tab === 'send') { renderRosterList(); bindRosterEvents(); loadHubState(); loadBroadcastTasks(false, true) }
+        // 📝 卡片: 必须在 paintBody 内绑定(2026-09-10 修复: 原在 tab 点击处先 bind 后 paintBody,
+        // 绑的是即将被替换的旧 DOM → 发送/存为事件无反应、预览不渲染)
+        if (state.tab === 'card') bindCardEvents()
+        // 📤 广播子页: 绑定群发按钮 + 刷新任务列表(任务列表静默拉取, 不重绘 → 防死循环)
+        if (state.tab === 'broadcast') { bindBroadcastEvents(); loadBroadcastTasks(false, true); startBroadcastAdvance() }
+        // 注: 📤 群发子标签栏的点击绑定由上面 bindBodyEvents() 统一处理(它含 [data-subtab])
         // 首次进入聊天 tab 自动拉最新一页
         if (state.tab === 'chat' && !state.chatItems.length && !state.chatBusy) loadChat(true)
         setTimeout(layoutPanel, 0)
@@ -2844,7 +3067,15 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             else if (state.tab === 'out') loadOutMode()
             else if (state.tab === 'bp') loadBotplay()
             else if (state.tab === 'chat') { state.chatItems = []; state.chatErr = ''; }
-            else if (state.tab === 'card') bindCardEvents()
+            paintBody()
+          }
+        })
+        // 📤 群发 · 次级标签切换(2026-09-10)
+        panel.querySelectorAll('[data-subtab]').forEach(function (sb) {
+          sb.onclick = function () {
+            var v = sb.getAttribute('data-subtab')
+            state.tab = v; state.msg = ''
+            if (v === 'bp') loadBotplay()
             paintBody()
           }
         })
@@ -2979,6 +3210,33 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             if (state.bpSel === idx) { state.bpSel = null; state.bpDraft = null }
             else if (state.bpSel !== null && state.bpSel > idx) state.bpSel -= 1
             paintBody()
+          }
+        })
+        // 📋 事件 → 卡片编辑器(2026-09-10 主人要求): 把事件的正文预设+按钮复制进「📝 卡片」, 便于改完再发
+        bpList && bpList.querySelectorAll('[data-bp2card]').forEach(function (b) {
+          b.onclick = function (e) {
+            e.stopPropagation()
+            var idx = Number(b.getAttribute('data-bp2card'))
+            var ev = state.bpEvents[idx]
+            if (!ev) return
+            // 正文: 事件自定义 contentText; 空则用事件默认模板
+            state.cardMd = (ev.contentText && String(ev.contentText).trim())
+              ? String(ev.contentText)
+              : ('## 🎮 ' + (ev.name || '互动事件') + '\n\n点下方按钮完成互动 👇')
+            // 按钮 → 卡片编辑器的文本格式(文字|指令 或 文字|url|url)
+            state.cardBtns = (ev.buttons || []).map(function (bb) {
+              var act = (bb && bb.botAction) || {}
+              var label = (bb && bb.label) || '按钮'
+              if (act.type === 'jump_url') return label + '|' + String(act.url || '') + '|url'
+              if (act.type === 'command') return label + '|/' + String(act.text || '').replace(/^\//, '')
+              return label + '|' + String(act.text || '')
+            }).join('\n')
+            state.tab = 'card'
+            paintBody()
+            setTimeout(function () {
+              var h = panel.querySelector('#dk-card-hint')
+              if (h) h.textContent = '📋 已从事件「' + (ev.name || '') + '」载入预设(正文 ' + state.cardMd.length + ' 字 / 按钮 ' + (ev.buttons || []).length + ' 个) — 可直接发送, 也可改完再发'
+            }, 0)
           }
         })
         var bpNew = panel.querySelector('#dk-bp-new')

@@ -231,6 +231,12 @@ export function debounceLayer(
           const hit = merged.find(m => m.messageId === id);
           if (hit) {
             if (e.wasMentioned) hit.wasMentioned = true;
+            // ⚠️ 2026-09-10 去重(主人实测: "图片链接重复两次, 那不是又回原来的长上下文咯?"):
+            //   store 条目只带 foldMedia 折叠文本(`[图片: url]` / `[语音: url]`), **窗口条目才带
+            //   原始 content + attachments**。命中时若不给 hit 补 msg, current 就会取 store 版本,
+            //   于是附件 URL 在上下文里出现两次: 折叠文本一次 + Layer4 的 `- Image: 名 → url` 一次。
+            //   补上后: current 走 cur.msg(原始 content, 附件交给 Layer4 描述), history 仍用折叠文本。
+            if (!hit.msg) hit.msg = e.msg;
           } else {
             merged.push({ messageId: id, ts: e.ts, msg: e.msg, wasMentioned: e.wasMentioned });
           }

@@ -20,8 +20,10 @@ export type BroadcastTarget = { scope: 'group' | 'c2c'; peerId: string; name?: s
 
 export interface BroadcastTask {
   task_id: string;
-  type: 'text' | 'markdown';
-  payload: { content: string };
+  /** text=纯文本 / markdown=markdown 正文 / card=markdown+按钮卡片(2026-09-10 加 card) */
+  type: 'text' | 'markdown' | 'card';
+  /** card 类型时 keyboard 为官方 keyboard 对象; 其余类型忽略 */
+  payload: { content: string; keyboard?: Record<string, unknown> };
   targets: BroadcastTarget[];
   state: BroadcastState;
   /** 逐目标结果: peerId → { ok, message_id?, err? } */
@@ -80,12 +82,12 @@ function prune(store: BroadcastStore, now = Date.now()): void {
   if (store.tasks.length !== before) store.tasks.sort((a, b) => b.created_at - a.created_at);
 }
 
-export function createTask(dataRoot: string, input: { type: 'text' | 'markdown'; content: string; targets: BroadcastTarget[]; created_by: 'dock' | 'agent' }): BroadcastTask {
+export function createTask(dataRoot: string, input: { type: 'text' | 'markdown' | 'card'; content: string; keyboard?: Record<string, unknown>; targets: BroadcastTarget[]; created_by: 'dock' | 'agent' }): BroadcastTask {
   const store = loadStore(dataRoot);
   const task: BroadcastTask = {
     task_id: 'bc-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8),
     type: input.type,
-    payload: { content: input.content },
+    payload: { content: input.content, ...(input.keyboard ? { keyboard: input.keyboard } : {}) },
     targets: input.targets,
     state: 'draft',
     results: {},
@@ -137,13 +139,36 @@ export function getTask(dataRoot: string, taskId: string): BroadcastTask | undef
   return loadStore(dataRoot).tasks.find((x) => x.task_id === taskId);
 }
 
+/** 任务级推进锁(2026-09-10 修): host 后台定时器与 dock 的 list 请求可能同时推进同一任务,
+ *  两边都读到「results 里该目标为空」→ 同一个目标被发两次(主人实测"点一次发两条")。
+ *  用 Set 做进程内互斥: 同一任务同一时刻只允许一个推进在跑, 另一个直接返回当前快照。 */
+const advancingTasks = new Set<string>();
+
 /**
- * 推进一个 queued/sending 任务(串行逐目标 + 失败退避重试)。
+ * 推进一个 queued/sending 任务(串行逐目标 + 失败退避重试)—— 带并发保护的外层入口。
  * 注意: 本函数是"单步推进"——由调用方(settings-host 定时器或每次请求)驱动,
  * 每步处理 1 个未完成目标; 若同一任务多次调用会串行推进, 天然限频。
  * 返回任务当前状态。
  */
 export async function advanceTask(
+  dataRoot: string,
+  taskId: string,
+  client: GroupAdminClient,
+  opts?: { isCancelled?: () => boolean },
+): Promise<BroadcastTask | undefined> {
+  if (advancingTasks.has(taskId)) {
+    return loadStore(dataRoot).tasks.find((x) => x.task_id === taskId);
+  }
+  advancingTasks.add(taskId);
+  try {
+    return await advanceTaskInner(dataRoot, taskId, client, opts);
+  } finally {
+    advancingTasks.delete(taskId);
+  }
+}
+
+/** 实际推进逻辑(仅由带锁的 advanceTask 调用) */
+async function advanceTaskInner(
   dataRoot: string,
   taskId: string,
   client: GroupAdminClient,
@@ -189,9 +214,14 @@ export async function advanceTask(
   }
 
   try {
-    const sr = tg.scope === 'group'
-      ? await client.sendGroupText(tg.peerId, t.payload.content)
-      : await client.sendC2cText(tg.peerId, t.payload.content);
+    // card 类型(markdown+按钮)走卡片接口; 其余走文本接口(2026-09-10)
+    const sr = t.type === 'card'
+      ? (tg.scope === 'group'
+          ? await client.sendGroupCard(tg.peerId, t.payload.content, t.payload.keyboard)
+          : await client.sendC2cCard(tg.peerId, t.payload.content, t.payload.keyboard))
+      : (tg.scope === 'group'
+          ? await client.sendGroupText(tg.peerId, t.payload.content)
+          : await client.sendC2cText(tg.peerId, t.payload.content));
     if (sr.ok) {
       t.results[tg.peerId] = { ok: true, message_id: (sr.data as { id?: string })?.id };
     } else {
