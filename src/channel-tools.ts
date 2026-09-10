@@ -1100,6 +1100,12 @@ export async function apply(ctx: Context): Promise<void> {
           }
           if (ownerManager && qScope && qPeer) {
             extra = await sendQQWithMedia(ownerManager, qScope, qPeer, body, String(args.media || ''), exec as never);
+          } else {
+            // ⚠️ 2026-09-10 10:25 主人实测: web 唤醒成功但 QQ 无推送 = 发送段未找到目标 peer。
+            // 不再静默——把诊断暴露给 AI/主人, 避免"以为发了其实没发"。
+            const diag = `未找到目标会话的 QQ peer(findBySessionId 与群注册表均 miss, sid=${sid.slice(0, 8)}…)`;
+            try { loggerLike(exec as never).warn(`[session_wake] ${diag}`); } catch { /* */ }
+            extra = `；⚠️${diag}`;
           }
         }
         return { ok: r === 'ok', msg: `${map[r] ?? r} (${sid.slice(0, 8)}…)${extra}` };

@@ -1156,6 +1156,25 @@ export function apply(ctx) {
     } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
   });
 
+  // ── 自定义 markdown 卡片发送(2026-09-10 主人实测: markdown 嵌网络图+按钮可渲染):
+  //     接收 {ns?, gid, markdown, keyboard?} → sendGroupCard; 群发走 broadcast/create(type=markdown)。
+  route(ctx, 'POST', '/api/qqbot-settings/chat/send-card', async (req, res) => {
+    const body = await readJsonBody(req);
+    if (!body || typeof body !== 'object') return writeJson(res, 400, { error: 'bad body' });
+    const gid = String(body.gid || '').trim();
+    const md = String(body.markdown || '').trim();
+    if (!gid || !md) return writeJson(res, 400, { error: 'gid 与 markdown 必填' });
+    if (md.length > 8000) return writeJson(res, 400, { error: 'markdown 过长(最多 8000 字符)' });
+    try {
+      const gc = await groupClientOf(String(body.ns || ''));
+      if (!gc) return writeJson(res, 400, { error: '找不到该账号实例' });
+      const kb = body.keyboard && body.keyboard.content && Array.isArray(body.keyboard.content.rows) ? body.keyboard : undefined;
+      const r = await gc.client.sendGroupCard(gid, md, kb);
+      audit(gc.bot.cwd, { ev: 'chat.send-card', ns: gc.bot.id, gid, mdLen: md.length, kbRows: kb ? kb.content.rows.length : 0, ok: r.ok, code: r.ok ? undefined : (r.err && r.err.code) });
+      writeJson(res, 200, r.ok ? { ok: true, msg: '✅ 卡片已发送', id: r.data && r.data.id } : { ok: false, err: r.err });
+    } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
+  });
+
   // ── M3 群发任务队列(2026-09-10): 持久化状态机 draft→queued→sending→done, 二次确认, 可中止/撤回 ──
   // 数据: {dataRoot}/.qqbot/broadcast-tasks.json(broadcast.ts 管理); 推进由每次 list 请求驱动(串行, 天然限频)。
   // 路由: broadcast/create(草稿) → broadcast/confirm(二次确认后入队) → broadcast/list(推进+展示) →

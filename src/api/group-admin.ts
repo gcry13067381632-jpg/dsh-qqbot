@@ -265,6 +265,24 @@ export class GroupAdminClient {
     return this.call('POST', `/v2/groups/${encodeURIComponent(gid)}/messages`, body);
   }
 
+  /**
+   * 向群发送自定义 markdown 卡片(带可选 keyboard 按钮)(2026-09-10 主人实测验证:
+   * markdown 嵌网络图+按钮可渲染, 按钮 type:2 点击后 data 以指令消息回到群里)。
+   * keyboard 结构: { content: { rows: [{ buttons: [{ id, render_data:{label,style}, action:{type,permission,data,enter} }] }] } }
+   * 官方限制: 最多 5 行 × 每行 5 按钮 = 25 个; 超限报 40034029。
+   * @returns 消息 id
+   */
+  async sendGroupCard(
+    gid: string,
+    markdown: string,
+    keyboard?: Record<string, unknown>,
+  ): Promise<ApiResult<{ id?: string }>> {
+    const msgSeq = Math.floor(Date.now() / 1000) % 1000000;
+    const body: Record<string, unknown> = { msg_type: 2, markdown: { content: markdown }, msg_seq: msgSeq };
+    if (keyboard && keyboard.content) body.keyboard = keyboard;
+    return this.call('POST', `/v2/groups/${encodeURIComponent(gid)}/messages`, body);
+  }
+
   /** 以机器人身份向用户发私聊文本(c2c 主动消息; 同 sendGroupText 的通道选择逻辑) */
   async sendC2cText(userOpenid: string, content: string): Promise<ApiResult<{ id?: string }>> {
     const msgSeq = Math.floor(Date.now() / 1000) % 1000000;

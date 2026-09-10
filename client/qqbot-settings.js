@@ -1886,7 +1886,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
       setInterval(refreshBadge, 20000)
 
       // ── 面板状态(每个实例独立保存, 切回不丢) ──
-      var state = { ns: '', accts: [], gid: '', groups: [], tab: 'chat', sendScope: 'group', sendTo: '', sendName: '', sendText: '', insertCtx: true, targetQ: '', c2cs: [], joins: null, mutes: null, members: null, muteSecs: '60', bindGid: '', bindName: '', msg: '', busy: '', wantPeer: null, lookedUp: false, detected: null, detectedHit: null, chatItems: [], chatMore: false, chatBusy: '', chatErr: '', chatOldest: 0, chatText: '', chatIns: true, outMode: '', outRev: undefined, bpEvents: [], bpSel: null, bpDraft: null, rosterSel: {}, rosterScope: 'all', rosterQ: '', hubSid: '', hubRev: undefined, hubBusy: '', hubMsg: '', gaEnabled: false, gaPoll: false, gaPollWake: true, gaHubNotify: true, gaNotifyGroup: true, gaInterval: 5, gaMinCount: 1, gaMsg: '', gaBusy: '', bcDraft: null, bcTasks: null }
+      var state = { ns: '', accts: [], gid: '', groups: [], tab: 'chat', sendScope: 'group', sendTo: '', sendName: '', sendText: '', insertCtx: true, targetQ: '', c2cs: [], joins: null, mutes: null, members: null, muteSecs: '60', bindGid: '', bindName: '', msg: '', busy: '', wantPeer: null, lookedUp: false, detected: null, detectedHit: null, chatItems: [], chatMore: false, chatBusy: '', chatErr: '', chatOldest: 0, chatText: '', chatIns: true, outMode: '', outRev: undefined, bpEvents: [], bpSel: null, bpDraft: null, rosterSel: {}, rosterScope: 'all', rosterQ: '', hubSid: '', hubRev: undefined, hubBusy: '', hubMsg: '', gaEnabled: false, gaPoll: false, gaPollWake: true, gaHubNotify: true, gaNotifyGroup: true, gaInterval: 5, gaMinCount: 1, gaMsg: '', gaBusy: '', bcDraft: null, bcTasks: null, cardMd: '', cardBtns: '', cardGid: '', cardBusy: '' }
       // 📇 群组管理 M1: 勾选集合本地持久化(刷新/重开不丢, 供后续群发/批量操作使用)
       try { var _rs = localStorage.getItem('qqs-roster-sel'); if (_rs) { var _rso = JSON.parse(_rs); if (_rso && typeof _rso === 'object') state.rosterSel = _rso } } catch (e) {}
       var chatFlash = '' // 发送结果/错误提示(短时展示, 不被列表计数覆盖)
@@ -2413,6 +2413,89 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           }).catch(function () { apHint('创建异常') })
         }
       }
+      // ── 📝 Markdown 卡片编辑器(2026-09-10): 源码+实时预览+按钮 → send-card 发送 ──
+      function mdEscapeHtml(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }
+      function mdRender(src) {
+        var s = String(src || '')
+        // 代码块(先保护)
+        var codeBlocks = []
+        s = s.replace(/```([\s\S]*?)```/g, function (_, c) { codeBlocks.push(c); return '\u0000CODE' + (codeBlocks.length - 1) + '\u0000' })
+        var lines = s.split('\n')
+        var html = '', inList = false, inTable = false, table = []
+        function closeList() { if (inList) { html += '</ul>'; inList = false } }
+        function closeTable() { if (inTable) { html += '</table>'; inTable = false } }
+        lines.forEach(function (line) {
+          var t = line.trim()
+          if (t === '') { closeList(); closeTable(); html += '<div style="height:6px"></div>'; return }
+          if (/^```/.test(t)) return
+          if (/^\u0000CODE\d+\u0000$/.test(t)) { closeList(); closeTable(); var i = parseInt(t.replace(/\D/g, ''), 10); html += '<pre style="background:#f6f8fa;border-radius:4px;padding:6px;font-size:11px;overflow:auto;margin:2px 0">' + mdEscapeHtml(codeBlocks[i]) + '</pre>'; return }
+          var inline = function (x) {
+            x = x.replace(/!\[([^\]]*)\]\(([^)\s]+)(?: #(\d+)px #(\d+)px)?\)/g, function (_, alt, url, w, h) { var st = w ? ' style="width:' + w + 'px;height:' + (h || 'auto') + 'px"' : ''; return '<img src="' + mdEscapeHtml(url) + '" alt="' + mdEscapeHtml(alt || '') + '"' + st + ' style="max-width:100%;border-radius:6px;margin:2px 0">' })
+            x = x.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="' + '$2' + '" target="_blank" style="color:#4b7bec">$1</a>')
+            x = x.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>').replace(/\*([^*]+)\*/g, '<i>$1</i>').replace(/`([^`]+)`/g, '<code style="background:#f1f3f5;border-radius:3px;padding:0 3px">$1</code>')
+            return x
+          }
+          if (/^###\s+/.test(t)) { closeList(); closeTable(); html += '<div style="font-weight:700;font-size:13px;margin:4px 0 2px">' + inline(t.replace(/^###\s+/, '')) + '</div>' }
+          else if (/^##\s+/.test(t)) { closeList(); closeTable(); html += '<div style="font-weight:700;font-size:15px;margin:4px 0 2px">' + inline(t.replace(/^##\s+/, '')) + '</div>' }
+          else if (/^#\s+/.test(t)) { closeList(); closeTable(); html += '<div style="font-weight:700;font-size:17px;margin:4px 0 2px">' + inline(t.replace(/^#\s+/, '')) + '</div>' }
+          else if (/^>\s*/.test(t)) { closeList(); closeTable(); html += '<div style="border-left:3px solid #4b7bec;padding:2px 8px;color:#666;background:#f4f7ff;border-radius:0 4px 4px 0;margin:2px 0">' + inline(t.replace(/^>\s*/, '')) + '</div>' }
+          else if (/^[-*]\s+/.test(t)) { closeTable(); if (!inList) { inList = true; html += '<ul style="margin:2px 0;padding-left:18px">' } html += '<li>' + inline(t.replace(/^[-*]\s+/, '')) + '</li>' }
+          else if (/^\d+\.\s+/.test(t)) { closeTable(); if (!inList) { inList = true; html += '<ul style="margin:2px 0;padding-left:18px">' } html += '<li>' + inline(t.replace(/^\d+\.\s+/, '')) + '</li>' }
+          else if (/^\|/.test(t)) {
+            closeList()
+            var cells = t.replace(/^\||\|$/g, '').split('|').map(function (c) { return c.trim() })
+            if (/^[-:]+$/.test(cells.join('')) && table.length) { return } // 分隔行跳过
+            if (!inTable) { inTable = true; table = []; html += '<table style="border-collapse:collapse;font-size:11px;margin:2px 0"><tr>' }
+            html += '<tr>' + cells.map(function (c) { return '<td style="border:1px solid #dde;padding:2px 6px">' + inline(c) + '</td>' }).join('') + '</tr>'
+          }
+          else { closeList(); closeTable(); html += '<div style="margin:2px 0">' + inline(t) + '</div>' }
+        })
+        closeList(); closeTable()
+        return html
+      }
+      function parseCardButtons(text) {
+        // 每行: 文字|data  或  文字|url|url(跳转)
+        var out = []
+        var rows = String(text || '').split('\n').map(function (s) { return s.trim() }).filter(Boolean)
+        for (var i = 0; i < rows.length; i++) {
+          var parts = rows[i].split('|').map(function (s) { return s.trim() })
+          if (parts.length < 2 || !parts[0]) continue
+          var label = parts[0], data = parts[1]
+          var isUrl = parts.length >= 3 && parts[2] === 'url'
+          out.push({ id: 'btn' + (i + 1), label: label, data: data, isUrl: isUrl })
+        }
+        return out
+      }
+      function bindCardEvents() {
+        if (!panel) return
+        var mdEl = panel.querySelector('#dk-card-md')
+        var prevEl = panel.querySelector('#dk-card-preview')
+        var render = function () {
+          if (mdEl && prevEl) prevEl.innerHTML = mdRender(mdEl.value)
+        }
+        if (mdEl) mdEl.oninput = function () { state.cardMd = mdEl.value; render() }
+        var btnsEl = panel.querySelector('#dk-card-btns')
+        if (btnsEl) btnsEl.oninput = function () { state.cardBtns = btnsEl.value }
+        var gsel = panel.querySelector('#dk-card-gid')
+        if (gsel) gsel.onchange = function () { state.cardGid = gsel.value }
+        render()
+        var sendB = panel.querySelector('#dk-card-send')
+        var hintEl = panel.querySelector('#dk-card-hint')
+        var chHint = function (t) { if (hintEl) hintEl.textContent = t || '' }
+        if (sendB) sendB.onclick = function () {
+          var md = mdEl ? mdEl.value.trim() : ''
+          var btns = parseCardButtons(btnsEl ? btnsEl.value : '')
+          var gid = gsel ? gsel.value : state.cardGid
+          if (!md) { chHint('markdown 内容不能为空'); return }
+          if (!gid) { chHint('请先选目标群'); return }
+          state.cardBusy = 'card'; sendB.disabled = true; chHint('发送中…')
+          var keyboard = btns.length ? { content: { rows: btns.map(function (b) { return { buttons: [{ id: b.id, render_data: { label: b.label, style: 1 }, action: { type: b.isUrl ? 0 : 2, permission: { type: 2 }, data: b.data, enter: !b.isUrl } }] } }) } } : undefined
+          apiPost('chat/send-card', { ns: state.ns || undefined, gid: gid, markdown: md, keyboard: keyboard }).then(function (d) {
+            state.cardBusy = ''; sendB.disabled = false
+            chHint(d && d.ok ? '✅ 卡片已发送!' : ((d && d.err && d.err.human) || (d && d.error) || '发送失败'))
+          }).catch(function () { state.cardBusy = ''; sendB.disabled = false; chHint('发送异常') })
+        }
+      }
       function sendNow() {
         var t = (state.sendText || '').trim()
         if (!t) { state.msg = '先输入内容'; paintBody(); return }
@@ -2543,6 +2626,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           + '<button data-t="mute" class="' + (state.tab === 'mute' ? 'on' : '') + '">🔇 禁言</button>'
           + '<button data-t="out" class="' + (state.tab === 'out' ? 'on' : '') + '">⚙️ 出站</button>'
           + '<button data-t="bp" class="' + (state.tab === 'bp' ? 'on' : '') + '">🎮 互动事件</button>'
+          + '<button data-t="card" class="' + (state.tab === 'card' ? 'on' : '') + '">📝 卡片</button>'
           + '</div>'
         var body = tabs
         var status = state.msg ? '<div class="dk-msg" style="color:#2f9e44;margin:4px 0">' + esc(state.msg) + '</div>' : ''
@@ -2713,6 +2797,23 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           body += '<div class="dk-msg" style="line-height:1.6">适配主动=和QQ有关的会话回复都发到QQ: 刚收到真人消息时前5条带引用回你(能看到回的是哪句), 第6条起自动转独立新消息, 连发不被QQ吞; 定时/后台等没有新真人消息的主动推送也走独立消息。'
           body += '被动=始终以「回复你那条」发出, 连发约4~5条后会被QQ吞掉。完全不出站=本机静默, 不向QQ发任何回复(鲸鱼娘可用工具随时切回)。本开关对纯web(没绑QQ)的会话不生效。</div>'
           body += '<span class="dk-msg" id="dk-out-hint" style="color:#2f9e44;margin:4px 0"></span>'
+        } else if (state.tab === 'card') {
+          // 📝 自定义 markdown 卡片(2026-09-10): 源码 + 实时预览 + 按钮配置 → 发送到选中群
+          body += '<div class="dk-row" style="font-weight:700;font-size:13px;margin:4px 0 2px">📝 Markdown 卡片编辑器(自定义互动卡)</div>'
+          body += '<div class="dk-row"><span class="dk-msg" style="flex:1;line-height:1.5">写 markdown(支持 <b>![图 #宽px #高px](网络图URL)</b> 嵌图) → 加按钮(每行一个, 格式 <b>文字|指令</b> 或 <b>文字|url|跳转</b>) → 选目标群发送。markdown 图只能用<b>公网 URL</b>。</span></div>'
+          body += '<div class="dk-row" style="gap:6px;margin:2px 0">目标群: <select class="qqs-sel" id="dk-card-gid" style="flex:1;min-width:0">'
+          body += (state.groups || []).map(function (g) { return '<option value="' + esc(g.id) + '"' + (g.id === state.cardGid ? ' selected' : '') + '>' + esc(g.name || g.id.slice(0, 8)) + '</option>' }).join('')
+          body += '</select></div>'
+          body += '<div style="display:flex;gap:6px;margin:2px 0">'
+            + '<textarea id="dk-card-md" placeholder="# 标题&#10;&#10;正文 **加粗**&#10;&#10;![图 #208px #160px](https://example.com/img.png)" style="flex:1;min-height:140px;font-size:12px;font-family:monospace;box-sizing:border-box;padding:6px;border:1px solid #ddd;border-radius:6px;resize:vertical">' + esc(state.cardMd) + '</textarea>'
+            + '<div id="dk-card-preview" style="flex:1;min-height:140px;max-height:200px;overflow:auto;border:1px dashed #c9d8ff;border-radius:6px;padding:6px;font-size:12px;background:#fafbff;box-sizing:border-box"></div>'
+            + '</div>'
+          body += '<div class="dk-row" style="gap:6px;margin:2px 0"><span style="font-size:12px;color:#888;flex:none">按钮:</span>'
+            + '<textarea id="dk-card-btns" placeholder="每行一个: 文字|指令&#10;如: 👍 点我|/test 按钮1&#10;跳转: 🔗 GitHub|https://…|url" style="flex:1;min-height:72px;font-size:12px;font-family:monospace;box-sizing:border-box;padding:6px;border:1px solid #ddd;border-radius:6px;resize:vertical">' + esc(state.cardBtns) + '</textarea></div>'
+          body += '<div class="dk-row" style="gap:8px">'
+            + '<button class="dk-btn ok" id="dk-card-send"' + (state.cardBusy ? ' disabled' : '') + '>🚀 发送卡片</button>'
+            + '<span class="dk-msg" style="flex:1;text-align:right;font-size:11px;color:#888">最多 25 按钮(5行×5列)</span></div>'
+          body += '<div class="dk-msg" id="dk-card-hint" style="color:#2f9e44;margin:2px 0"></div>'
         } else if (state.tab === 'bp') {
           body += '<div class="dk-row" style="font-weight:700;font-size:13px;margin:4px 0 2px">🎮 互动事件装配器(/botplay 触发)</div>'
           body += '<div class="dk-row"><span class="dk-msg" style="flex:1">定义事件与按钮 → 保存即热更 → QQ 里发 <b>/botplay 事件名</b> 发卡。点击按钮走 bot 行为(回文本等)并可选影响 AI。</span></div>'
@@ -2796,6 +2897,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             else if (state.tab === 'out') loadOutMode()
             else if (state.tab === 'bp') loadBotplay()
             else if (state.tab === 'chat') { state.chatItems = []; state.chatErr = ''; }
+            else if (state.tab === 'card') bindCardEvents()
             paintBody()
           }
         })
