@@ -1011,7 +1011,7 @@ export async function apply(ctx: Context): Promise<void> {
 
   const sessionWakeTool = defineTool({
     name: 'session_wake',
-    description: '跨会话(写,需谨慎): 向指定会话发送一条消息; mode=wake(默认)唤醒该会话的 LLM(给 AI 看), mode=append 只把消息写进该会话上下文不唤醒(省 token, 喇叭模式, AI 下次回合自然看到)。同时把带来源标注的消息通过 QQBot 通道发到该会话绑定的群/私聊(给人看)。可用 session_list 查目标 id; 也支持按 peerId(群/私聊) 寻址。仅主人明确要求时调用。',    parameters: {
+    description: '跨会话(写,需谨慎): 向指定会话发送一条消息; mode=wake(默认)唤醒该会话的 LLM(给 AI 看), mode=append 只把消息写进该会话上下文不唤醒(省 token, 喇叭模式, AI 下次回合自然看到)。同时把带来源标注的消息通过 QQBot 通道发到该会话绑定的群/私聊(给人看)。可用 session_list 查目标 id; 也支持按 peerId(群/私聊) 寻址。支持 batch 批量: 一次向多个会话各发不同文本(每项带自己的 session_id/peer_id/text/mode/send_qq/media)。仅主人明确要求时调用。',    parameters: {
       session_id: { type: 'string', description: '目标会话 id(完整 sessionId, 来自 session_list)' },
       peer_id: { type: 'string', description: '或按 peer 寻址: 群 openid/私聊 openid(需带 scope)' },
       scope: { type: 'string', enum: ['group', 'c2c'], description: 'peer_id 寻址时的范围(group=群 / c2c=私聊)' },
@@ -1019,6 +1019,17 @@ export async function apply(ctx: Context): Promise<void> {
       mode: { type: 'string', enum: ['wake', 'append'], description: 'wake=唤醒 LLM 开回合(默认); append=只追加上下文不唤醒(省 token, 喇叭模式)' },
       send_qq: { type: 'boolean', description: '是否同时发到绑定的 QQ 群/私聊(给人看, 默认 true)。false=只处理 LLM 侧不走 QQ 通道' },
       media: { type: 'string', description: '跨群发图: 图片本地路径或 http(s) URL, 随消息发到目标群(需 send_qq=true)' },
+      batch: { type: 'array', description: '批量模式(2026-09-10): 一次向多个会话各发不同文本。每项: {session_id 或 peer_id+scope, text, mode?, send_qq?, media?}。单发参数与 batch 二选一, batch 优先。', items: {
+        type: 'object', additionalProperties: false, properties: {
+          session_id: { type: 'string', description: '目标会话 id' },
+          peer_id: { type: 'string', description: '或 peer 寻址: 群/私聊 openid' },
+          scope: { type: 'string', enum: ['group', 'c2c'], description: 'peer 寻址范围' },
+          text: { type: 'string', required: true, description: '该会话要发的消息内容' },
+          mode: { type: 'string', enum: ['wake', 'append'], description: '默认 wake' },
+          send_qq: { type: 'boolean', description: '默认 true' },
+          media: { type: 'string', description: '该会话随消息发的图片' },
+        },
+      } },
     },
     output: {
       schema: {
@@ -1028,23 +1039,20 @@ export async function apply(ctx: Context): Promise<void> {
       render: (_a, v: { ok: boolean; msg: string }) => [{ type: 'text' as const, text: v.ok ? v.msg : `失败: ${v.msg}` }],
     },
     async execute(args, exec) {
-      const text = String(args.text || '');
-      if (!text) return { ok: false, msg: '缺少 text' };
       // 来源标注(便于对方直接会话): 优先当前执行 agent 的 id(=会话 id); 再取当前会话记录;
       // 再回退 groupAdmin 的 hub 会话; 最后 'web'
-      let from = 'web';
-      try {
-        const aid = (exec.agent as { id?: unknown } | undefined)?.id;
-        if (typeof aid === 'string' && aid.length >= 8) from = aid.slice(0, 8) + '…';
-        else {
+      const from = (() => {
+        try {
+          const aid = (exec.agent as { id?: unknown } | undefined)?.id;
+          if (typeof aid === 'string' && aid.length >= 8) return aid.slice(0, 8) + '…';
           const ch0 = channelOf(exec as never);
           const src = findSessionRec(ch0, exec as never);
-          if (src?.rec?.sessionId) from = src.rec.sessionId.slice(0, 8) + '…';
-        }
-      } catch { /* 忽略 */ }
-      const body = `【来自会话 ${from}】\n${text}${args.media ? `\n[附带图片: ${args.media}]` : ''}`;
+          if (src?.rec?.sessionId) return src.rec.sessionId.slice(0, 8) + '…';
+        } catch { /* 忽略 */ }
+        return 'web';
+      })();
       const map: Record<string, string> = {
-        ok: String(args.mode || 'wake') === 'append' ? '✅ 已写入上下文(未唤醒)' : '✅ 已发送并唤醒',
+        ok: '✅ 已发送并唤醒',
         'no-session': `❌ 会话不存在: 目标会话不在任何已注册实例中(或已重建/换绑)`,
         'no-followup': '❌ 该会话 agent 不支持 followup 唤醒',
         'no-append': '❌ 该会话 agent 不支持上下文追加',
@@ -1052,103 +1060,109 @@ export async function apply(ctx: Context): Promise<void> {
         busy: '⏳ 目标会话正忙(回合进行中且无安全注入通道)',
         fail: '❌ 处理异常',
       };
-      const sid = String(args.session_id || '');
-      if (sid) {
-        // ① session_id 寻址: module 级注册表跨全部实例精确命中(重启后仍可查)
-        const manager = findManagerBySessionId(sid);
-        if (!manager) return { ok: false, msg: `❌ 会话不存在: ${sid.slice(0, 8)}…(不在任何已注册实例)` };
-        const mode = String(args.mode || 'wake');
-        let r: string;
-        if (mode === 'append') {
-          // 喇叭模式: 只把消息写进目标会话上下文, 不唤醒 LLM(省 token)。
-          // 需取到目标 agent: 优先记录 agent; 否则宿主 registry 活 agent。
-          const rec0 = manager.findBySessionId(sid);
-          const targetAgent = rec0?.agent
-            ?? manager.findHostAgent(sid)?.agent
-            ?? (await manager.resumeHostAgent(sid).catch(() => undefined))?.agent;
-          if (!targetAgent) r = 'no-session';
-          else r = await safeAppendUserMessage(targetAgent, body, loggerLike(exec as never));
-        } else {
-          r = await wakeSessionAgent(manager, sid, loggerLike(exec as never), body);
-        }
-        let extra = '';
-        if (args.send_qq !== false) {
-          // 目标 peer: ⚠️ 不能只问 findManagerBySessionId 返回的 manager——它可能经 findHostAgent 命中
-          // 错误实例(宿主 registry 全局), 导致 rec=undefined → 静默不发(2026-09-10 04:35 实测)。
-          // 改为: 遍历全部实例, 找 findBySessionId 真正命中的记录取 scope/peerId。
-          let qScope: 'group' | 'c2c' | undefined;
-          let qPeer = '';
-          let ownerManager: SessionManager | undefined;
-          for (const m of managersOf()) {
-            try {
-              const r2 = m.findBySessionId(sid);
-              if (r2) { ownerManager = m; qScope = r2.scope; qPeer = r2.peerId; break; }
-            } catch { /* 单实例异常跳过 */ }
+      /** 单条发送(单发与 batch 共用): one={session_id?|peer_id?+scope?, text, mode?, send_qq?, media?} */
+      const sendOne = async (one: Record<string, unknown>): Promise<string> => {
+        const text = String(one.text || '');
+        if (!text) return '❌ 缺少 text';
+        const body = `【来自会话 ${from}】\n${text}${one.media ? `\n[附带图片: ${one.media}]` : ''}`;
+        const sid = String(one.session_id || '');
+        if (sid) {
+          // ① session_id 寻址: module 级注册表跨全部实例精确命中(重启后仍可查)
+          const manager = findManagerBySessionId(sid);
+          if (!manager) return `❌ 会话不存在: ${sid.slice(0, 8)}…(不在任何已注册实例)`;
+          const mode = String(one.mode || 'wake');
+          let r: string;
+          if (mode === 'append') {
+            const rec0 = manager.findBySessionId(sid);
+            const targetAgent = rec0?.agent
+              ?? manager.findHostAgent(sid)?.agent
+              ?? (await manager.resumeHostAgent(sid).catch(() => undefined))?.agent;
+            if (!targetAgent) r = 'no-session';
+            else r = await safeAppendUserMessage(targetAgent, body, loggerLike(exec as never));
+          } else {
+            r = await wakeSessionAgent(manager, sid, loggerLike(exec as never), body);
           }
-          if (!ownerManager) {
-            // 潜在群(未创建): 从各实例群注册表按 sessionIdFor 反查
+          let extra = '';
+          if (one.send_qq !== false) {
+            // 目标 peer: ⚠️ 不能只问 findManagerBySessionId 返回的 manager——它可能经 findHostAgent 命中
+            // 错误实例(宿主 registry 全局), 导致 rec=undefined → 静默不发(2026-09-10 04:35 实测)。
+            let qScope: 'group' | 'c2c' | undefined;
+            let qPeer = '';
+            let ownerManager: SessionManager | undefined;
             for (const m of managersOf()) {
               try {
-                const raw = readFileSync(groupRegistryPath(m.cwd), 'utf8');
-                const reg = JSON.parse(raw) as Record<string, unknown>;
-                for (const gid of Object.keys(reg ?? {})) {
-                  if (m.sessionIdFor('group', gid) === sid) { ownerManager = m; qScope = 'group'; qPeer = gid; break; }
-                }
-                if (ownerManager) break;
-              } catch { /* 无注册表则跳过 */ }
+                const r2 = m.findBySessionId(sid);
+                if (r2) { ownerManager = m; qScope = r2.scope; qPeer = r2.peerId; break; }
+              } catch { /* 单实例异常跳过 */ }
+            }
+            if (!ownerManager) {
+              for (const m of managersOf()) {
+                try {
+                  const raw = readFileSync(groupRegistryPath(m.cwd), 'utf8');
+                  const reg = JSON.parse(raw) as Record<string, unknown>;
+                  for (const gid of Object.keys(reg ?? {})) {
+                    if (m.sessionIdFor('group', gid) === sid) { ownerManager = m; qScope = 'group'; qPeer = gid; break; }
+                  }
+                  if (ownerManager) break;
+                } catch { /* 无注册表则跳过 */ }
+              }
+            }
+            if (ownerManager && qScope && qPeer) {
+              extra = await sendQQWithMedia(ownerManager, qScope, qPeer, body, String(one.media || ''), exec as never);
+            } else {
+              const diag = `未找到目标会话的 QQ peer(findBySessionId 与群注册表均 miss, sid=${sid.slice(0, 8)}…)`;
+              try { loggerLike(exec as never).warn(`[session_wake] ${diag}`); } catch { /* */ }
+              extra = `；⚠️${diag}`;
             }
           }
-          if (ownerManager && qScope && qPeer) {
-            extra = await sendQQWithMedia(ownerManager, qScope, qPeer, body, String(args.media || ''), exec as never);
-          } else {
-            // ⚠️ 2026-09-10 10:25 主人实测: web 唤醒成功但 QQ 无推送 = 发送段未找到目标 peer。
-            // 不再静默——把诊断暴露给 AI/主人, 避免"以为发了其实没发"。
-            const diag = `未找到目标会话的 QQ peer(findBySessionId 与群注册表均 miss, sid=${sid.slice(0, 8)}…)`;
-            try { loggerLike(exec as never).warn(`[session_wake] ${diag}`); } catch { /* */ }
-            extra = `；⚠️${diag}`;
+          return `${map[r] ?? r} (${sid.slice(0, 8)}…)${extra}`;
+        }
+        // ② peer 寻址
+        const peer = String(one.peer_id || '');
+        const sc = String(one.scope || '') as 'group' | 'c2c';
+        if (!peer || !sc) return '请给 session_id, 或 scope+peer_id';
+        let manager = findManagerByPeer(sc, peer);
+        if (!manager) {
+          const curCh = channelOf(exec as never);
+          if (curCh?.manager && curCh.manager.findByPeer(sc, peer)) manager = curCh.manager;
+          else if (curCh?.manager) manager = curCh.manager;
+        }
+        if (!manager) return '找不到会话管理器实例(无已注册实例)';
+        let rec = manager.findByPeer(sc, peer);
+        if (!rec) {
+          if (sc === 'c2c') {
+            return `❌ 未找到该私聊对象的真实会话(${peer.slice(0, 8)}…): 请先让对方主动私聊本 bot 一次(dock「💬聊天」里能直接发), 或用 session_id 寻址。原因: openid 按 bot 应用隔离, 乱建会话会发到错误实例`;
           }
+          rec = await manager.getOrCreate(sc, peer, 'master', { scope: sc, targetId: peer });
+          if (!rec) return `会话创建失败: ${sc} ${peer.slice(0, 8)}…`;
         }
-        return { ok: r === 'ok', msg: `${map[r] ?? r} (${sid.slice(0, 8)}…)${extra}` };
-      }
-      // ② peer 寻址: registry 按 scope+peer 找目标实例(跨全部实例), 找不到回退当前执行实例
-      const peer = String(args.peer_id || '');
-      const sc = String(args.scope || '') as 'group' | 'c2c';
-      if (!peer || !sc) return { ok: false, msg: '请给 session_id, 或 scope+peer_id' };
-      let manager = findManagerByPeer(sc, peer);
-      if (!manager) {
-        // 回退: 当前执行上下文所属实例(QQ 会话内调 session_wake 时, 目标大概率同实例)
-        const curCh = channelOf(exec as never);
-        if (curCh?.manager && curCh.manager.findByPeer(sc, peer)) manager = curCh.manager;
-        else if (curCh?.manager) manager = curCh.manager;
-      }
-      if (!manager) return { ok: false, msg: '找不到会话管理器实例(无已注册实例)' };
-      let rec = manager.findByPeer(sc, peer);
-      if (!rec) {
-        // ⚠️ 2026-09-10 主人实测: c2c openid 按 appId 隔离(鲸鱼娘=E9020753…, 白毛=B901EA3C…),
-        //    乱 getOrCreate 会把假会话建进错误实例(sender=master), 再用错 appId 发送 →
-        //    官方「资源不存在(用户/群已注销)」。因此: c2c 无真实会话时不再乱建, 明确指引;
-        //    group 潜在群(注册表里有)仍允许懒创建。
-        if (sc === 'c2c') {
-          return { ok: false, msg: `❌ 未找到该私聊对象的真实会话(${peer.slice(0, 8)}…): 请先让对方主动私聊本 bot 一次(dock「💬聊天」里能直接发), 或用 session_id 寻址。原因: openid 按 bot 应用隔离, 乱建会话会发到错误实例` };
+        const sid2 = rec.sessionId;
+        const mode2 = String(one.mode || 'wake');
+        let r: string;
+        if (mode2 === 'append') {
+          r = rec.agent
+            ? await safeAppendUserMessage(rec.agent, body, loggerLike(exec as never))
+            : 'no-session';
+        } else {
+          r = await wakeSessionAgent(manager, sid2, loggerLike(exec as never), body);
         }
-        rec = await manager.getOrCreate(sc, peer, 'master', { scope: sc, targetId: peer });
-        if (!rec) return { ok: false, msg: `会话创建失败: ${sc} ${peer.slice(0, 8)}…` };
+        let extra = '';
+        if (one.send_qq !== false) {
+          extra = await sendQQWithMedia(manager, sc, peer, body, String(one.media || ''), exec as never);
+        }
+        return `${map[r] ?? r} (${sid2.slice(0, 8)}…)${extra}`;
+      };
+      // batch 优先(2026-09-10 主人: 多参数=一次多个会话各发不同文本)
+      if (Array.isArray(args.batch) && args.batch.length > 0) {
+        const results: string[] = [];
+        for (const item of args.batch) {
+          if (!item || typeof item !== 'object') { results.push('❌ batch 项无效'); continue; }
+          try { results.push(await sendOne(item as Record<string, unknown>)); } catch (e) { results.push(`❌ 发送异常: ${String((e as Error)?.message || e)}`); }
+        }
+        return { ok: results.every((x) => x.startsWith('✅')), msg: `批量 ${results.length} 条:\n` + results.map((x, i) => `${i + 1}. ${x}`).join('\n') };
       }
-      const sid2 = rec.sessionId;
-      const mode2 = String(args.mode || 'wake');
-      let r: string;
-      if (mode2 === 'append') {
-        r = rec.agent
-          ? await safeAppendUserMessage(rec.agent, body, loggerLike(exec as never))
-          : 'no-session';
-      } else {
-        r = await wakeSessionAgent(manager, sid2, loggerLike(exec as never), body);
-      }
-      let extra = '';
-      if (args.send_qq !== false) {
-        extra = await sendQQWithMedia(manager, sc, peer, body, String(args.media || ''), exec as never);
-      }
-      return { ok: r === 'ok', msg: `${map[r] ?? r} (${sid2.slice(0, 8)}…)${extra}` };
+      const oneR = await sendOne(args as Record<string, unknown>);
+      return { ok: oneR.startsWith('✅'), msg: oneR };
     },
   });
 
