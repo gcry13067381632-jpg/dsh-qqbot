@@ -1156,6 +1156,212 @@ export function apply(ctx) {
     } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
   });
 
+  // ── M3 群发任务队列(2026-09-10): 持久化状态机 draft→queued→sending→done, 二次确认, 可中止/撤回 ──
+  // 数据: {dataRoot}/.qqbot/broadcast-tasks.json(broadcast.ts 管理); 推进由每次 list 请求驱动(串行, 天然限频)。
+  // 路由: broadcast/create(草稿) → broadcast/confirm(二次确认后入队) → broadcast/list(推进+展示) →
+  //       broadcast/cancel(中止) → broadcast/recall(撤回某目标已发消息)。
+  async function broadcastMod() {
+    return import('./dist/features/broadcast.js');
+  }
+
+  // 创建群发草稿 {ns?, type:'text'|'markdown', text, targets:[{scope,peerId,name?}]}
+  route(ctx, 'POST', '/api/qqbot-settings/group/broadcast/create', async (req, res) => {
+    const body = await readJsonBody(req);
+    if (!body || typeof body !== 'object') return writeJson(res, 400, { error: 'bad body' });
+    const text = String(body.text || '').trim();
+    const targets = Array.isArray(body.targets) ? body.targets : [];
+    if (!text) return writeJson(res, 400, { error: 'text 必填' });
+    if (text.length > 2000) return writeJson(res, 400, { error: '文本过长(最多 2000 字符)' });
+    if (targets.length === 0) return writeJson(res, 400, { error: 'targets 至少一个(勾选群/私聊)' });
+    if (targets.length > 200) return writeJson(res, 400, { error: '目标太多(最多 200)' });
+    for (const t of targets) {
+      if (!t || (t.scope !== 'group' && t.scope !== 'c2c') || !t.peerId) return writeJson(res, 400, { error: 'targets 每项需 scope(group|c2c)+peerId' });
+    }
+    try {
+      const bot = nsBot(String(body.ns || ''));
+      if (!bot) return writeJson(res, 400, { error: '找不到该账号实例(请先在账号页配置 appId/appSecret)' });
+      const bm = await broadcastMod();
+      const task = bm.createTask(bot.cwd, {
+        type: body.type === 'markdown' ? 'markdown' : 'text',
+        content: text,
+        targets: targets.map((t) => ({ scope: t.scope, peerId: t.peerId, name: t.name ? String(t.name) : undefined })),
+        created_by: 'dock',
+      });
+      audit(bot.cwd, { ev: 'group.broadcast.create', ns: bot.id, task_id: task.task_id, targets: targets.length });
+      writeJson(res, 200, { ok: true, task });
+    } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
+  });
+
+  // 确认群发(二次确认后调用) {ns?, task_id}
+  route(ctx, 'POST', '/api/qqbot-settings/group/broadcast/confirm', async (req, res) => {
+    const body = await readJsonBody(req);
+    if (!body || typeof body !== 'object') return writeJson(res, 400, { error: 'bad body' });
+    const taskId = String(body.task_id || '');
+    if (!taskId) return writeJson(res, 400, { error: 'task_id 必填' });
+    try {
+      const bot = nsBot(String(body.ns || ''));
+      if (!bot) return writeJson(res, 400, { error: '找不到该账号实例' });
+      const bm = await broadcastMod();
+      const t = bm.confirmTask(bot.cwd, taskId);
+      if (!t) return writeJson(res, 400, { error: '任务不存在' });
+      if (t.state !== 'queued') return writeJson(res, 200, { ok: false, msg: `任务状态为 ${t.state}, 无法确认` });
+      audit(bot.cwd, { ev: 'group.broadcast.confirm', ns: bot.id, task_id: taskId });
+      writeJson(res, 200, { ok: true, task: t });
+    } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
+  });
+
+  // 群发任务列表(读时推进一个目标) {ns?}
+  route(ctx, 'GET', '/api/qqbot-settings/group/broadcast/list', async (req, res) => {
+    try {
+      const u = new URL(req.url ?? '/', 'http://x');
+      const bot = nsBot(NSQ(u));
+      if (!bot) return writeJson(res, 400, { error: '找不到该账号实例' });
+      const bm = await broadcastMod();
+      // 推进一步: 找第一个 queued/sending 的任务推进(串行限频)
+      const gc = await groupClientOf(NSQ(u));
+      if (gc) {
+        const tasks = bm.listTasks(bot.cwd);
+        const active = tasks.find((t) => t.state === 'queued' || t.state === 'sending');
+        if (active) await bm.advanceTask(bot.cwd, active.task_id, gc.client);
+      }
+      const after = bm.listTasks(bot.cwd);
+      writeJson(res, 200, { ok: true, tasks: after });
+    } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
+  });
+
+  // 中止群发 {ns?, task_id}
+  route(ctx, 'POST', '/api/qqbot-settings/group/broadcast/cancel', async (req, res) => {
+    const body = await readJsonBody(req);
+    if (!body || typeof body !== 'object') return writeJson(res, 400, { error: 'bad body' });
+    const taskId = String(body.task_id || '');
+    if (!taskId) return writeJson(res, 400, { error: 'task_id 必填' });
+    try {
+      const bot = nsBot(String(body.ns || ''));
+      if (!bot) return writeJson(res, 400, { error: '找不到该账号实例' });
+      const bm = await broadcastMod();
+      const t = bm.cancelTask(bot.cwd, taskId, 'dock');
+      if (!t) return writeJson(res, 400, { error: '任务不存在' });
+      audit(bot.cwd, { ev: 'group.broadcast.cancel', ns: bot.id, task_id: taskId });
+      writeJson(res, 200, { ok: true, task: t });
+    } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
+  });
+
+  // 撤回群发中某目标已发的消息(2 分钟窗口) {ns?, task_id, peerId}
+  route(ctx, 'POST', '/api/qqbot-settings/group/broadcast/recall', async (req, res) => {
+    const body = await readJsonBody(req);
+    if (!body || typeof body !== 'object') return writeJson(res, 400, { error: 'bad body' });
+    const taskId = String(body.task_id || '');
+    const peerId = String(body.peerId || '');
+    if (!taskId || !peerId) return writeJson(res, 400, { error: 'task_id 与 peerId 必填' });
+    try {
+      const bot = nsBot(String(body.ns || ''));
+      const gc = await groupClientOf(String(body.ns || ''));
+      if (!bot || !gc) return writeJson(res, 400, { error: '找不到该账号实例' });
+      const bm = await broadcastMod();
+      const r = await bm.recallTaskMessage(bot.cwd, taskId, peerId, gc.client);
+      audit(bot.cwd, { ev: 'group.broadcast.recall', ns: bot.id, task_id: taskId, peerId, ok: r.ok });
+      writeJson(res, 200, r);
+    } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
+  });
+
+  // ── M3 入群自动审批策略(2026-09-10): dock 开关默认关; 白名单按手机号匹配, execute 异步 10 分钟 ──
+  // 路由: approval_strategy/list | approval_strategy/create | approval_strategy/update | approval_strategy/delete |
+  //       approval_strategy/whitelist | approval_strategy/execute
+  route(ctx, 'GET', '/api/qqbot-settings/group/approval_strategy/list', async (req, res) => {
+    try {
+      const u = new URL(req.url ?? '/', 'http://x');
+      const gc = await groupClientOf(NSQ(u));
+      if (!gc) return writeJson(res, 400, { error: '找不到该账号实例(请先在账号页配置 appId/appSecret)' });
+      const r = await gc.client.listJoinApprovalStrategies();
+      writeJson(res, 200, r.ok ? { ok: true, strategies: r.data.strategies || [] } : { ok: false, err: r.err });
+    } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
+  });
+
+  // 创建自动审批策略 {ns?, group_openids:[...], is_enable?, remark?}
+  route(ctx, 'POST', '/api/qqbot-settings/group/approval_strategy/create', async (req, res) => {
+    const body = await readJsonBody(req);
+    if (!body || typeof body !== 'object') return writeJson(res, 400, { error: 'bad body' });
+    const gids = Array.isArray(body.group_openids) ? body.group_openids.filter((x) => x && typeof x === 'string') : [];
+    if (gids.length === 0) return writeJson(res, 400, { error: 'group_openids 至少一个' });
+    try {
+      const gc = await groupClientOf(String(body.ns || ''));
+      if (!gc) return writeJson(res, 400, { error: '找不到该账号实例' });
+      const r = await gc.client.createJoinApprovalStrategy(gids, {
+        is_enable: body.is_enable === 'off' ? 'off' : 'on',
+        remark: body.remark ? String(body.remark) : undefined,
+      });
+      audit(gc.bot.cwd, { ev: 'group.approval_strategy.create', ns: gc.bot.id, gids: gids.length, ok: r.ok });
+      writeJson(res, 200, r.ok ? { ok: true, data: r.data } : { ok: false, err: r.err });
+    } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
+  });
+
+  // 修改/启停/增删群 {ns?, strategy_id, op:'add'|'del', group_openids?, is_enable?}
+  route(ctx, 'POST', '/api/qqbot-settings/group/approval_strategy/update', async (req, res) => {
+    const body = await readJsonBody(req);
+    if (!body || typeof body !== 'object') return writeJson(res, 400, { error: 'bad body' });
+    const sid = String(body.strategy_id || '');
+    const op = String(body.op || '');
+    if (!sid || (op !== 'add' && op !== 'del')) return writeJson(res, 400, { error: 'strategy_id 与 op(add|del) 必填' });
+    try {
+      const gc = await groupClientOf(String(body.ns || ''));
+      if (!gc) return writeJson(res, 400, { error: '找不到该账号实例' });
+      const r = await gc.client.updateJoinApprovalStrategy(sid, {
+        op,
+        group_openids: Array.isArray(body.group_openids) ? body.group_openids.filter((x) => x && typeof x === 'string') : undefined,
+        is_enable: body.is_enable === 'off' ? 'off' : body.is_enable === 'on' ? 'on' : undefined,
+      });
+      audit(gc.bot.cwd, { ev: 'group.approval_strategy.update', ns: gc.bot.id, strategy_id: sid, op, ok: r.ok });
+      writeJson(res, 200, r.ok ? { ok: true, data: r.data } : { ok: false, err: r.err });
+    } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
+  });
+
+  // 删除自动审批策略 {ns?, strategy_id}
+  route(ctx, 'POST', '/api/qqbot-settings/group/approval_strategy/delete', async (req, res) => {
+    const body = await readJsonBody(req);
+    if (!body || typeof body !== 'object') return writeJson(res, 400, { error: 'bad body' });
+    const sid = String(body.strategy_id || '');
+    if (!sid) return writeJson(res, 400, { error: 'strategy_id 必填' });
+    try {
+      const gc = await groupClientOf(String(body.ns || ''));
+      if (!gc) return writeJson(res, 400, { error: '找不到该账号实例' });
+      const r = await gc.client.deleteJoinApprovalStrategy(sid);
+      audit(gc.bot.cwd, { ev: 'group.approval_strategy.delete', ns: gc.bot.id, strategy_id: sid, ok: r.ok });
+      writeJson(res, 200, r.ok ? { ok: true } : { ok: false, err: r.err });
+    } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
+  });
+
+  // 白名单增删(手机号) {ns?, strategy_id, op:'add'|'del', users:[...]}
+  route(ctx, 'POST', '/api/qqbot-settings/group/approval_strategy/whitelist', async (req, res) => {
+    const body = await readJsonBody(req);
+    if (!body || typeof body !== 'object') return writeJson(res, 400, { error: 'bad body' });
+    const sid = String(body.strategy_id || '');
+    const op = String(body.op || '');
+    const users = Array.isArray(body.users) ? body.users.filter((x) => x && typeof x === 'string') : [];
+    if (!sid || (op !== 'add' && op !== 'del') || users.length === 0) return writeJson(res, 400, { error: 'strategy_id + op(add|del) + users 必填' });
+    try {
+      const gc = await groupClientOf(String(body.ns || ''));
+      if (!gc) return writeJson(res, 400, { error: '找不到该账号实例' });
+      const r = await gc.client.updateJoinApprovalStrategyWhitelist(sid, op, users);
+      audit(gc.bot.cwd, { ev: 'group.approval_strategy.whitelist', ns: gc.bot.id, strategy_id: sid, op, n: users.length, ok: r.ok });
+      writeJson(res, 200, r.ok ? { ok: true, data: r.data } : { ok: false, err: r.err });
+    } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
+  });
+
+  // 执行自动审批策略(全量扫描关联群, 异步约 10 分钟) {ns?, strategy_id}
+  route(ctx, 'POST', '/api/qqbot-settings/group/approval_strategy/execute', async (req, res) => {
+    const body = await readJsonBody(req);
+    if (!body || typeof body !== 'object') return writeJson(res, 400, { error: 'bad body' });
+    const sid = String(body.strategy_id || '');
+    if (!sid) return writeJson(res, 400, { error: 'strategy_id 必填' });
+    try {
+      const gc = await groupClientOf(String(body.ns || ''));
+      if (!gc) return writeJson(res, 400, { error: '找不到该账号实例' });
+      const r = await gc.client.executeJoinApprovalStrategy(sid);
+      audit(gc.bot.cwd, { ev: 'group.approval_strategy.execute', ns: gc.bot.id, strategy_id: sid, ok: r.ok });
+      writeJson(res, 200, r.ok ? { ok: true, msg: '已触发全量扫描(约 10 分钟完成)' } : { ok: false, err: r.err });
+    } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
+  });
+
   // ── 悬浮球「💬 聊天视图」(2026-09-07): 读某 QQ 会话最近的入站/出站消息, 只读不建会话 ──
   // 会话事件结构(宿主 dsh-session): {type, seq, time, data}; user/message 的 data=消息体根(data.content),
   // assistant/message 的 data={turn,step,message:{role,content,…}}。只收这两型:

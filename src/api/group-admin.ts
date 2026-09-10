@@ -156,7 +156,7 @@ export class GroupAdminClient {
     return { ok: false, err: { code: 'FEATURE_NOT_OPEN', human: g?.human ?? '该能力官方尚未开放, 等待公测' } };
   }
 
-  private async call<T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<ApiResult<T>> {
+  private async call<T>(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', path: string, body?: unknown): Promise<ApiResult<T>> {
     const token = await this.tokens.get(this.opts.appId, this.opts.appSecret);
     const res = await fetch(`${API_BASE}${path}`, {
       method,
@@ -273,6 +273,76 @@ export class GroupAdminClient {
       ? { markdown: { content }, msg_type: 2, msg_seq: msgSeq }
       : { content, msg_type: 0, msg_seq: msgSeq };
     return this.call('POST', `/v2/users/${encodeURIComponent(userOpenid)}/messages`, body);
+  }
+
+  /**
+   * 撤回机器人自己发的消息(官方撤回窗口 2 分钟, 仅能撤自己发的)。
+   * msgId: 发送成功时返回的 msg_id(群消息)或 id(私聊消息)。
+   */
+  async recallMessage(msgId: string): Promise<ApiResult<Record<string, unknown>>> {
+    return this.call('DELETE', `/v2/messages/${encodeURIComponent(msgId)}`);
+  }
+
+  // ── 入群自动审批策略(🟡 群管理员; 2026-09-10 M3 新增, 官方文档 autogen/api/v2_groups_join_approval_strategy.*) ──
+  // 规则: 一个机器人最多 20 个策略; 白名单按手机号匹配; execute 异步约 10 分钟全量扫描关联群。
+
+  /** 创建入群自动审批策略(60 QPM) */
+  async createJoinApprovalStrategy(
+    groupOpenids: string[],
+    opts?: { is_enable?: 'on' | 'off'; expire_at?: string; remark?: string },
+  ): Promise<ApiResult<{ strategy_id?: string; is_enable?: string; expire_at?: string }>> {
+    const body: Record<string, unknown> = { group_openids: groupOpenids };
+    if (opts?.is_enable) body.is_enable = opts.is_enable;
+    if (opts?.expire_at) body.expire_at = opts.expire_at;
+    if (opts?.remark) body.remark = opts.remark;
+    return this.call('POST', `/v2/groups/join_approval_strategy`, body);
+  }
+
+  /** 查询入群自动审批策略列表(创建时间倒序, 分页) */
+  async listJoinApprovalStrategies(offset = 0, limit = 20): Promise<ApiResult<{
+    strategies?: Array<{ strategy_id?: string; is_enable?: string; expire_at?: string; remark?: string; group_openids?: string[]; whitelist_user_count?: number; updated_at?: string; created_at?: string }>;
+    total?: number; has_more?: boolean; next_offset?: number;
+  }>> {
+    const q = new URLSearchParams();
+    if (offset) q.set('offset', String(offset));
+    if (limit && limit !== 20) q.set('limit', String(limit));
+    const qs = q.toString() ? `?${q}` : '';
+    return this.call('GET', `/v2/groups/join_approval_strategy${qs}`);
+  }
+
+  /** 修改入群自动审批策略(生效状态/失效时间/增删关联群) */
+  async updateJoinApprovalStrategy(
+    strategyId: string,
+    patch: { op: 'add' | 'del'; group_openids?: string[]; is_enable?: 'on' | 'off'; expire_at?: string; remark?: string },
+  ): Promise<ApiResult<Record<string, unknown>>> {
+    const body: Record<string, unknown> = { op: patch.op };
+    if (patch.group_openids) body.group_openids = patch.group_openids;
+    if (patch.is_enable) body.is_enable = patch.is_enable;
+    if (patch.expire_at) body.expire_at = patch.expire_at;
+    if (patch.remark) body.remark = patch.remark;
+    return this.call('PATCH', `/v2/groups/join_approval_strategy/${encodeURIComponent(strategyId)}`, body);
+  }
+
+  /** 删除入群自动审批策略 */
+  async deleteJoinApprovalStrategy(strategyId: string): Promise<ApiResult<Record<string, unknown>>> {
+    return this.call('DELETE', `/v2/groups/join_approval_strategy/${encodeURIComponent(strategyId)}`);
+  }
+
+  /** 修改入群自动审批策略白名单(手机号列表; op: add | del) */
+  async updateJoinApprovalStrategyWhitelist(
+    strategyId: string,
+    op: 'add' | 'del',
+    whitelistUsers: string[],
+  ): Promise<ApiResult<{ strategy_id?: string; whitelist_user_count?: number; updated_at?: string }>> {
+    return this.call('POST', `/v2/groups/join_approval_strategy/${encodeURIComponent(strategyId)}/whitelist_users`, {
+      op,
+      whitelist_users: whitelistUsers,
+    });
+  }
+
+  /** 执行入群自动审批策略(对关联群全量扫描, 异步约 10 分钟) */
+  async executeJoinApprovalStrategy(strategyId: string): Promise<ApiResult<Record<string, unknown>>> {
+    return this.call('POST', `/v2/groups/join_approval_strategy/${encodeURIComponent(strategyId)}/execute`);
   }
 }
 

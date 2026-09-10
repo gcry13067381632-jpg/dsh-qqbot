@@ -1886,7 +1886,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
       setInterval(refreshBadge, 20000)
 
       // ── 面板状态(每个实例独立保存, 切回不丢) ──
-      var state = { ns: '', accts: [], gid: '', groups: [], tab: 'chat', sendScope: 'group', sendTo: '', sendName: '', sendText: '', insertCtx: true, targetQ: '', c2cs: [], joins: null, mutes: null, members: null, muteSecs: '60', bindGid: '', bindName: '', msg: '', busy: '', wantPeer: null, lookedUp: false, detected: null, detectedHit: null, chatItems: [], chatMore: false, chatBusy: '', chatErr: '', chatOldest: 0, chatText: '', chatIns: true, outMode: '', outRev: undefined, bpEvents: [], bpSel: null, bpDraft: null, rosterSel: {}, rosterScope: 'all', rosterQ: '', hubSid: '', hubRev: undefined, hubBusy: '', hubMsg: '', gaEnabled: false, gaPoll: false, gaPollWake: true, gaHubNotify: true, gaNotifyGroup: true, gaInterval: 5, gaMinCount: 1, gaMsg: '', gaBusy: '' }
+      var state = { ns: '', accts: [], gid: '', groups: [], tab: 'chat', sendScope: 'group', sendTo: '', sendName: '', sendText: '', insertCtx: true, targetQ: '', c2cs: [], joins: null, mutes: null, members: null, muteSecs: '60', bindGid: '', bindName: '', msg: '', busy: '', wantPeer: null, lookedUp: false, detected: null, detectedHit: null, chatItems: [], chatMore: false, chatBusy: '', chatErr: '', chatOldest: 0, chatText: '', chatIns: true, outMode: '', outRev: undefined, bpEvents: [], bpSel: null, bpDraft: null, rosterSel: {}, rosterScope: 'all', rosterQ: '', hubSid: '', hubRev: undefined, hubBusy: '', hubMsg: '', gaEnabled: false, gaPoll: false, gaPollWake: true, gaHubNotify: true, gaNotifyGroup: true, gaInterval: 5, gaMinCount: 1, gaMsg: '', gaBusy: '', bcDraft: null, bcTasks: null }
       // 📇 群组管理 M1: 勾选集合本地持久化(刷新/重开不丢, 供后续群发/批量操作使用)
       try { var _rs = localStorage.getItem('qqs-roster-sel'); if (_rs) { var _rso = JSON.parse(_rs); if (_rso && typeof _rso === 'object') state.rosterSel = _rso } } catch (e) {}
       var chatFlash = '' // 发送结果/错误提示(短时展示, 不被列表计数覆盖)
@@ -2152,6 +2152,9 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           state.gaMinCount = num('#dk-ga-mincount', 1)
           saveGroupAdmin()
         }
+        // M3 群发 + 自动审批策略
+        bindBroadcastEvents()
+        loadApprovalStrategies()
       }
       function hubStatusText() {
         if (state.hubSid) return '已设: 会话 ' + state.hubSid.slice(0, 8) + '… ← 各群群事件(入群申请/新成员/被拉群)汇总注入这里'
@@ -2275,6 +2278,140 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           }
           doSave()
         }).catch(function () { doSave() })
+      }
+      // ── M3 群发(勾选集合 → 草稿 → 二次确认 → 任务列表) ──
+      function rosterSelectedTargets() {
+        var out = []
+        rosterRows().forEach(function (r) {
+          if (state.rosterSel[r.key]) out.push({ scope: r.scope, peerId: r.id, name: r.name || '' })
+        })
+        return out
+      }
+      function openBroadcastDraft(text) {
+        var tg = rosterSelectedTargets()
+        if (!tg.length) { state.msg = '请先勾选至少一个目标'; paintBody(); return }
+        state.bcDraft = { text: text || '', targets: tg }
+        paintBody()
+        var ta = panel && panel.querySelector('#dk-bc-text')
+        if (ta) ta.focus()
+      }
+      function bcHint(t) {
+        state.msg = t || ''
+        var el = panel && panel.querySelector('.dk-msg#dk-bc-hint')
+        if (el) el.textContent = t || ''
+      }
+      function loadBroadcastTasks(advance) {
+        api('group/broadcast/list' + (advance ? '' : '?noadvance=1')).then(function (d) {
+          if (d && d.ok && Array.isArray(d.tasks)) { state.bcTasks = d.tasks; paintBody() }
+        }).catch(function () {})
+      }
+      function apListEl() { return panel && panel.querySelector('#dk-ap-list') }
+      function apHint(t) {
+        var el = panel && panel.querySelector('#dk-ap-hint')
+        if (el) el.textContent = t || ''
+      }
+      function loadApprovalStrategies() {
+        api('group/approval_strategy/list').then(function (d) {
+          var el = apListEl()
+          if (!el) return
+          if (!d || !d.ok) { el.textContent = '加载失败: ' + ((d && d.err && d.err.human) || (d && d.error) || '未知') ; return }
+          var ss = d.strategies || []
+          if (!ss.length) { el.textContent = '暂无策略(默认关闭)。勾选群 + 填白名单手机号 → 创建策略即可开启自动审批。' ; return }
+          el.innerHTML = ''
+          ss.forEach(function (s) {
+            var row = document.createElement('div')
+            row.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:2px 0'
+            var info = document.createElement('span')
+            info.style.cssText = 'flex:1;min-width:0'
+            info.textContent = (s.is_enable === 'on' ? '🟢' : '⚪') + ' ' + (s.strategy_id || '').slice(0, 8) + ' · ' + (s.group_openids || []).length + ' 群 · 白名单 ' + (s.whitelist_user_count || 0) + ' 人'
+            row.appendChild(info)
+            var btns = document.createElement('span')
+            btns.style.cssText = 'display:flex;gap:4px;flex:none'
+            ;[['▶ 执行', function () { apiPost('group/approval_strategy/execute', { ns: state.ns || undefined, strategy_id: s.strategy_id }).then(function (d2) { apHint((d2 && d2.msg) || ((d2 && d2.err && d2.err.human) || '执行结果未知')) }) }],
+              ['⏹ 停用', function () { apiPost('group/approval_strategy/update', { ns: state.ns || undefined, strategy_id: s.strategy_id, op: 'add', is_enable: s.is_enable === 'on' ? 'off' : 'on' }).then(function (d2) { apHint(d2 && d2.ok ? '已切换' : ((d2 && d2.err && d2.err.human) || '失败')); loadApprovalStrategies() }) }],
+              ['🗑 删', function () { apiPost('group/approval_strategy/delete', { ns: state.ns || undefined, strategy_id: s.strategy_id }).then(function (d2) { apHint(d2 && d2.ok ? '已删除' : ((d2 && d2.err && d2.err.human) || '失败')); loadApprovalStrategies() }) }],
+            ].forEach(function (b) {
+              var bEl = document.createElement('button')
+              bEl.className = 'dk-btn'
+              bEl.style.cssText = 'font-size:10px;padding:1px 5px'
+              bEl.textContent = b[0]
+              bEl.onclick = b[1]
+              btns.appendChild(bEl)
+            })
+            row.appendChild(btns)
+            el.appendChild(row)
+          })
+        }).catch(function () { var el = apListEl(); if (el) el.textContent = '加载异常' })
+      }
+      function bindBroadcastEvents() {
+        if (!panel) return
+        var sendB = panel.querySelector('#dk-roster-send')
+        if (sendB) sendB.onclick = function () { openBroadcastDraft('') }
+        var cc = panel.querySelector('#dk-bc-cancel')
+        if (cc) cc.onclick = function () { state.bcDraft = null; paintBody() }
+        var cf = panel.querySelector('#dk-bc-confirm')
+        if (cf) cf.onclick = function () {
+          if (!state.bcDraft) return
+          var ta = panel.querySelector('#dk-bc-text')
+          var text = ta ? ta.value.trim() : state.bcDraft.text
+          if (!text) { bcHint('内容不能为空'); return }
+          var targets = state.bcDraft.targets
+          apiPost('group/broadcast/create', { ns: state.ns || undefined, type: 'text', text: text, targets: targets }).then(function (d) {
+            if (!d || !d.ok || !d.task) { bcHint((d && d.error) || '创建失败'); return }
+            // 二次确认: 已弹「确认群发」按钮, 这里直接 confirm 入队
+            return apiPost('group/broadcast/confirm', { ns: state.ns || undefined, task_id: d.task.task_id }).then(function (d2) {
+              state.bcDraft = null
+              if (d2 && d2.ok) { bcHint('✅ 已确认群发 ' + targets.length + ' 个目标(逐目标发送中)'); loadBroadcastTasks(true) }
+              else bcHint((d2 && (d2.msg || d2.error)) || '确认失败')
+            })
+          }).catch(function () { bcHint('创建异常') })
+        }
+        var refreshB = panel.querySelector('#dk-bc-refresh')
+        if (refreshB) refreshB.onclick = function () { loadBroadcastTasks(true) }
+        var tlist = panel.querySelector('#dk-bc-tasks')
+        if (tlist) tlist.onclick = function (e) {
+          var b = e.target
+          var cn = b.getAttribute && b.getAttribute('data-bccancel')
+          if (cn) { apiPost('group/broadcast/cancel', { ns: state.ns || undefined, task_id: cn }).then(function () { loadBroadcastTasks(true) }); return }
+          var rn = b.getAttribute && b.getAttribute('data-bcrecall')
+          if (rn) {
+            var tk = (state.bcTasks || []).find(function (x) { return x.task_id === rn })
+            if (!tk) return
+            var peer = window.prompt('撤回哪个目标的已发消息? 填目标 peerId(…后6位即可)\n' + tk.targets.map(function (t2) { return t2.peerId.slice(-6) + ' ' + (t2.name || '') }).join('\n'))
+            if (!peer) return
+            var hit = tk.targets.find(function (t2) { return t2.peerId.endsWith(peer) })
+            if (!hit) { bcHint('未匹配到该目标'); return }
+            apiPost('group/broadcast/recall', { ns: state.ns || undefined, task_id: rn, peerId: hit.peerId }).then(function (d) { bcHint(d && d.ok ? '✅ 已撤回' : ((d && d.err) || '撤回失败')) })
+          }
+        }
+        // 🤖 自动审批策略
+        var apRef = panel.querySelector('#dk-ap-refresh')
+        if (apRef) apRef.onclick = function () { loadApprovalStrategies() }
+        var apUse = panel.querySelector('#dk-ap-usegids')
+        if (apUse) apUse.onclick = function () {
+          var tg = rosterSelectedTargets().filter(function (t2) { return t2.scope === 'group' })
+          var g = panel.querySelector('#dk-ap-gids')
+          if (g) g.value = tg.map(function (t2) { return t2.peerId }).join(',')
+          if (!tg.length) apHint('当前勾选里没有群(只支持群)')
+        }
+        var apC = panel.querySelector('#dk-ap-create')
+        if (apC) apC.onclick = function () {
+          var g = panel.querySelector('#dk-ap-gids')
+          var w = panel.querySelector('#dk-ap-wl')
+          var gids = (g && g.value || '').split(',').map(function (s) { return s.trim() }).filter(Boolean)
+          var wl = (w && w.value || '').split(',').map(function (s) { return s.trim() }).filter(Boolean)
+          if (!gids.length) { apHint('请先用「用勾选群」填入至少一个群'); return }
+          if (!wl.length) { apHint('请填白名单手机号(逗号分隔)'); return }
+          apiPost('group/approval_strategy/create', { ns: state.ns || undefined, group_openids: gids, is_enable: 'on' }).then(function (d) {
+            if (d && d.ok && d.data && d.data.strategy_id) {
+              return apiPost('group/approval_strategy/whitelist', { ns: state.ns || undefined, strategy_id: d.data.strategy_id, op: 'add', users: wl }).then(function (d2) {
+                apHint(d2 && d2.ok ? '✅ 策略已创建并写入白名单' : ('策略已建, 白名单失败: ' + ((d2 && d2.err && d2.err.human) || '未知')))
+                loadApprovalStrategies()
+              })
+            }
+            apHint((d && d.err && d.err.human) || (d && d.error) || '创建失败')
+          }).catch(function () { apHint('创建异常') })
+        }
       }
       function sendNow() {
         var t = (state.sendText || '').trim()
@@ -2513,8 +2650,59 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           body += '<div class="dk-row" style="margin:0 0 4px">'
             + '<button class="dk-btn" id="dk-roster-all">全选(当前范围)</button>'
             + '<button class="dk-btn" id="dk-roster-clear">清空</button>'
-            + '<span class="dk-msg" style="flex:1;text-align:right">勾选集合用途待开发(后续: 群发/批量操作目标)</span></div>'
+            + '<span class="dk-msg" style="flex:1;text-align:right;color:#2f9e44">已选 ' + rosterSelN() + ' 个</span>'
+            + '<button class="dk-btn ok" id="dk-roster-send">🚀 群发勾选项</button></div>'
           body += '<div class="dk-list" id="dk-roster-list"></div>'
+          // ── M3 群发面板(勾选后弹出) ──
+          if (state.bcDraft || state.bcTasks) {
+            body += '<div style="border:1px solid #d3f0d3;border-radius:8px;padding:6px 8px;margin:6px 0;background:#f6fdf6">'
+            if (state.bcDraft) {
+              var bc = state.bcDraft
+              body += '<div class="dk-row"><b style="font-size:13px">🚀 群发确认(M3)</b>'
+                + '<span class="dk-msg" style="flex:1;text-align:right;color:#666;font-size:11px">' + bc.targets.length + ' 个目标</span></div>'
+              body += '<textarea class="qqs-txt" id="dk-bc-text" style="width:100%;box-sizing:border-box;min-height:64px;font-size:12px;margin:2px 0" placeholder="要群发的内容…">' + esc(bc.text) + '</textarea>'
+              body += '<div class="dk-item" style="border:1px solid #eef7ee;border-radius:6px;margin:1px 0;padding:3px 6px;max-height:14vh;overflow:auto">'
+              bc.targets.forEach(function (t2) {
+                body += '<div style="font-size:11px;color:#555;line-height:1.5">' + (t2.scope === 'group' ? '👥' : '👤') + ' ' + esc(t2.name || t2.peerId.slice(0, 12)) + ' <span style="color:#aaa">…' + esc(t2.peerId.slice(-6)) + '</span></div>'
+              })
+              body += '</div>'
+              body += '<div class="dk-row" style="gap:8px">'
+                + '<button class="dk-btn no" id="dk-bc-cancel">✕ 取消</button>'
+                + '<button class="dk-btn ok" id="dk-bc-confirm">✅ 确认群发(发 ' + bc.targets.length + ' 个目标)</button>'
+                + '<span class="dk-msg" style="flex:1;text-align:right;font-size:11px;color:#c23131">⚠️ 高影响操作: 发送后 2 分钟内可逐目标撤回</span></div>'
+              body += '</div>'
+            }
+            if (state.bcTasks && state.bcTasks.length) {
+              body += '<div class="dk-row"><b style="font-size:12px">📋 群发任务</b>'
+                + '<button class="dk-btn" id="dk-bc-refresh" style="margin-left:auto">🔄 刷新进度</button></div>'
+              state.bcTasks.forEach(function (tk) {
+                var stc = { draft: '#888', queued: '#1971c2', sending: '#f08c00', partial_failed: '#e03131', done: '#2f9e44', cancelled: '#868e96' }[tk.state] || '#888'
+                var okN = tk.targets.filter(function (t2) { return tk.results[t2.peerId] && tk.results[t2.peerId].ok }).length
+                body += '<div class="dk-item" style="border:1px solid #eee;border-radius:6px;margin:1px 0;padding:3px 6px;flex-wrap:wrap">'
+                  + '<span style="font-size:11px;font-weight:700;color:' + stc + '">' + ({ draft: '草稿', queued: '排队中', sending: '发送中', partial_failed: '部分失败', done: '已完成', cancelled: '已中止' }[tk.state] || tk.state) + '</span>'
+                  + '<span style="flex:1;font-size:11px;color:#555;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"> ' + esc((tk.payload.content || '').slice(0, 30)) + '</span>'
+                  + '<span style="font-size:11px;color:#666">' + okN + '/' + tk.targets.length + '</span>'
+                  + (tk.state === 'queued' || tk.state === 'sending' ? '<button class="dk-btn no" data-bccancel="' + esc(tk.task_id) + '" style="margin-left:6px">⏹ 中止</button>' : '')
+                  + (tk.state === 'done' || tk.state === 'partial_failed' ? '<button class="dk-btn" data-bcrecall="' + esc(tk.task_id) + '" style="margin-left:6px" title="撤回该任务 2 分钟内已发的消息(逐目标)">↩ 撤回</button>' : '')
+                  + '</div>'
+              })
+              body += '</div>'
+            }
+            body += '</div>'
+          }
+          // ── M3 入群自动审批策略(dock 开关默认关) ──
+          body += '<div style="border:1px solid #e2d9ff;border-radius:8px;padding:6px 8px;margin:2px 0 6px;background:#faf8ff">'
+            + '<div class="dk-row" style="margin:0"><b style="font-size:13px">🤖 入群自动审批策略(M3)</b>'
+            + '<span class="dk-msg" style="flex:1;text-align:right;font-size:11px;color:#888">官方白名单手机号自动放行</span>'
+            + '<button class="dk-btn" id="dk-ap-refresh">🔄</button></div>'
+            + '<div class="dk-msg" id="dk-ap-list" style="font-size:11px;color:#555;line-height:1.6"></div>'
+            + '<div class="dk-row" style="gap:6px;margin-top:4px;flex-wrap:wrap">'
+            + '<input class="qqs-txt" id="dk-ap-gids" placeholder="群选择(用上面勾选的群)" value="" style="flex:1;min-width:120px;font-size:12px;padding:3px 6px" readonly title="点「用勾选群」填入">'
+            + '<button class="dk-btn" id="dk-ap-usegids" title="把上面勾选的群填入">用勾选群</button>'
+            + '<input class="qqs-txt" id="dk-ap-wl" placeholder="白名单手机号(逗号分隔)" value="" style="flex:1;min-width:140px;font-size:12px;padding:3px 6px">'
+            + '<button class="dk-btn ok" id="dk-ap-create">➕ 创建策略</button></div>'
+            + '<div class="dk-msg" id="dk-ap-hint" style="font-size:11px;color:#888;line-height:1.5;margin-top:2px">规则: 机器人需为群管理员才生效; 每机器人最多 20 策略; 白名单=手机号; 「执行」触发全量扫描(异步约 10 分钟)。默认关闭, 显式创建才开启。</div>'
+            + '</div>'
         } else if (state.tab === 'out') {
           var om = state.outMode || 'adaptive'
           if (om === 'nothink') body += '<div class="dk-msg" style="color:#c23131;margin:2px 0">⚠️ 当前为「完全不思考」(设置页开启): QQ 入站不唤醒 AI。发 /outmode adaptive 可唤醒。</div>'
@@ -2594,7 +2782,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         if (state.tab === 'chat') renderChatList()
         if (state.tab === 'join') renderJoinList()
         if (state.tab === 'mute') { renderMemberList(); renderMuteList() }
-        if (state.tab === 'roster') { renderRosterList(); bindRosterEvents(); loadHubState() }
+        if (state.tab === 'roster') { renderRosterList(); bindRosterEvents(); loadHubState(); loadBroadcastTasks(false); loadApprovalStrategies() }
         // 首次进入聊天 tab 自动拉最新一页
         if (state.tab === 'chat' && !state.chatItems.length && !state.chatBusy) loadChat(true)
         setTimeout(layoutPanel, 0)

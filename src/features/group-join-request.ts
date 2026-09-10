@@ -23,7 +23,8 @@ import type { QQBotSender } from '../transport/outbound-buffer.js';
 import type { ImQQBotConfig } from '../config.js';
 import type { Logger } from '../types.js';
 import type { SessionManager } from '../session/index.js';
-import { notifyGroupHub, safeAppendUserMessage } from './group-hub.js';
+import { notifyGroupHub, safeAppendUserMessage, joinDataDir } from './group-hub.js';
+import { appendGroupMember } from './chat-ledger.js';
 import { verifyHuman } from '../api/group-admin.js';
 
 /** 官方 GROUP_JOIN_REQUEST 事件体(与本项目用到的字段) */
@@ -184,6 +185,11 @@ export async function handleGroupJoinRequestEvent(
   };
   pushPendingJoinRequest(config.cwd, item);
   logger.info(`[group-join] 新入群申请: gid=${gid} user=${ev.username ?? '?'}(${mid.slice(0, 10)}…) src=${ev.apply_source ?? '?'}${ev.risk_tips ? ` risk=${ev.risk_tips}` : ''}`);
+
+  // 入群申请者也是"见过的成员": 记入本地成员台账(名字留空, 进群后群内发言会补上; 2026-09-10 M3)
+  try {
+    appendGroupMember(joinDataDir(config), { ts: Date.now(), gid, mid, name: ev.username || undefined });
+  } catch { /* 台账失败不阻断 */ }
 
   // 通知策略(主人定稿 2026-09-05 21:10 + M2 2026-09-09 扩展):
   // 要"模拟用户消息 + 模拟点停止" = 把申请 append 为目标会话的 session log 一条

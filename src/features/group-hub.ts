@@ -283,7 +283,7 @@ export async function handleGroupAddRobotEvent(
 }
 
 /** 与 chat-ledger 同 dataDir(表情包目录)的取法: config.dataRoot/cwd + 表情包 */
-function joinDataDir(config: ImQQBotConfig): string {
+export function joinDataDir(config: ImQQBotConfig): string {
   const root = (config as { dataRoot?: string }).dataRoot || config.cwd || process.cwd();
   return join(root, '表情包');
 }
