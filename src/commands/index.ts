@@ -14,6 +14,7 @@ import { pingCommand, versionCommand, stopCommand, toolsReloadCommand } from './
 import { outModeCommand } from './outmode.js';
 import { permissionCommand } from './permission.js';
 import { botplayCommand } from './botplay.js';
+import { injectCommand } from './inject.js';
 import { botRestartCommand, botExitCommand } from './exit.js';
 
 /**
@@ -39,6 +40,8 @@ export function buildCommandList(deps: CommandDeps): SlashCommand[] {
     permissionCommand(deps),
     // botplay 互动事件(/botplay 列表/触发发卡)
     botplayCommand(deps),
+    // 安全注入: /inject 文本 → 插入当前会话 LLM 回合(不打断当前回合)
+    injectCommand(deps),
     // 自重启(杀旧+自动拉起 dsh web; /bot-exit 兼容同款)
     botRestartCommand(),
     botExitCommand(),
