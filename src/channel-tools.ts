@@ -826,7 +826,7 @@ export async function apply(ctx: Context): Promise<void> {
 
   const listJoinRequestsTool = defineTool({
     name: 'group_join_requests',
-    description: '群管理(读): 查看待审批的入群申请列表(申请人/验证消息/来源/风险提示)。默认查当前会话所在群/manageGroup; 也可传 gid 查指定群。仅主人要求时调用。需在设置开启"QQ群管理"且机器人为群管理员。',
+    description: '群管理(读): 查看待审批的入群申请列表(申请人/验证消息/来源/风险提示)。默认查当前会话所在群/manageGroup; 也可传 gid 查指定群。仅主人要求时调用。需在设置开启"QQ群管理"且机器人为群管理员。⚠️群组管理器(收到【群管·入群申请】注入)的正确姿势: ①先用 session_list 找到【申请所在群】的会话; ②用 session_wake(session_id=该会话, mode=append, send_qq=true) 把申请转达过去; ③让【那个群的 bot 会话】用本工具核对名单、并用 group_approve_join 执行放行/拒绝 —— 每个群的审批交给该群自己的会话办(群成员表/权限/上下文都在那边); 只有在对方会话不可用时, 才由本会话显式带 gid 跨群代批。',
     parameters: {
       gid: { type: 'string', description: '目标群 openid(可选)。不填=当前会话群或 manageGroup; 填了则查指定群的待审批列表' },
     },
@@ -859,7 +859,7 @@ export async function apply(ctx: Context): Promise<void> {
 
   const approveJoinTool = defineTool({
     name: 'group_approve_join',
-    description: '群管理(写,危险): 审批入群申请。approve=放行 / decline=拒绝(可带理由)。支持批量: member_openids 数组一次批多人(优先); 也兼容单数 member_openid。仅主人明确要求时调用; 调用前建议先 group_join_requests 核对申请人。',
+    description: '群管理(写,危险): 审批入群申请。approve=放行 / decline=拒绝(可带理由)。支持批量: member_openids 数组一次批多人(优先); 也兼容单数 member_openid。仅主人明确要求时调用; 调用前建议先 group_join_requests 核对申请人。⚠️跨群审批务必显式传 gid(不传=当前会话所在群, 会批错群)。由群组管理器(hub)代批时的顺序: 优先用 session_wake 唤醒【申请所在群的会话】, 让那边的 bot 调本工具执行审批; 该会话不可用(无会话/append 失败)时才在本会话带 gid 直批。',
     parameters: {
       gid: { type: 'string', description: '目标群 openid(可选)。不填=当前会话群或 manageGroup; 填了则审批指定群的申请' },
       member_openids: { type: 'array', description: '批量审批: 申请人 member_openid 数组(来自 group_join_requests), 一次批多人' },

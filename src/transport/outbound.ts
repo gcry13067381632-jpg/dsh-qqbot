@@ -53,6 +53,10 @@ class OutboundRouter {
   private readonly toolCalls = new Map<string, ToolCallRecord>();
   /** 适配主动状态: sessionKey → 当前入站 msg_id 及已被动回复条数 */
   private readonly adaptiveState = new Map<string, { msgId?: string; passiveCount: number }>();
+  /** passive 收尾(2026-09-10 主人定 A 方案): **同一个 msg_id 下**已发出的正文块计数 + 最后一块文本。
+   *  ⚠️ 必须按 msgId 分组: QQ 的被动回复 5 条上限是**按 msg_id 计**的, 群友中途发言会让
+   *  record.replyTarget 换成新 msgId、配额随之重置 —— 那时后面的块本来就送得到, 不该再补发。 */
+  private readonly turnBlocks = new Map<string, { msgId: string; count: number; last: string }>();
 
   public constructor(
     private readonly manager: SessionManager,
@@ -107,6 +111,41 @@ class OutboundRouter {
   private chunkTargetFn(record: SessionRecord): ((i: number, total: number) => ReplyTarget) | undefined {
     if ((this.config.outboundMode || 'adaptive') !== 'passive') return undefined;
     return (i, total) => (total > 5 && i === total - 1) ? this.activeTarget(record) : this.resolveTarget(record);
+  }
+
+  /** 记账(**生成侧**, 2026-09-10 修正): 每产生一块正文就登记, **与发送成败解耦**。
+   *  ⚠️ 原实现挂在「发送成功之后」(sendRichOutbound 的 onBlockSent), 一旦 QQ 吞消息
+   *  (在这里表现为 sendMarkdown 抛错), await 就炸 → 记账中断(实测 count 停在第 4 条, 补发永不触发)。
+   *  按 msgId 分组: 同一 msgId 才算同一批被动回复配额, msgId 变化(群友中途发言)即重新计数。 */
+  private noteGenerated(sessionKey: string, msgId: string, text: string): void {
+    const cur = this.turnBlocks.get(sessionKey);
+    if (!cur || cur.msgId !== msgId) {
+      this.turnBlocks.set(sessionKey, { msgId, count: 1, last: text });
+      return;
+    }
+    cur.count += 1;
+    cur.last = text;
+  }
+
+  /**
+   * passive 回合收尾(2026-09-10 主人定 **A 方案**):
+   *   **同一个 msg_id 下**发出的正文块 > 5 时, 把**最后一块的文本复制一份**, 用主动目标(去掉
+   *   msg_id)单独再发一次 —— QQ 对同一条入站消息的被动回复上限约 5 条, 前 5 块之后的可能被吞,
+   *   而最后一块通常是结论/总结, 值得保住。
+   *   ⚠️ 计数按 msgId 分组: 群友中途发言 → msgId 变 → 5 条配额重置 → 后面的块送得到 → **不补发**
+   *   (2026-09-10 主人指出原按"回合总块数"判定会白白重复推一条)。
+   *   注: adaptive 模式本身「第 6 条起自动转主动」= 主人说的 B 方案, 已内建, 故此处只处理 passive。
+   */
+  private maybeResendLastBlock(sessionKey: string, record: SessionRecord): void {
+    const st = this.turnBlocks.get(sessionKey);
+    this.turnBlocks.delete(sessionKey);
+    if (!st) return;
+    if ((this.config.outboundMode || 'adaptive') !== 'passive') return;
+    if (st.count <= 5 || !st.last.trim()) return;
+    void this.bot.sendMarkdown(this.activeTarget(record), st.last).then(
+      () => this.logger.info(`im-qqbot: [passive 收尾] 回合正文 ${st.count} 块 > 5, 已把最后一块单独补发(主动)`),
+      (err: unknown) => this.logger.warn(`im-qqbot: [passive 收尾] 最后一块补发失败: ${err instanceof Error ? err.message : String(err)}`),
+    );
   }
 
   /** 事件分发入口 */
@@ -189,6 +228,8 @@ class OutboundRouter {
   private onMessage(sessionId: string, record: SessionRecord, event: MessageEvent): void {
     const buffer = this.buffers.get(sessionId);
     if (buffer !== undefined && buffer.text.trim()) {
+      // 记账放**生成侧**(不看发送成败): 这块正文已经产生了, 就该入账
+      this.noteGenerated(record.sessionKey, record.replyTarget.msgId ?? '', buffer.text);
       void buffer.flush();
       this.buffers.delete(sessionId);
       return;
@@ -201,6 +242,7 @@ class OutboundRouter {
     const fullText = textParts.join('\n');
     if (!fullText.trim()) return;
 
+    this.noteGenerated(record.sessionKey, record.replyTarget.msgId ?? '', fullText);
     void this.send(record, fullText, 'sendMarkdown');
     this.buffers.delete(sessionId);
   }
@@ -233,13 +275,18 @@ class OutboundRouter {
   /** 轮次结束：清理 buffer，异常结束时告知用户 */
   private onTurnEnd(sessionId: string, _record: SessionRecord, event: TurnEndEvent): void {
     const buffer = this.buffers.get(sessionId);
+    // 先让残留 buffer flush 完(记账在 flush 里发生), 再判断 passive 收尾补发
+    const finish = (): void => this.maybeResendLastBlock(_record.sessionKey, _record);
     if (buffer !== undefined) {
       if (buffer.text.trim()) {
-        void buffer.flush();
+        void buffer.flush().then(finish, finish);
       } else {
         buffer.cancel();
+        finish();
       }
       this.buffers.delete(sessionId);
+    } else {
+      finish();
     }
 
     const failure = extractTurnError(event.reason);

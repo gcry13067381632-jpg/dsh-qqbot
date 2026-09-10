@@ -30,6 +30,7 @@ import { handleGroupJoinRequestEvent } from '../features/group-join-request.js';
 import { handleGroupMemberAddEvent, handleGroupAddRobotEvent } from '../features/group-hub.js';
 import { registerSessionManager, setBotOnline } from '../features/session-registry.js';
 import { BotplayController, registerBotplayController, setBotplayTriggerImpl, setBotplayCatalogImpl } from '../features/botplay.js';
+import { createCardCallbackController } from '../features/card-callback.js';
 import { readBotplayEvents } from '../features/botplay-store.js';
 import { PresetSwitcherController, setPresetCardImpl } from '../features/preset-switcher.js';
 import { buildCommandList } from '../commands/index.js';
@@ -65,6 +66,8 @@ export async function bootstrapGateway(
   let questionController: QqUserQuestionsController | undefined;
   // botplay 互动事件控制器(事件配置 live 现读 config.botplayEvents; 定义在 sender 就绪后)
   let botplayController: BotplayController | undefined;
+  /** 自定义卡片(📝 卡片编辑器)按钮回调兜底处理器; 见 features/card-callback.ts */
+  let cardCallbackController: ReturnType<typeof createCardCallbackController> | undefined;
 
   // ── 表情包图库单例预初始化(防目录分裂) ──
   // ⚠️ 单例时序坑：谁先 getStickerStore 谁定路径。必须在启动早期按数据根
@@ -422,7 +425,11 @@ export async function bootstrapGateway(
   setPresetCardImpl((target, scope, peerId, page) => presetSwitcher.sendCard(target, scope, peerId, page ?? 0));
   // 指令型按钮(Phase2): 点击后执行斜杠命令(不经 AI)。复用 buildCommandList 的 handler,
   // 模拟一个最小命令 ctx(command 名称/空参 + 消息壳), 返回 handler 结果文本。
-  botplayController.setCommandExecutor(async (cmdName, target) => {
+  // 指令型按钮(Phase2): 点击后执行斜杠命令(不经 AI)。复用 buildCommandList 的 handler,
+  // 模拟一个最小命令 ctx(command 名称/空参 + 消息壳), 返回 handler 结果文本。
+  // ⚠️ 2026-09-10: 抽成具名函数 —— botplay 卡片(bp:) 与「📝 卡片」编辑器发的自定义卡(bpk:)
+  //    共用同一条命令执行链路(见 features/card-callback.ts)。
+  const runButtonCommand = async (cmdName: string, target: ReplyTarget): Promise<string> => {
     const cmdList = buildCommandList({ manager, config });
     const cmd = cmdList.find((c) => (Array.isArray(c.name) ? c.name : [c.name]).map(String).includes(cmdName));
     if (!cmd) return `未知指令「${cmdName}」(指令型按钮可用的: ${cmdList.filter((c) => !(c as { hidden?: boolean }).hidden).map((c) => (Array.isArray(c.name) ? c.name[0] : c.name)).join(', ')})`;
@@ -440,6 +447,17 @@ export async function bootstrapGateway(
       if (r.kind === 'text' && r.content) return r.content;
     }
     return '';
+  };
+  botplayController.setCommandExecutor(runButtonCommand);
+
+  // 自定义卡片按钮回调(2026-09-10 主人要求: 卡片按钮支持「回文本 / 跳链接 / 执行命令」)。
+  // 「📝 卡片」编辑器发的卡是裸卡、没有 botplay 事件挂靠 → 由本控制器兜底处理点击
+  // (host 发卡时把按钮动作写进 {dataRoot}/.qqbot/card-callbacks.json, data 前缀 bpk:)。
+  cardCallbackController = createCardCallbackController({
+    dataRoot: dataRootOf(config),
+    sendText: async (target, text) => { await sender.sendMarkdown((target as Parameters<typeof sender.sendMarkdown>[0]) || target, text); },
+    commandExecutor: (cmdName, target) => runButtonCommand(cmdName, target as ReplyTarget),
+    logger,
   });
   logger.info('[im-qqbot] botplay 互动事件接线就绪(/botplay 触发发卡, dock🎮装配, 保存即热更; 指令型按钮已接命令层)');
 
@@ -466,6 +484,9 @@ export async function bootstrapGateway(
         if (!consumed && approvalController) consumed = await approvalController.handleInteraction(ev, target);
         if (!consumed && questionController) consumed = await questionController.handleInteraction(ev, target);
         if (!consumed && botplayController) consumed = await botplayController.handleInteraction(ev, target);
+        // 自定义卡片(📝 卡片编辑器发的裸卡, data=bpk:<cardId>:<btnId>)兜底:
+        // 查 {dataRoot}/.qqbot/card-callbacks.json → 回文本 / 执行命令 / 跳转提示
+        if (!consumed && cardCallbackController) consumed = await cardCallbackController.handleInteraction(ev, target);
       } catch (err) {
         logger.warn(`[qq-interaction] 处理异常: ${err instanceof Error ? err.message : String(err)}`);
       }

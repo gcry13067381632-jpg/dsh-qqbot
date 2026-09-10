@@ -71,6 +71,11 @@ export async function sendRichOutbound(
   /** 逐文本块目标(2026-09-10 主人定 passive 收尾): 传 (块序号i, 总块数total)=>ReplyTarget,
    *  用于「正文块>5 时第 6 块起转主动发送」; undefined=所有块用 resolveTarget/固定 target */
   chunkTarget?: (i: number, total: number) => ReplyTarget,
+  /** 每成功发出一个正文块后回调(2026-09-10 主人定 passive 收尾 A 方案): outbound.ts 用它统计
+   *  「**同一个 msg_id 下**已发出几个正文块」, 回合结束时决定是否把最后一块复制一份主动补发。
+   *  带上 target 是因为 QQ 的被动回复 5 条上限**按 msg_id 计** —— msg_id 一变(群友中途发言)
+   *  配额即重置, 计数必须跟着归零, 否则会误补发(2026-09-10 主人指出)。 */
+  onBlockSent?: (text: string, target: ReplyTarget) => void,
 ): Promise<void> {
   const eff = (): ReplyTarget => (resolveTarget ? resolveTarget() : target);
   const hasRecall = containsRecall(text);
@@ -127,6 +132,7 @@ export async function sendRichOutbound(
         // 逐块目标: passive 收尾(正文块>5 第6块起转主动)由 chunkTarget 决定; 缺省用 eff()
         const tgt = chunkTarget ? chunkTarget(ci, chunks.length) : eff();
         await bot.sendMarkdown(tgt, chunk);
+        onBlockSent?.(chunk, tgt);
         if (ci < chunks.length - 1) await new Promise((r) => setTimeout(r, 500));
       }
     }
@@ -148,6 +154,8 @@ export class OutboundBuffer {
     private readonly resolveTarget?: () => ReplyTarget,
     /** 逐文本块目标(2026-09-10 passive 收尾; 正文块>5 第6块起转主动) */
     private readonly chunkTarget?: (i: number, total: number) => ReplyTarget,
+    /** 每成功发出一个正文块后回调(见 sendRichOutbound 同名参数) */
+    private readonly onBlockSent?: (text: string, target: ReplyTarget) => void,
   ) {
     this.writer = streamingEnabled
       ? new StreamingWriter({ bot, target: record.replyTarget, logger, throttleMs: STREAM_THROTTLE_MS })
@@ -187,6 +195,7 @@ export class OutboundBuffer {
         (m) => this.logger.error(m),
         this.resolveTarget,
         this.chunkTarget,
+        this.onBlockSent,
       );
     } catch (err) {
       this.logger.error(`im-qqbot: flush failed: ${err instanceof Error ? err.message : String(err)}`);

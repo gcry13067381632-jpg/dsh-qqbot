@@ -1209,6 +1209,58 @@ export function apply(ctx) {
     } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
   });
 
+  // ── 自定义卡片按钮(2026-09-10 主人要求: 卡片按钮要能写「回文本 / 跳链接 / 执行命令」) ──
+  // client 传结构化 cardButtons=[{label, action:'text'|'cmd'|'url', payload}]。
+  // 这里生成 cardId、把按钮动作写进 {dataRoot}/.qqbot/card-callbacks.json —— 格式与 dist 侧
+  // src/features/card-callback.ts 严格一致(改格式两边都要改); 按钮 data 编 `bpk:<cardId>:<btnId>`:
+  //   action=url  → action.type=0 官方跳转(客户端直接跳, 不走回调)
+  //   其余        → action.type=1 回调 → 点击后 QQ 推 INTERACTION_CREATE → bootstrap 的
+  //                 cardCallbackController 查表执行(text 回文本 / cmd 走命令执行器)
+  function writeCardCallbacks(dataRoot, card) {
+    try {
+      const p = join(dataRoot, '.qqbot', 'card-callbacks.json');
+      mkdirSync(dirname(p), { recursive: true });
+      let f = { version: 1, cards: [] };
+      try { if (existsSync(p)) f = JSON.parse(readFileSync(p, 'utf8')) || f; } catch { f = { version: 1, cards: [] }; }
+      const now = Date.now();
+      const kept = (Array.isArray(f.cards) ? f.cards : []).filter(c => c && c.cardId !== card.cardId && (c.expireAt || 0) > now);
+      kept.push(card);
+      writeFileSync(p, JSON.stringify({ version: 1, cards: kept.slice(-200) }, null, 1), 'utf8');
+    } catch { /* 写失败只影响按钮回调, 不阻断发卡 */ }
+  }
+  function buildCardKeyboardFromPairs(dataRoot, pairs, meta) {
+    const list = (Array.isArray(pairs) ? pairs : []).filter(b => b && b.label).slice(0, 25);
+    if (!list.length) return undefined;
+    const cardId = 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    const buttons = list.map((b, i) => ({
+      id: 'b' + (i + 1),
+      label: String(b.label).slice(0, 20),
+      action: b.action === 'url' ? 'url' : (b.action === 'cmd' ? 'cmd' : 'text'),
+      payload: String(b.payload == null ? '' : b.payload),
+    }));
+    const rows = buttons.map(b => ({
+      buttons: [{
+        id: b.id,
+        render_data: { label: b.label, style: 1 },
+        action: {
+          type: b.action === 'url' ? 0 : 1, // 0=跳转 1=回调
+          permission: { type: 2 },
+          data: 'bpk:' + cardId + ':' + b.id,
+          unsupport_tips: '请在支持的客户端点击',
+        },
+      }],
+    }));
+    writeCardCallbacks(dataRoot, {
+      cardId,
+      buttons,
+      createdAt: Date.now(),
+      expireAt: Date.now() + 7 * 24 * 3600 * 1000,
+      scope: meta && meta.scope,
+      targetId: meta && meta.targetId,
+    });
+    return { content: { rows } };
+  }
+
   // ── 自定义 markdown 卡片发送(2026-09-10 主人实测: markdown 嵌网络图+按钮可渲染):
   //     接收 {ns?, gid | openid, markdown, keyboard?} → 群用 sendGroupCard / 私聊用 sendC2cCard;
   //     群发走 broadcast/create(type=markdown)。openid 支持为 2026-09-10 主人要求(卡片可选私聊目标)。
@@ -1224,11 +1276,15 @@ export function apply(ctx) {
     try {
       const gc = await groupClientOf(String(body.ns || ''));
       if (!gc) return writeJson(res, 400, { error: '找不到该账号实例' });
-      const kb = body.keyboard && body.keyboard.content && Array.isArray(body.keyboard.content.rows) ? body.keyboard : undefined;
+      // 结构化按钮(新路径) → 生成回调表 + bpk: 键盘; 也兼容旧路径直接给 keyboard
+      let kb = body.keyboard && body.keyboard.content && Array.isArray(body.keyboard.content.rows) ? body.keyboard : undefined;
+      if (!kb && Array.isArray(body.cardButtons) && body.cardButtons.length) {
+        kb = buildCardKeyboardFromPairs(gc.bot.cwd, body.cardButtons, { scope: openid ? 'c2c' : 'group', targetId: openid || gid });
+      }
       const r = openid
         ? await gc.client.sendC2cCard(openid, md, kb)
         : await gc.client.sendGroupCard(gid, md, kb);
-      audit(gc.bot.cwd, { ev: 'chat.send-card', ns: gc.bot.id, gid, openid, mdLen: md.length, kbRows: kb ? kb.content.rows.length : 0, ok: r.ok, code: r.ok ? undefined : (r.err && r.err.code) });
+      audit(gc.bot.cwd, { ev: 'chat.send-card', ns: gc.bot.id, gid, openid, mdLen: md.length, kbRows: kb ? kb.content.rows.length : 0, cbButtons: Array.isArray(body.cardButtons) ? body.cardButtons.length : 0, ok: r.ok, code: r.ok ? undefined : (r.err && r.err.code) });
       writeJson(res, 200, r.ok
         ? { ok: true, msg: '✅ 卡片已发送' + (openid ? '(私聊)' : '(群)'), id: r.data && r.data.id }
         : { ok: false, err: r.err });
@@ -1292,7 +1348,9 @@ export function apply(ctx) {
     const wantCard = body.type === 'card';
     if (!text) return writeJson(res, 400, { error: wantCard ? 'markdown 必填' : 'text 必填' });
     if (text.length > (wantCard ? 8000 : 2000)) return writeJson(res, 400, { error: wantCard ? 'markdown 过长(最多 8000 字符)' : '文本过长(最多 2000 字符)' });
-    const kb = wantCard && body.keyboard && body.keyboard.content && Array.isArray(body.keyboard.content.rows) ? body.keyboard : undefined;
+    // 卡片群发(2026-09-10 主人要求): type=card 时 text 为 markdown 正文, 另带 keyboard;
+    // 优先用结构化 cardButtons 现生成(回调表+bpk: 键盘, 与 chat/send-card 同一套), 兼容直接给 keyboard
+    let kb = wantCard && body.keyboard && body.keyboard.content && Array.isArray(body.keyboard.content.rows) ? body.keyboard : undefined;
     if (targets.length === 0) return writeJson(res, 400, { error: 'targets 至少一个(勾选群/私聊)' });
     if (targets.length > 200) return writeJson(res, 400, { error: '目标太多(最多 200)' });
     for (const t of targets) {
@@ -1301,6 +1359,10 @@ export function apply(ctx) {
     try {
       const bot = nsBot(String(body.ns || ''));
       if (!bot) return writeJson(res, 400, { error: '找不到该账号实例(请先在账号页配置 appId/appSecret)' });
+      // 结构化按钮 → 现生成回调表 + bpk: 键盘(与 chat/send-card 同一套; 群发各目标共用这张表)
+      if (wantCard && !kb && Array.isArray(body.cardButtons) && body.cardButtons.length) {
+        kb = buildCardKeyboardFromPairs(bot.cwd, body.cardButtons, { scope: 'group', targetId: '' });
+      }
       const bm = await broadcastMod();
       const task = bm.createTask(bot.cwd, {
         type: wantCard ? 'card' : (body.type === 'markdown' ? 'markdown' : 'text'),

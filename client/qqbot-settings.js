@@ -1701,7 +1701,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
     //   · 群管理(发消息/审批入群/禁言) → 悬浮球点开成操作台
     var DOCK_CSS = "#qqs-dock-wrap{position:fixed;right:18px;bottom:190px;z-index:9997;font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif}#qqs-dock-ball{width:52px;height:52px;border-radius:50%;background:linear-gradient(160deg,#7c6cf0,#5b4fd8);color:#fff;font-size:24px;line-height:52px;text-align:center;cursor:pointer;box-shadow:0 6px 20px rgba(90,70,220,.4);user-select:none;transition:transform .12s,box-shadow .12s;position:relative}#qqs-dock-ball:hover{transform:scale(1.06)}#qqs-dock-badge{position:absolute;top:-4px;right:-4px;min-width:18px;height:18px;border-radius:9px;background:#ff4d4f;color:#fff;font-size:11px;font-weight:700;line-height:18px;padding:0 4px;box-sizing:border-box;text-align:center;display:none}#qqs-dock-panel{position:fixed;right:18px;bottom:190px;z-index:9998;width:min(720px,94vw);max-height:68vh;display:none;flex-direction:column;background:#fff;border:1px solid #d9c6ff;border-radius:16px;box-shadow:0 12px 40px rgba(60,40,140,.25);overflow:hidden;font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif}#qqs-dock-panel .dk-h{display:flex;align-items:center;gap:8px;padding:10px 14px;background:linear-gradient(90deg,#7c6cf01f,#7c6cf008);font-size:14px;font-weight:700;color:#4a3a9f;border-bottom:1px solid #efe8ff}#qqs-dock-panel .dk-b{padding:10px 14px;overflow:auto;font-size:13px;color:#1f2329}#qqs-dock-panel .dk-tab{display:flex;gap:4px;border-bottom:1px solid #eee;margin-bottom:10px}#qqs-dock-panel .dk-tab button{font:inherit;font-size:13px;padding:6px 14px;border:none;background:none;cursor:pointer;color:#666;border-bottom:2px solid transparent}#qqs-dock-panel .dk-tab button.on{color:#4a3a9f;font-weight:700;border-bottom-color:#7c6cf0}#qqs-dock-panel select.qqs-sel,#qqs-dock-panel input.qqs-txt,#qqs-dock-panel textarea.qqs-txt{font:inherit;color:#1f2329;background:#fff;border:1px solid #d0d5dd;border-radius:8px;padding:5px 8px;outline:none}#qqs-dock-panel .dk-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0}#qqs-dock-panel .dk-btn{font:inherit;font-size:13px;padding:5px 12px;border-radius:8px;cursor:pointer;border:1px solid #d9c6ff;background:#f1ecff;color:#4a3a9f}#qqs-dock-panel .dk-btn.ok{background:#e6f7ec;color:#187a3d;border-color:#b8e6c8}#qqs-dock-panel .dk-btn.no{background:#fdeeee;color:#c23131;border-color:#f3c4c4}#qqs-dock-panel .dk-btn:disabled{opacity:.5;cursor:default}#qqs-dock-panel .dk-msg{color:#888;font-size:12px;padding:2px 0}#qqs-dock-panel .dk-list{max-height:34vh;overflow:auto;border:1px solid #f0ecff;border-radius:10px;padding:4px}#qqs-dock-panel .dk-item{display:flex;align-items:center;gap:8px;padding:6px 8px;border-bottom:1px solid #f5f2ff;flex-wrap:wrap;font-size:13px}#qqs-dock-panel .dk-item:last-child{border-bottom:none}#qqs-dock-panel .dk-empty{color:#aaa;text-align:center;padding:18px 0;font-size:12px}"
     // ── 💬 聊天视图样式(dock 追加段, 2026-09-07): QQ 风格气泡, 群友左(bot)右 ──
-    var DOCK_CSS2 = "#qqs-dock-panel .dk-chat-head{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:0 0 6px}#qqs-dock-panel .dk-chat-box{overflow-y:auto;overscroll-behavior:contain;background:#f5f6f8;border:1px solid #e6e8ec;border-radius:10px;padding:10px 12px;box-sizing:border-box;height:min(36vh,300px);min-height:140px;scroll-behavior:auto}#qqs-dock-panel .dk-chat-box::-webkit-scrollbar{width:6px}#qqs-dock-panel .dk-chat-box::-webkit-scrollbar-thumb{background:#d3d7dd;border-radius:3px}#qqs-dock-panel .dk-crow{display:flex;gap:8px;align-items:flex-start;margin:0 0 12px}#qqs-dock-panel .dk-crow.out{flex-direction:row-reverse}#qqs-dock-panel .dk-ava{width:32px;height:32px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;color:#fff;overflow:hidden;user-select:none;background:linear-gradient(150deg,#8fb3e8,#5f8fd9)}#qqs-dock-panel .dk-crow.out .dk-ava{background:linear-gradient(150deg,#5ec7f2,#3b8fe0)}#qqs-dock-panel .dk-cmain{display:flex;flex-direction:column;max-width:calc(100% - 40px);min-width:0}#qqs-dock-panel .dk-crow.in .dk-cmain{align-items:flex-start}#qqs-dock-panel .dk-crow.out .dk-cmain{align-items:flex-end}#qqs-dock-panel .dk-cmeta{font-size:11px;color:#9aa0a8;margin:0 6px 2px;max-width:100%;display:flex;align-items:center;gap:5px;flex-wrap:wrap}#qqs-dock-panel .dk-crow.out .dk-cmeta{flex-direction:row-reverse}#qqs-dock-panel .dk-cbubble{padding:7px 11px;font-size:13px;line-height:1.55;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;box-shadow:0 1px 2px rgba(20,30,60,.06);max-width:100%}#qqs-dock-panel .dk-crow.in .dk-cbubble{background:#fff;border:1px solid #e3e6ea;color:#1f2329;border-radius:3px 10px 10px 10px}#qqs-dock-panel .dk-crow.out .dk-cbubble{background:linear-gradient(180deg,#69a6ff,#3d7df5);color:#fff;border-radius:10px 3px 10px 10px}#qqs-dock-panel .dk-img{display:block;max-width:min(230px,52vw);max-height:200px;border-radius:6px;margin:0 0 3px;object-fit:cover;cursor:zoom-in}#qqs-dock-panel .dk-audio{display:block;max-width:min(260px,60vw);width:100%;height:34px;margin:0 0 2px}#qqs-dock-panel .dk-file{display:inline-flex;align-items:center;gap:5px;max-width:100%;padding:6px 12px;border-radius:8px;background:#f0f6ff;border:1px solid #cfe0fa;color:#2b6bd8;font-size:13px;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#qqs-dock-panel .dk-file:hover{background:#e2edff}#qqs-dock-panel .dk-video{display:block;max-width:min(260px,60vw);max-height:180px;border-radius:6px;margin:0 0 2px}#qqs-dock-panel .dk-ctag{display:inline-block;font-size:10px;color:#5b8ff0;background:#eaf2ff;border:1px solid #d4e3fd;border-radius:8px;padding:0 6px}#qqs-dock-panel .dk-chat-top{text-align:center;color:#b0b4bb;font-size:11px;padding:2px 0 6px;user-select:none}#qqs-dock-panel .dk-chat-bottom{text-align:center;color:#c3c7cd;font-size:11px;padding:6px 0 0}#qqs-dock-panel .dk-composer{margin-top:8px;border:1px solid #e3e6ea;border-radius:10px;background:#fff;overflow:visible}#qqs-dock-panel .dk-composer textarea{width:100%;box-sizing:border-box;border:none;outline:none;resize:none;font:inherit;font-size:13px;color:#1f2329;background:transparent;padding:8px 10px 4px;line-height:1.5;max-height:120px}#qqs-dock-panel .dk-cbar{display:flex;align-items:center;gap:4px;padding:4px 8px 6px;flex-wrap:wrap}#qqs-dock-panel .dk-cbar .dk-btn{padding:3px 10px;font-size:12px;border-radius:7px}#qqs-dock-panel .dk-cbar .dk-send{background:linear-gradient(180deg,#69a6ff,#3d7df5);color:#fff;border:none;border-radius:8px;padding:5px 18px;font-size:13px;font-weight:600;cursor:pointer}#qqs-dock-panel .dk-cbar .dk-send:disabled{opacity:.5;cursor:default}#qqs-lightbox{position:fixed;inset:0;z-index:2147483000;background:rgba(8,10,18,.82);display:flex;align-items:center;justify-content:center;cursor:zoom-out}#qqs-lightbox img{max-width:92vw;max-height:92vh;border-radius:8px;box-shadow:0 10px 60px rgba(0,0,0,.6)}#qqs-dock-panel .dk-composer{position:relative}#qqs-dock-panel .dk-at-pop{position:absolute;left:6px;bottom:calc(100% - 4px);z-index:30;min-width:200px;max-width:90%;max-height:190px;overflow-y:auto;background:#fff;border:1px solid #e0e4ea;border-radius:10px;box-shadow:0 8px 24px rgba(30,40,80,.16);padding:4px;display:none}#qqs-dock-panel .dk-at-item{display:flex;align-items:center;gap:6px;padding:5px 9px;border-radius:7px;cursor:pointer;font-size:12px;color:#1f2329;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}#qqs-dock-panel .dk-at-item.on,#qqs-dock-panel .dk-at-item:hover{background:#eef3ff;color:#2b5fd0}#qqs-dock-panel .dk-at-empty{color:#aaa;font-size:12px;padding:6px 9px}#qqs-lightbox .lb-x{position:fixed;right:16px;top:10px;color:#fff;font-size:30px;cursor:pointer;line-height:1;padding:6px}#qqs-dock-panel.dk-full{left:0!important;top:0!important;right:0!important;bottom:0!important;width:100vw!important;max-width:100vw!important;height:100vh!important;max-height:100vh!important;border-radius:0;z-index:2147482000;display:flex;flex-direction:column}#qqs-dock-panel.dk-full .dk-h,#qqs-dock-panel.dk-full .dk-detect{flex:none}#qqs-dock-panel.dk-full .dk-b{flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column;padding:8px 14px 6px}#qqs-dock-panel.dk-full .dk-chat-wrap{display:flex;flex-direction:column;flex:1;min-height:0}#qqs-dock-panel.dk-full .dk-chat-head{flex:none}#qqs-dock-panel.dk-full .dk-chat-box{flex:1;height:auto!important;min-height:0!important;max-height:none!important;overflow-y:auto;overscroll-behavior:contain}#qqs-dock-panel.dk-full .dk-composer{flex:none;margin-top:6px}"
+    var DOCK_CSS2 = "#qqs-dock-panel .dk-chat-head{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:0 0 6px}#qqs-dock-panel .dk-chat-box{overflow-y:auto;overscroll-behavior:contain;background:#f5f6f8;border:1px solid #e6e8ec;border-radius:10px;padding:10px 12px;box-sizing:border-box;height:min(36vh,300px);min-height:140px;scroll-behavior:auto}#qqs-dock-panel .dk-chat-box::-webkit-scrollbar{width:6px}#qqs-dock-panel .dk-chat-box::-webkit-scrollbar-thumb{background:#d3d7dd;border-radius:3px}#qqs-dock-panel .dk-crow{display:flex;gap:8px;align-items:flex-start;margin:0 0 12px}#qqs-dock-panel .dk-crow.out{flex-direction:row-reverse}#qqs-dock-panel .dk-ava{width:32px;height:32px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;color:#fff;overflow:hidden;user-select:none;background:linear-gradient(150deg,#8fb3e8,#5f8fd9)}#qqs-dock-panel .dk-crow.out .dk-ava{background:linear-gradient(150deg,#5ec7f2,#3b8fe0)}#qqs-dock-panel .dk-cmain{display:flex;flex-direction:column;max-width:calc(100% - 40px);min-width:0}#qqs-dock-panel .dk-crow.in .dk-cmain{align-items:flex-start}#qqs-dock-panel .dk-crow.out .dk-cmain{align-items:flex-end}#qqs-dock-panel .dk-cmeta{font-size:11px;color:#9aa0a8;margin:0 6px 2px;max-width:100%;display:flex;align-items:center;gap:5px;flex-wrap:wrap}#qqs-dock-panel .dk-crow.out .dk-cmeta{flex-direction:row-reverse}#qqs-dock-panel .dk-cbubble{padding:7px 11px;font-size:13px;line-height:1.55;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;box-shadow:0 1px 2px rgba(20,30,60,.06);max-width:100%}#qqs-dock-panel .dk-cbubble a.dk-link{color:#1a66d6;text-decoration:underline;word-break:break-all;cursor:pointer}#qqs-dock-panel .dk-crow.out .dk-cbubble a.dk-link{color:#eaf3ff}#qqs-dock-panel .dk-crow.in .dk-cbubble{background:#fff;border:1px solid #e3e6ea;color:#1f2329;border-radius:3px 10px 10px 10px}#qqs-dock-panel .dk-crow.out .dk-cbubble{background:linear-gradient(180deg,#69a6ff,#3d7df5);color:#fff;border-radius:10px 3px 10px 10px}#qqs-dock-panel .dk-img{display:block;max-width:min(230px,52vw);max-height:200px;border-radius:6px;margin:0 0 3px;object-fit:cover;cursor:zoom-in}#qqs-dock-panel .dk-audio{display:block;max-width:min(260px,60vw);width:100%;height:34px;margin:0 0 2px}#qqs-dock-panel .dk-file{display:inline-flex;align-items:center;gap:5px;max-width:100%;padding:6px 12px;border-radius:8px;background:#f0f6ff;border:1px solid #cfe0fa;color:#2b6bd8;font-size:13px;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#qqs-dock-panel .dk-file:hover{background:#e2edff}#qqs-dock-panel .dk-video{display:block;max-width:min(260px,60vw);max-height:180px;border-radius:6px;margin:0 0 2px}#qqs-dock-panel .dk-ctag{display:inline-block;font-size:10px;color:#5b8ff0;background:#eaf2ff;border:1px solid #d4e3fd;border-radius:8px;padding:0 6px}#qqs-dock-panel .dk-chat-top{text-align:center;color:#b0b4bb;font-size:11px;padding:2px 0 6px;user-select:none}#qqs-dock-panel .dk-chat-bottom{text-align:center;color:#c3c7cd;font-size:11px;padding:6px 0 0}#qqs-dock-panel .dk-composer{margin-top:8px;border:1px solid #e3e6ea;border-radius:10px;background:#fff;overflow:visible}#qqs-dock-panel .dk-composer textarea{width:100%;box-sizing:border-box;border:none;outline:none;resize:none;font:inherit;font-size:13px;color:#1f2329;background:transparent;padding:8px 10px 4px;line-height:1.5;max-height:120px}#qqs-dock-panel .dk-cbar{display:flex;align-items:center;gap:4px;padding:4px 8px 6px;flex-wrap:wrap}#qqs-dock-panel .dk-cbar .dk-btn{padding:3px 10px;font-size:12px;border-radius:7px}#qqs-dock-panel .dk-cbar .dk-send{background:linear-gradient(180deg,#69a6ff,#3d7df5);color:#fff;border:none;border-radius:8px;padding:5px 18px;font-size:13px;font-weight:600;cursor:pointer}#qqs-dock-panel .dk-cbar .dk-send:disabled{opacity:.5;cursor:default}#qqs-lightbox{position:fixed;inset:0;z-index:2147483000;background:rgba(8,10,18,.82);display:flex;align-items:center;justify-content:center;cursor:zoom-out}#qqs-lightbox img{max-width:92vw;max-height:92vh;border-radius:8px;box-shadow:0 10px 60px rgba(0,0,0,.6)}#qqs-dock-panel .dk-composer{position:relative}#qqs-dock-panel .dk-at-pop{position:absolute;left:6px;bottom:calc(100% - 4px);z-index:30;min-width:200px;max-width:90%;max-height:190px;overflow-y:auto;background:#fff;border:1px solid #e0e4ea;border-radius:10px;box-shadow:0 8px 24px rgba(30,40,80,.16);padding:4px;display:none}#qqs-dock-panel .dk-at-item{display:flex;align-items:center;gap:6px;padding:5px 9px;border-radius:7px;cursor:pointer;font-size:12px;color:#1f2329;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}#qqs-dock-panel .dk-at-item.on,#qqs-dock-panel .dk-at-item:hover{background:#eef3ff;color:#2b5fd0}#qqs-dock-panel .dk-at-empty{color:#aaa;font-size:12px;padding:6px 9px}#qqs-lightbox .lb-x{position:fixed;right:16px;top:10px;color:#fff;font-size:30px;cursor:pointer;line-height:1;padding:6px}#qqs-dock-panel.dk-full{left:0!important;top:0!important;right:0!important;bottom:0!important;width:100vw!important;max-width:100vw!important;height:100vh!important;max-height:100vh!important;border-radius:0;z-index:2147482000;display:flex;flex-direction:column}#qqs-dock-panel.dk-full .dk-h,#qqs-dock-panel.dk-full .dk-detect{flex:none}#qqs-dock-panel.dk-full .dk-b{flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column;padding:8px 14px 6px}#qqs-dock-panel.dk-full .dk-chat-wrap{display:flex;flex-direction:column;flex:1;min-height:0}#qqs-dock-panel.dk-full .dk-chat-head{flex:none}#qqs-dock-panel.dk-full .dk-chat-box{flex:1;height:auto!important;min-height:0!important;max-height:none!important;overflow-y:auto;overscroll-behavior:contain}#qqs-dock-panel.dk-full .dk-composer{flex:none;margin-top:6px}"
     function ensureDockCss2() { try { if (!document.getElementById('qqs-dock-css2')) { var st = document.createElement('style'); st.id = 'qqs-dock-css2'; st.textContent = DOCK_CSS2; document.head.appendChild(st) } } catch (e) {} };
     function ensureDockCss() { try { if (!document.getElementById('qqs-dock-css')) { var st = document.createElement('style'); st.id = 'qqs-dock-css'; st.textContent = DOCK_CSS; document.head.appendChild(st) } } catch (e) {} }
     function startQqDock(sessionsSvc) {
@@ -2489,16 +2489,30 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         closeList(); closeTable()
         return html
       }
+      // 按钮动作判定(2026-09-10 主人要求: 卡片按钮要能写「回文本 / 跳链接 / 执行命令」):
+      //   第三段显式指定 → url/链接 | cmd/命令 | text/回复; 不写则智能判断:
+      //     以 http(s) 开头 = 跳链接; 以 / 开头 = 执行命令; 其余 = 回文本
+      function cardBtnAction(typeRaw, data, hasType) {
+        var t = String(typeRaw || '').toLowerCase()
+        if (hasType) {
+          if (t === 'url' || t === 'link' || t === '跳转') return 'url'
+          if (t === 'cmd' || t === 'command' || t === '命令') return 'cmd'
+          if (t === 'text' || t === 'reply' || t === '文本') return 'text'
+        }
+        if (/^https?:\/\//i.test(data)) return 'url'
+        if (String(data).charAt(0) === '/') return 'cmd'
+        return 'text'
+      }
       function parseCardButtons(text) {
-        // 每行: 文字|data  或  文字|url|url(跳转)
+        // 每行: 文字|内容 或 文字|内容|url|cmd|text
         var out = []
         var rows = String(text || '').split('\n').map(function (s) { return s.trim() }).filter(Boolean)
         for (var i = 0; i < rows.length; i++) {
           var parts = rows[i].split('|').map(function (s) { return s.trim() })
           if (parts.length < 2 || !parts[0]) continue
           var label = parts[0], data = parts[1]
-          var isUrl = parts.length >= 3 && parts[2] === 'url'
-          out.push({ id: 'btn' + (i + 1), label: label, data: data, isUrl: isUrl })
+          var action = cardBtnAction(parts.length >= 3 ? parts[2] : '', data, parts.length >= 3)
+          out.push({ id: 'btn' + (i + 1), label: label, data: data, action: action, isUrl: action === 'url' })
         }
         return out
       }
@@ -2542,8 +2556,9 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           if (!v.md) { chHint('markdown 内容不能为空'); return }
           if (!v.raw) { chHint('请先选目标(群或私聊)'); return }
           state.cardBusy = 'card'; sendB.disabled = true; chHint(v.openid ? '发送中(私聊)…' : '发送中(群)…')
-          var keyboard = v.btns.length ? { content: { rows: v.btns.map(function (b) { return { buttons: [{ id: b.id, render_data: { label: b.label, style: 1 }, action: { type: b.isUrl ? 0 : 2, permission: { type: 2 }, data: b.data, enter: !b.isUrl } }] } }) } } : undefined
-          apiPost('chat/send-card', { ns: state.ns || undefined, gid: v.gid || undefined, openid: v.openid || undefined, markdown: v.md, keyboard: keyboard }).then(function (d) {
+          // 按钮走结构化路径交给 host: host 生成 cardId + 回调表(回文本/执行命令靠它), 并编好 bpk: 键盘
+          var cardButtons = v.btns.map(function (b) { return { label: b.label, action: b.action, payload: b.data } })
+          apiPost('chat/send-card', { ns: state.ns || undefined, gid: v.gid || undefined, openid: v.openid || undefined, markdown: v.md, cardButtons: cardButtons.length ? cardButtons : undefined }).then(function (d) {
             state.cardBusy = ''; sendB.disabled = false
             chHint(d && d.ok ? ((d.msg || '✅ 卡片已发送!')) : ((d && d.err && d.err.human) || (d && d.error) || '发送失败'))
           }).catch(function () { state.cardBusy = ''; sendB.disabled = false; chHint('发送异常') })
@@ -2562,7 +2577,13 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
               name: v.md.replace(/^#+\s*/, '').split('\n')[0].slice(0, 12) || '卡片',
               contentText: v.md, maxClicks: 0, expireSec: 600, buttonsPerRow: 1,
               perm: { type: 'all', userIds: [] },
-              buttons: v.btns.map(function (b, i) { return { id: 'b' + (i + 1), label: b.label, style: 1, botAction: b.isUrl ? { type: 'jump_url', text: '', url: b.data } : { type: 'command', text: b.data.replace(/^\//, ''), url: '' }, llmEffect: { mode: 'no_append', contextText: '' } } }),
+              buttons: v.btns.map(function (b, i) {
+                // 三型动作 → botplay 的 botAction(回文本/命令/跳转), 与卡片发送行为一致
+                var act = b.action === 'url' ? { type: 'jump_url', text: '', url: b.data }
+                  : (b.action === 'cmd' ? { type: 'command', text: b.data.replace(/^\//, ''), url: '' }
+                    : { type: 'reply_text', text: b.data, url: '' })
+                return { id: 'b' + (i + 1), label: b.label, style: 1, botAction: act, llmEffect: { mode: 'no_append', contextText: '' } }
+              }),
             }
             events.push(ev)
             return apiPost('group/botplay-events', { ns: state.ns || 'im-qqbot', events: events }).then(function (d2) {
@@ -2580,8 +2601,8 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           if (!tg.length) { chHint('先在「🎯 选目标」里勾选要群发的目标'); return }
           if (!window.confirm('确认把这卡片群发到 ' + tg.length + ' 个目标?\n\n' + tg.slice(0, 8).map(function (t2) { return '· ' + (t2.name || t2.peerId) }).join('\n') + (tg.length > 8 ? '\n…' : '') + '\n\n(高影响操作, 发送后 2 分钟内可逐目标撤回)')) return
           state.cardBusy = 'bc'; bcB.disabled = true; chHint('创建群发任务…')
-          var keyboard2 = v.btns.length ? { content: { rows: v.btns.map(function (b) { return { buttons: [{ id: b.id, render_data: { label: b.label, style: 1 }, action: { type: b.isUrl ? 0 : 2, permission: { type: 2 }, data: b.data, enter: !b.isUrl } }] } }) } } : undefined
-          apiPost('group/broadcast/create', { ns: state.ns || undefined, type: 'card', text: v.md, keyboard: keyboard2, targets: tg }).then(function (d) {
+          var cardButtons2 = v.btns.map(function (b) { return { label: b.label, action: b.action, payload: b.data } })
+          apiPost('group/broadcast/create', { ns: state.ns || undefined, type: 'card', text: v.md, cardButtons: cardButtons2.length ? cardButtons2 : undefined, targets: tg }).then(function (d) {
             if (!d || !d.ok || !d.task) { state.cardBusy = ''; bcB.disabled = false; chHint((d && d.error) || '创建失败'); return }
             return apiPost('group/broadcast/confirm', { ns: state.ns || undefined, task_id: d.task.task_id }).then(function (d2) {
               state.cardBusy = ''; bcB.disabled = false
@@ -2961,12 +2982,14 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             + '<div id="dk-card-preview" style="flex:1;min-height:140px;max-height:200px;overflow:auto;border:1px dashed #c9d8ff;border-radius:6px;padding:6px;font-size:12px;background:#fafbff;box-sizing:border-box"></div>'
             + '</div>'
           body += '<div class="dk-row" style="gap:6px;margin:2px 0 0"><span style="font-size:12px;color:#888;flex:none">按钮:</span>'
-            + '<textarea id="dk-card-btns" placeholder="每行一个: 文字|指令&#10;如: 👍 点我|/test 按钮1&#10;跳转: 🔗 GitHub|https://…|url" style="flex:1;min-height:72px;font-size:12px;font-family:monospace;box-sizing:border-box;padding:6px;border:1px solid #ddd;border-radius:6px;resize:vertical">' + esc(state.cardBtns) + '</textarea></div>'
-          // 常显格式说明(2026-09-10 主人要求: 文本怎么写按钮要有说明)
+            + '<textarea id="dk-card-btns" placeholder="每行一个: 文字|内容|类型&#10;先回文本: ✅ 签到|✅ 签到成功 +1 🎉&#10;执行命令: 查天气|/weather|cmd&#10;跳转链接: 🔗官网|https://qq.com|url" style="flex:1;min-height:72px;font-size:12px;font-family:monospace;box-sizing:border-box;padding:6px;border:1px solid #ddd;border-radius:6px;resize:vertical">' + esc(state.cardBtns) + '</textarea></div>'
+          // 常显格式说明(2026-09-10 主人要求: 文本怎么写按钮要有说明; 三型动作 2026-09-10 晚扩充)
           body += '<div class="dk-msg" style="font-size:11px;line-height:1.6;color:#666;background:#f8f6ff;border:1px solid #eee7ff;border-radius:6px;padding:4px 8px;margin:2px 0">'
-            + '<b>按钮写法</b>(上面框里一行一个, 竖线 <code>|</code> 分隔):<br>'
-            + '· <b>指令按钮</b> — <code>文字|指令</code>　例: <code>签到|/checkin</code> 或 <code>点我|bot-status</code>(点击后把该指令发给机器人, 带 <code>/</code> 或不带都行)<br>'
-            + '· <b>跳转按钮</b> — <code>文字|网址|url</code>　例: <code>🔗官网|https://qq.com|url</code>(点击直接跳网页)<br>'
+            + '<b>按钮写法</b>(上面框里一行一个, 竖线 <code>|</code> 分隔, 第三段可省):<br>'
+            + '· <b>回文本</b> — <code>文字|要回的文本</code>　例: <code>✅ 签到|✅ 签到成功 +1 🎉</code>(点击后机器人直接回这句, 不吵 AI)<br>'
+            + '· <b>执行命令</b> — <code>文字|/指令</code>　例: <code>查天气|/weather</code>(点击后执行该斜杠命令)<br>'
+            + '· <b>跳转链接</b> — <code>文字|网址</code>　例: <code>🔗官网|https://qq.com</code>(点击直接跳网页)<br>'
+            + '· 想写死类型就加第三段: <code>|text</code>(回文本) / <code>|cmd</code>(命令) / <code>|url</code>(跳转)<br>'
             + '· 每行一个按钮, 最多 25 个(5行×5列, 由"每行按钮"控制布局)</div>'
           body += '<div class="dk-row" style="gap:8px">'
             + '<button class="dk-btn ok" id="dk-card-send"' + (state.cardBusy ? ' disabled' : '') + '>🚀 发送卡片</button>'
@@ -3223,13 +3246,14 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             state.cardMd = (ev.contentText && String(ev.contentText).trim())
               ? String(ev.contentText)
               : ('## 🎮 ' + (ev.name || '互动事件') + '\n\n点下方按钮完成互动 👇')
-            // 按钮 → 卡片编辑器的文本格式(文字|指令 或 文字|url|url)
+            // 按钮 → 卡片编辑器的文本格式(**显式带类型后缀**, 三种动作都能无损搬过来):
+            //   jump_url → 文字|网址|url　command → 文字|指令|cmd　reply_text → 文字|文本|text
             state.cardBtns = (ev.buttons || []).map(function (bb) {
               var act = (bb && bb.botAction) || {}
               var label = (bb && bb.label) || '按钮'
               if (act.type === 'jump_url') return label + '|' + String(act.url || '') + '|url'
-              if (act.type === 'command') return label + '|/' + String(act.text || '').replace(/^\//, '')
-              return label + '|' + String(act.text || '')
+              if (act.type === 'command') return label + '|' + String(act.text || '').replace(/^\//, '') + '|cmd'
+              return label + '|' + String(act.text || '') + '|text'
             }).join('\n')
             state.tab = 'card'
             paintBody()
@@ -3468,6 +3492,19 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           renderChatList()
         })
       }
+      // 文本里的 URL → 可点链接(2026-09-10 主人实测: "这个 jump_url 进不了 dock 聊天界面" ——
+      // 卡片分享/ARK 里的 jump_url 在气泡里是纯文本, 点不动)。
+      // ⚠️ 必须在 esc() 之后调用: 只对**已转义**的纯文本做替换, 拼进 href 的也是转义后的串 → 不开新的 XSS 面。
+      function linkifyText(escaped) {
+        return String(escaped || '').replace(/https?:\/\/[^\s<>"']+/g, function (u) {
+          // 尾随标点不入链接(中文标点也剥), 避免把「。」「）」吃进 URL
+          var trail = ''
+          var m = u.match(/[.,;:!?，。；：！？、）)】」』"']+$/)
+          if (m) { trail = m[0]; u = u.slice(0, u.length - trail.length) }
+          if (!u) return trail
+          return '<a class="dk-link" href="' + u + '" target="_blank" rel="noopener noreferrer" title="' + u + '">' + u + '</a>' + trail
+        })
+      }
       function renderChatList(keepScrollOffset) {
         var box = document.getElementById('dk-chat-box')
         if (!box) return
@@ -3503,7 +3540,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             if (k === 'video') return '<video class="dk-video" controls preload="metadata" src="' + esc(u) + '"></video>'
             return '<img class="dk-img" loading="lazy" data-lb="' + esc(u) + '" src="' + esc(u) + '" referrerpolicy="no-referrer" alt="[图片]" onerror="this.outerHTML=\'<span style=color:#888>[图加载失败]</span>\'">'
           }).join('')
-          var txt = it.text ? '<div>' + esc(mdPlain(it.text)) + '</div>' : ''
+          var txt = it.text ? '<div>' + linkifyText(esc(mdPlain(it.text))) + '</div>' : ''
           return '<div class="dk-crow ' + (isOut ? 'out' : 'in') + '">'
             + '<div class="dk-ava">' + ava + '</div>'
             + '<div class="dk-cmain">'
