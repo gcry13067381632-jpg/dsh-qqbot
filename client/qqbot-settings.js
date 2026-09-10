@@ -2495,6 +2495,30 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             chHint(d && d.ok ? '✅ 卡片已发送!' : ((d && d.err && d.err.human) || (d && d.error) || '发送失败'))
           }).catch(function () { state.cardBusy = ''; sendB.disabled = false; chHint('发送异常') })
         }
+        // 💾 存为事件: 当前 markdown+按钮 → botplay 事件(写到独立文件, /botplay 一键发卡)
+        var saveB = panel.querySelector('#dk-card-save')
+        if (saveB) saveB.onclick = function () {
+          var md = mdEl ? mdEl.value.trim() : ''
+          var btns = parseCardButtons(btnsEl ? btnsEl.value : '')
+          if (!md) { chHint('markdown 内容不能为空'); return }
+          if (!btns.length) { chHint('请至少配一个按钮(存为事件需要按钮)'); return }
+          state.cardBusy = 'save'; saveB.disabled = true; chHint('保存中…')
+          api('group/botplay-events', state.ns ? 'ns=' + encodeURIComponent(state.ns) : '').then(function (d) {
+            var events = (d && d.ok && Array.isArray(d.events)) ? d.events : []
+            var ev = {
+              id: 'card' + Date.now().toString(36).slice(-6),
+              name: md.replace(/^#+\s*/, '').split('\n')[0].slice(0, 12) || '卡片',
+              contentText: md, maxClicks: 0, expireSec: 600, buttonsPerRow: 1,
+              perm: { type: 'all', userIds: [] },
+              buttons: btns.map(function (b, i) { return { id: 'b' + (i + 1), label: b.label, style: 1, botAction: b.isUrl ? { type: 'jump_url', text: '', url: b.data } : { type: 'command', text: b.data.replace(/^\//, ''), url: '' }, llmEffect: { mode: 'no_append', contextText: '' } } }),
+            }
+            events.push(ev)
+            return apiPost('group/botplay-events', { ns: state.ns || 'im-qqbot', events: events }).then(function (d2) {
+              state.cardBusy = ''; saveB.disabled = false
+              chHint(d2 && d2.ok ? ('✅ 已存为事件「' + ev.name + '」(id=' + ev.id + '), 群内发 /botplay ' + ev.id + ' 可一键发卡') : '保存失败: ' + ((d2 && (d2.error || d2.msg)) || '未知错误'))
+            })
+          }).catch(function () { state.cardBusy = ''; saveB.disabled = false; chHint('保存异常') })
+        }
       }
       function sendNow() {
         var t = (state.sendText || '').trim()
@@ -2812,6 +2836,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             + '<textarea id="dk-card-btns" placeholder="每行一个: 文字|指令&#10;如: 👍 点我|/test 按钮1&#10;跳转: 🔗 GitHub|https://…|url" style="flex:1;min-height:72px;font-size:12px;font-family:monospace;box-sizing:border-box;padding:6px;border:1px solid #ddd;border-radius:6px;resize:vertical">' + esc(state.cardBtns) + '</textarea></div>'
           body += '<div class="dk-row" style="gap:8px">'
             + '<button class="dk-btn ok" id="dk-card-send"' + (state.cardBusy ? ' disabled' : '') + '>🚀 发送卡片</button>'
+            + '<button class="dk-btn" id="dk-card-save"' + (state.cardBusy ? ' disabled' : '') + '>💾 存为事件</button>'
             + '<span class="dk-msg" style="flex:1;text-align:right;font-size:11px;color:#888">最多 25 按钮(5行×5列)</span></div>'
           body += '<div class="dk-msg" id="dk-card-hint" style="color:#2f9e44;margin:2px 0"></div>'
         } else if (state.tab === 'bp') {
@@ -3149,17 +3174,18 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         el.textContent = '共 ' + c.n + ' 个 · 每行 ' + c.per + ' 个 → ' + c.rows + ' 行' + (over ? '(超 QQ 上限 5 行, 发卡会报错!)' : '(≤5 行 ✅)')
         el.style.color = over ? '#e03131' : '#2f9e44'
       }
-      // 🎮 互动事件装配器: 读/存(全量 patch 只带 botplayEvents; settings.update 部分合并 + revision 乐观锁)
+      // 🎮 互动事件装配器: 读/存走独立文件路由(2026-09-10 M4.3: {dataRoot}/.qqbot/botplay-events.json)
       function loadBotplay() {
         if (state.tab !== 'bp') return
-        fetch(READ + (state.ns ? '?' + outNsQ() : '')).then(function (r) { return r.json() }).then(function (d) {
-          if (d && d.value) {
-            state.bpEvents = Array.isArray(d.value.botplayEvents) ? JSON.parse(JSON.stringify(d.value.botplayEvents)) : []
-            if (!state.bpDraft && state.bpEvents.length) { state.bpSel = 0; state.bpDraft = JSON.parse(JSON.stringify(state.bpEvents[0])) }
-            else if (!state.bpEvents.length) { state.bpSel = null; state.bpDraft = null }
-            paintBody()
-          }
-        }).catch(function () {})
+        api('group/botplay-events', state.ns ? 'ns=' + encodeURIComponent(state.ns) : '')
+          .then(function (d) {
+            if (d && d.ok && Array.isArray(d.events)) {
+              state.bpEvents = JSON.parse(JSON.stringify(d.events))
+              if (!state.bpDraft && state.bpEvents.length) { state.bpSel = 0; state.bpDraft = JSON.parse(JSON.stringify(state.bpEvents[0])) }
+              else if (!state.bpEvents.length) { state.bpSel = null; state.bpDraft = null }
+              paintBody()
+            }
+          }).catch(function () {})
       }
       function saveBotplay() {
         var hint = panel.querySelector('#dk-bp-hint')
@@ -3182,26 +3208,10 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         state.bpEvents.forEach(function (ev) { var c = bpRowCount(ev); if (c.rows > 5 && !badEv) badEv = { name: ev.name, per: c.per, rows: c.rows } })
         if (badEv) { ok('⚠️ 事件「' + badEv.name + '」每行 ' + badEv.per + ' 个 → ' + badEv.rows + ' 行, 超 QQ 5 行上限, 未保存'); return }
         if (hint) hint.textContent = '保存中…'
-        var trySave = function (curVal, curRev) {
-          var patch = Object.assign({}, curVal || {}, { botplayEvents: state.bpEvents })
-          return fetch(UPDATE, {
-            method: 'POST', headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ ns: state.ns || undefined, patch: patch, expectedRevision: curRev }),
-          }).then(function (r) { return r.json().catch(function () { return null }) }).then(function (d) {
-            if (d && d.value) {
-              state.bpEvents = Array.isArray(d.value.botplayEvents) ? d.value.botplayEvents : []
-              var h2 = panel.querySelector('#dk-bp-hint'); if (h2) h2.textContent = '✅ 已保存(共 ' + state.bpEvents.length + ' 个事件, live 热更已生效)' 
-            } else {
-              var conflicted = !!(d && d.error && String(d.error).indexOf('changed since it was read') >= 0)
-              if (conflicted) { fetch(READ + (state.ns ? '?' + outNsQ() : '')).then(function (r) { return r.json() }).then(function (dd) { if (dd && dd.value) trySave(dd.value, dd.revision) }).catch(function () {}) }
-              else { var h3 = panel.querySelector('#dk-bp-hint'); if (h3) h3.textContent = '保存失败: ' + ((d && d.error) || '未知错误') }
-            }
-          }).catch(function () { var h4 = panel.querySelector('#dk-bp-hint'); if (h4) h4.textContent = '保存异常' })
-        }
-        fetch(READ + (state.ns ? '?' + outNsQ() : '')).then(function (r) { return r.json() }).then(function (d0) {
-          if (d0 && d0.value) trySave(d0.value, d0.revision)
-          else { var h5 = panel.querySelector('#dk-bp-hint'); if (h5) h5.textContent = '保存失败: 无法读取当前设置' }
-        }).catch(function () { var h6 = panel.querySelector('#dk-bp-hint'); if (h6) h6.textContent = '保存失败: 读取异常' })
+        apiPost('group/botplay-events', { ns: state.ns || 'im-qqbot', events: state.bpEvents }).then(function (d) {
+          if (d && d.ok) { if (hint) hint.textContent = '✅ 已保存(共 ' + state.bpEvents.length + ' 个事件, live 热更已生效)' }
+          else { if (hint) hint.textContent = '保存失败: ' + ((d && (d.error || d.msg)) || '未知错误') }
+        }).catch(function () { if (hint) hint.textContent = '保存异常' })
       }
       // ── 💬 聊天视图: 数据拉取 / QQ 风格气泡渲染 / 顶部滚动分页 ──
       function chatPeerReady() {

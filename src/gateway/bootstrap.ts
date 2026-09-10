@@ -30,6 +30,7 @@ import { handleGroupJoinRequestEvent } from '../features/group-join-request.js';
 import { handleGroupMemberAddEvent, handleGroupAddRobotEvent } from '../features/group-hub.js';
 import { registerSessionManager, setBotOnline } from '../features/session-registry.js';
 import { BotplayController, registerBotplayController, setBotplayTriggerImpl, setBotplayCatalogImpl } from '../features/botplay.js';
+import { readBotplayEvents } from '../features/botplay-store.js';
 import { PresetSwitcherController, setPresetCardImpl } from '../features/preset-switcher.js';
 import { buildCommandList } from '../commands/index.js';
 import { SettingsReader } from '../model/settings-reader.js';
@@ -396,7 +397,9 @@ export async function bootstrapGateway(
     manager,
     sender,
     logger,
-    () => (Array.isArray(config.botplayEvents) ? config.botplayEvents : []),
+    // 事件配置从 {dataRoot}/.qqbot/botplay-events.json 现读(2026-09-10 M4.3 独立存储,
+    // 自动迁移 settings 旧数据; 文件缺失回退 settings 现值)
+    () => readBotplayEvents(dataRootOf(config), () => (Array.isArray(config.botplayEvents) ? config.botplayEvents : [])),
     () => (Array.isArray(config.groupAdmin?.owners) ? config.groupAdmin.owners : []),
     () => stickerDataDir,
   );

@@ -848,6 +848,25 @@ export function apply(ctx) {
   function readPendingJson(cwd) {
     try { return JSON.parse(readFileSync(join(cwd, '.qqbot', 'join-pending.json'), 'utf8') || '{}'); } catch { return {}; }
   }
+  // ── botplay 事件独立文件存储(2026-09-10 M4.3): {dataRoot}/.qqbot/botplay-events.json
+  //    (主人定: 事件配置跟随账号 dataRoot, 和群管台账同目录, 不再和 settings 开关挤一起)
+  function readBotplayEventsFile(cwd) {
+    try { return JSON.parse(readFileSync(join(cwd, '.qqbot', 'botplay-events.json'), 'utf8') || '{}'); } catch { return {}; }
+  }
+  function writeBotplayEventsFile(cwd, events) {
+    try {
+      mkdirSync(join(cwd, '.qqbot'), { recursive: true });
+      const f = join(cwd, '.qqbot', 'botplay-events.json');
+      const tmp = f + '.tmp-' + Date.now();
+      writeFileSync(tmp, JSON.stringify({ version: 1, events: Array.isArray(events) ? events : [] }, null, 2), 'utf8');
+      renameSync(tmp, f);
+      return true;
+    } catch { return false; }
+  }
+  // 从 settings 现值取 botplayEvents(迁移/兜底用)
+  function botplayEventsFromSettings(ns) {
+    try { const v = viewOf(ctx.settings, ns); const ev = v && v.value && v.value.botplayEvents; return Array.isArray(ev) ? ev : []; } catch { return []; }
+  }
   const NSQ = (u) => (u.searchParams.get('ns') || '').trim() || undefined;
   const GQ = (u) => (u.searchParams.get('gid') || '').trim();
 
@@ -1173,6 +1192,43 @@ export function apply(ctx) {
       audit(gc.bot.cwd, { ev: 'chat.send-card', ns: gc.bot.id, gid, mdLen: md.length, kbRows: kb ? kb.content.rows.length : 0, ok: r.ok, code: r.ok ? undefined : (r.err && r.err.code) });
       writeJson(res, 200, r.ok ? { ok: true, msg: '✅ 卡片已发送', id: r.data && r.data.id } : { ok: false, err: r.err });
     } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
+  });
+
+  // ── botplay 事件独立文件存储(M4.3): GET 读 / POST 写, 均按 ns 取 dataRoot ──
+  route(ctx, 'GET', '/api/qqbot-settings/group/botplay-events', async (req, res) => {
+    const ns = NSQ(req.url);
+    const bot = nsBot(ns);
+    if (!bot || !bot.cwd) return writeJson(res, 400, { error: '找不到该账号实例' });
+    const fromFile = readBotplayEventsFile(bot.cwd);
+    let events = Array.isArray(fromFile.events) ? fromFile.events : (Array.isArray(fromFile) ? fromFile : []);
+    // 文件缺失/空 → 迁移 settings 旧数据(botplay 事件曾存 settings.yaml, 2026-09-10 前)
+    if (events.length === 0) {
+      const legacy = botplayEventsFromSettings(bot.ns);
+      if (Array.isArray(legacy) && legacy.length > 0) { writeBotplayEventsFile(bot.cwd, legacy); events = legacy; }
+    }
+    writeJson(res, 200, { ok: true, events, source: 'file' });
+  });
+
+  route(ctx, 'POST', '/api/qqbot-settings/group/botplay-events', async (req, res) => {
+    const body = await readJsonBody(req);
+    if (!body || typeof body !== 'object') return writeJson(res, 400, { error: 'bad body' });
+    const ns = String(body.ns || 'im-qqbot').trim();
+    const bot = nsBot(ns);
+    if (!bot || !bot.cwd) return writeJson(res, 400, { error: '找不到该账号实例' });
+    if (!Array.isArray(body.events)) return writeJson(res, 400, { error: 'events 必须为数组' });
+    const okFile = writeBotplayEventsFile(bot.cwd, body.events);
+    // settings 现值同步清空(2026-09-10: 事件已独立文件, settings 里残留旧数组会与新文件重复/歧义 → 置空)
+    let okSettings = true;
+    try {
+      const cur = viewOf(ctx.settings, bot.ns);
+      const curVal = (cur && cur.value) || {};
+      if (curVal.botplayEvents !== undefined && Array.isArray(curVal.botplayEvents) && curVal.botplayEvents.length > 0) {
+        const patch = Object.assign({}, curVal, { botplayEvents: [] });
+        await ctx.settings.update(bot.ns, patch, (cur && cur.revision) || undefined);
+      }
+    } catch { okSettings = false; }
+    audit(bot.cwd, { ev: 'botplay.events-save', ns: bot.ns, n: body.events.length, okFile, okSettings });
+    writeJson(res, 200, { ok: okFile, msg: okFile ? '✅ 已保存(独立文件, live 热更已生效)' : '写入文件失败' });
   });
 
   // ── M3 群发任务队列(2026-09-10): 持久化状态机 draft→queued→sending→done, 二次确认, 可中止/撤回 ──
