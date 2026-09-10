@@ -35,7 +35,9 @@ $checks = [ordered]@{
   'host: send-card'        = $h.Contains('chat/send-card')
   'host: botplay-events'   = $h.Contains('group/botplay-events')
   'host: broadcast'        = $h.Contains('group/broadcast/create')
-  'host: approval_strategy'= $h.Contains('group/approval_strategy/list')
+  # 反向校验: 已移除的功能不应残留(2026-09-10 主人定删自动审批策略)
+  'host: 审批策略已移除'   = -not $h.Contains('approval_strategy')
+  'client: 审批UI已移除'   = -not $c.Contains('dk-ap-create')
 }
 $fail = 0
 foreach ($k in $checks.Keys) {

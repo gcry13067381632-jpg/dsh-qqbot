@@ -2152,9 +2152,8 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           state.gaMinCount = num('#dk-ga-mincount', 1)
           saveGroupAdmin()
         }
-        // M3 群发 + 自动审批策略
+        // M3 群发(自动审批策略已按主人要求移除 2026-09-10)
         bindBroadcastEvents()
-        loadApprovalStrategies()
       }
       function hubStatusText() {
         if (state.hubSid) return '已设: 会话 ' + state.hubSid.slice(0, 8) + '… ← 各群群事件(入群申请/新成员/被拉群)汇总注入这里'
@@ -2305,44 +2304,6 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           if (d && d.ok && Array.isArray(d.tasks)) { state.bcTasks = d.tasks; paintBody() }
         }).catch(function () {})
       }
-      function apListEl() { return panel && panel.querySelector('#dk-ap-list') }
-      function apHint(t) {
-        var el = panel && panel.querySelector('#dk-ap-hint')
-        if (el) el.textContent = t || ''
-      }
-      function loadApprovalStrategies() {
-        api('group/approval_strategy/list').then(function (d) {
-          var el = apListEl()
-          if (!el) return
-          if (!d || !d.ok) { el.textContent = '加载失败: ' + ((d && d.err && d.err.human) || (d && d.error) || '未知') ; return }
-          var ss = d.strategies || []
-          if (!ss.length) { el.textContent = '暂无策略(默认关闭)。勾选群 + 填白名单手机号 → 创建策略即可开启自动审批。' ; return }
-          el.innerHTML = ''
-          ss.forEach(function (s) {
-            var row = document.createElement('div')
-            row.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:2px 0'
-            var info = document.createElement('span')
-            info.style.cssText = 'flex:1;min-width:0'
-            info.textContent = (s.is_enable === 'on' ? '🟢' : '⚪') + ' ' + (s.strategy_id || '').slice(0, 8) + ' · ' + (s.group_openids || []).length + ' 群 · 白名单 ' + (s.whitelist_user_count || 0) + ' 人'
-            row.appendChild(info)
-            var btns = document.createElement('span')
-            btns.style.cssText = 'display:flex;gap:4px;flex:none'
-            ;[['▶ 执行', function () { apiPost('group/approval_strategy/execute', { ns: state.ns || undefined, strategy_id: s.strategy_id }).then(function (d2) { apHint((d2 && d2.msg) || ((d2 && d2.err && d2.err.human) || '执行结果未知')) }) }],
-              ['⏹ 停用', function () { apiPost('group/approval_strategy/update', { ns: state.ns || undefined, strategy_id: s.strategy_id, op: 'add', is_enable: s.is_enable === 'on' ? 'off' : 'on' }).then(function (d2) { apHint(d2 && d2.ok ? '已切换' : ((d2 && d2.err && d2.err.human) || '失败')); loadApprovalStrategies() }) }],
-              ['🗑 删', function () { apiPost('group/approval_strategy/delete', { ns: state.ns || undefined, strategy_id: s.strategy_id }).then(function (d2) { apHint(d2 && d2.ok ? '已删除' : ((d2 && d2.err && d2.err.human) || '失败')); loadApprovalStrategies() }) }],
-            ].forEach(function (b) {
-              var bEl = document.createElement('button')
-              bEl.className = 'dk-btn'
-              bEl.style.cssText = 'font-size:10px;padding:1px 5px'
-              bEl.textContent = b[0]
-              bEl.onclick = b[1]
-              btns.appendChild(bEl)
-            })
-            row.appendChild(btns)
-            el.appendChild(row)
-          })
-        }).catch(function () { var el = apListEl(); if (el) el.textContent = '加载异常' })
-      }
       function bindBroadcastEvents() {
         if (!panel) return
         var sendB = panel.querySelector('#dk-roster-send')
@@ -2383,34 +2344,6 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             if (!hit) { bcHint('未匹配到该目标'); return }
             apiPost('group/broadcast/recall', { ns: state.ns || undefined, task_id: rn, peerId: hit.peerId }).then(function (d) { bcHint(d && d.ok ? '✅ 已撤回' : ((d && d.err) || '撤回失败')) })
           }
-        }
-        // 🤖 自动审批策略
-        var apRef = panel.querySelector('#dk-ap-refresh')
-        if (apRef) apRef.onclick = function () { loadApprovalStrategies() }
-        var apUse = panel.querySelector('#dk-ap-usegids')
-        if (apUse) apUse.onclick = function () {
-          var tg = rosterSelectedTargets().filter(function (t2) { return t2.scope === 'group' })
-          var g = panel.querySelector('#dk-ap-gids')
-          if (g) g.value = tg.map(function (t2) { return t2.peerId }).join(',')
-          if (!tg.length) apHint('当前勾选里没有群(只支持群)')
-        }
-        var apC = panel.querySelector('#dk-ap-create')
-        if (apC) apC.onclick = function () {
-          var g = panel.querySelector('#dk-ap-gids')
-          var w = panel.querySelector('#dk-ap-wl')
-          var gids = (g && g.value || '').split(',').map(function (s) { return s.trim() }).filter(Boolean)
-          var wl = (w && w.value || '').split(',').map(function (s) { return s.trim() }).filter(Boolean)
-          if (!gids.length) { apHint('请先用「用勾选群」填入至少一个群'); return }
-          if (!wl.length) { apHint('请填白名单手机号(逗号分隔)'); return }
-          apiPost('group/approval_strategy/create', { ns: state.ns || undefined, group_openids: gids, is_enable: 'on' }).then(function (d) {
-            if (d && d.ok && d.data && d.data.strategy_id) {
-              return apiPost('group/approval_strategy/whitelist', { ns: state.ns || undefined, strategy_id: d.data.strategy_id, op: 'add', users: wl }).then(function (d2) {
-                apHint(d2 && d2.ok ? '✅ 策略已创建并写入白名单' : ('策略已建, 白名单失败: ' + ((d2 && d2.err && d2.err.human) || '未知')))
-                loadApprovalStrategies()
-              })
-            }
-            apHint((d && d.err && d.err.human) || (d && d.error) || '创建失败')
-          }).catch(function () { apHint('创建异常') })
         }
       }
       // ── 📝 Markdown 卡片编辑器(2026-09-10): 源码+实时预览+按钮 → send-card 发送 ──
@@ -2798,19 +2731,6 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             }
             body += '</div>'
           }
-          // ── M3 入群自动审批策略(dock 开关默认关) ──
-          body += '<div style="border:1px solid #e2d9ff;border-radius:8px;padding:6px 8px;margin:2px 0 6px;background:#faf8ff">'
-            + '<div class="dk-row" style="margin:0"><b style="font-size:13px">🤖 入群自动审批策略(M3)</b>'
-            + '<span class="dk-msg" style="flex:1;text-align:right;font-size:11px;color:#888">官方白名单手机号自动放行</span>'
-            + '<button class="dk-btn" id="dk-ap-refresh">🔄</button></div>'
-            + '<div class="dk-msg" id="dk-ap-list" style="font-size:11px;color:#555;line-height:1.6"></div>'
-            + '<div class="dk-row" style="gap:6px;margin-top:4px;flex-wrap:wrap">'
-            + '<input class="qqs-txt" id="dk-ap-gids" placeholder="群选择(用上面勾选的群)" value="" style="flex:1;min-width:120px;font-size:12px;padding:3px 6px" readonly title="点「用勾选群」填入">'
-            + '<button class="dk-btn" id="dk-ap-usegids" title="把上面勾选的群填入">用勾选群</button>'
-            + '<input class="qqs-txt" id="dk-ap-wl" placeholder="白名单手机号(逗号分隔)" value="" style="flex:1;min-width:140px;font-size:12px;padding:3px 6px">'
-            + '<button class="dk-btn ok" id="dk-ap-create">➕ 创建策略</button></div>'
-            + '<div class="dk-msg" id="dk-ap-hint" style="font-size:11px;color:#888;line-height:1.5;margin-top:2px">规则: 机器人需为群管理员才生效; 每机器人最多 20 策略; 白名单=手机号; 「执行」触发全量扫描(异步约 10 分钟)。默认关闭, 显式创建才开启。</div>'
-            + '</div>'
         } else if (state.tab === 'out') {
           var om = state.outMode || 'adaptive'
           if (om === 'nothink') body += '<div class="dk-msg" style="color:#c23131;margin:2px 0">⚠️ 当前为「完全不思考」(设置页开启): QQ 入站不唤醒 AI。发 /outmode adaptive 可唤醒。</div>'
@@ -2910,7 +2830,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         if (state.tab === 'chat') renderChatList()
         if (state.tab === 'join') renderJoinList()
         if (state.tab === 'mute') { renderMemberList(); renderMuteList() }
-        if (state.tab === 'roster') { renderRosterList(); bindRosterEvents(); loadHubState(); loadBroadcastTasks(false); loadApprovalStrategies() }
+        if (state.tab === 'roster') { renderRosterList(); bindRosterEvents(); loadHubState(); loadBroadcastTasks(false) }
         // 首次进入聊天 tab 自动拉最新一页
         if (state.tab === 'chat' && !state.chatItems.length && !state.chatBusy) loadChat(true)
         setTimeout(layoutPanel, 0)
