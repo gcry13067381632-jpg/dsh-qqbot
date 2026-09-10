@@ -68,6 +68,8 @@ export async function sendRichOutbound(
   cwd: string | undefined,
   logError?: (msg: string) => void,
   resolveTarget?: () => ReplyTarget,
+  /** passive 模式(2026-09-10 主人定): 正文分块 > 5 时只发最后一块(防 QQ 连发被吞, 只留重点) */
+  tailOnlyWhenMany = false,
 ): Promise<void> {
   const eff = (): ReplyTarget => (resolveTarget ? resolveTarget() : target);
   const hasRecall = containsRecall(text);
@@ -117,7 +119,12 @@ export async function sendRichOutbound(
       const clean = stripDirectives(seg.text);
       if (!clean.trim()) continue;
       // QQ 对同会话极短时间连发多条会吞/乱序: 文本分块之间加 ~500ms 间隔限速
-      const chunks = chunkMarkdownText(clean, limit).map((c) => String(c || '')).filter((c) => c.trim());
+      let chunks = chunkMarkdownText(clean, limit).map((c) => String(c || '')).filter((c) => c.trim());
+      // passive 收尾(2026-09-10 主人定): 正文块 > 5 时只发最后一块, 防被动模式连发超 QQ 上限被吞
+      if (tailOnlyWhenMany && chunks.length > 5) {
+        logError?.(`im-qqbot: passive 收尾: 正文 ${chunks.length} 块 > 5, 只发最后一块(共 ${chunks[chunks.length - 1]?.length ?? 0} 字符)`);
+        chunks = [chunks[chunks.length - 1] as string];
+      }
       for (let ci = 0; ci < chunks.length; ci++) {
         const chunk = chunks[ci] as string;
         if (chunk.trim()) await bot.sendMarkdown(eff(), chunk);
@@ -140,6 +147,8 @@ export class OutboundBuffer {
     streamingEnabled: boolean,
     private readonly cwd: string | undefined = undefined,
     private readonly resolveTarget?: () => ReplyTarget,
+    /** passive 收尾(2026-09-10 主人定): 正文块 >5 只发最后一块 */
+    private readonly tailOnlyWhenMany = false,
   ) {
     this.writer = streamingEnabled
       ? new StreamingWriter({ bot, target: record.replyTarget, logger, throttleMs: STREAM_THROTTLE_MS })
@@ -178,6 +187,7 @@ export class OutboundBuffer {
         this.cwd,
         (m) => this.logger.error(m),
         this.resolveTarget,
+        this.tailOnlyWhenMany,
       );
     } catch (err) {
       this.logger.error(`im-qqbot: flush failed: ${err instanceof Error ? err.message : String(err)}`);

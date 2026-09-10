@@ -152,6 +152,8 @@ class OutboundRouter {
         this.shouldStream(record),
         this.config.cwd,
         () => this.resolveTarget(record),
+        // passive 收尾(2026-09-10 主人定): 正文块 >5 只发最后一块
+        (this.config.outboundMode || 'adaptive') === 'passive',
       );
       this.buffers.set(sessionId, buffer);
     }
@@ -241,6 +243,8 @@ class OutboundRouter {
         this.config.cwd,
         (m) => this.logger.error(m),
         () => this.resolveTarget(_record),
+        // passive 收尾(2026-09-10 主人定): 正文块 >5 只发最后一块
+        (this.config.outboundMode || 'adaptive') === 'passive',
       );
     } catch (err) {
       this.logger.error(`im-qqbot: ${tag} failed: ${err instanceof Error ? err.message : String(err)}`);
