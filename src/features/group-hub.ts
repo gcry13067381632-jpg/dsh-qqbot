@@ -133,8 +133,7 @@ export async function notifyGroupHub(
       logger.warn?.(`[group-hub] hub 会话未找到: ${ga.hubSessionId.slice(0, 8)}…(该会话可能已重建/换绑, 请在 dock 重新设置)`);
       return 'no-session';
     }
-    const gidShort = tail(ev.gid, 8);
-    const lines = [`【群管·${ev.kind === 'join_request' ? '入群申请' : ev.kind === 'member_add' ? '新成员入群' : '机器人被拉入群'}】群 ${gidShort}`];
+    const lines = [`【群管·${ev.kind === 'join_request' ? '入群申请' : ev.kind === 'member_add' ? '新成员入群' : '机器人被拉入群'}】群 ${ev.gid}`];
     if (ev.kind === 'join_request') {
       lines.push(`申请人: ${ev.name ?? '(未知昵称)'}(${tail(ev.memberOpenid)})`);
       if (ev.extra) lines.push(ev.extra);

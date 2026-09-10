@@ -844,10 +844,16 @@ export async function apply(ctx: Context): Promise<void> {
       if (!gid) return { ok: false, msg: '当前不是群会话且未指定 gid, 无法确定目标群' };
       const r = await ga.client.listJoinRequests(gid);
       if (!r.ok) return { ok: false, msg: r.err.human };
+      // 补群名(官方 info 接口, 失败不阻断)
+      let gname = '';
+      try {
+        const gi = await ga.client.getGroupInfo(gid);
+        if (gi.ok && gi.data?.group_name) gname = gi.data.group_name;
+      } catch { /* 群名失败不影响 */ }
       const list = r.data.list;
-      if (list.length === 0) return { ok: true, msg: '当前没有待审批的入群申请 ✓' };
+      if (list.length === 0) return { ok: true, msg: `当前没有待审批的入群申请 ✓(群 ${gname ? `「${gname}」` : ''}${gid})` };
       const lines = list.map((j, i) => `${i + 1}. ${j.username ?? '?'} (${j.member_openid}) 来源:${j.apply_source ?? '?'} 验证:${verifyHuman(j.verify_info) || '-'}${j.risk_tips ? ` ⚠️${j.risk_tips}` : ''}`);
-      return { ok: true, msg: `入群申请 ${list.length} 条${args.gid ? `(群 …${gid.slice(-6)})` : ''}:\n${lines.join('\n')}` };
+      return { ok: true, msg: `入群申请 ${list.length} 条(群 ${gname ? `「${gname}」` : ''}${gid}):\n${lines.join('\n')}` };
     },
   });
 
