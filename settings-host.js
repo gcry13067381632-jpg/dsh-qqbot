@@ -3,7 +3,7 @@
  * ②表情包图库管理 API(列表/缩略图/批量/导入), 与 dsh-qqbot 共享同进程 store 单例。
  * 仅 web profile 装配; 同源 fence 抄 modsearch。
  */
-import { readFileSync, writeFileSync, rmSync, mkdirSync, existsSync, readdirSync, statSync, cpSync, renameSync, openSync, readSync, closeSync, createWriteStream } from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync, rmSync, mkdirSync, existsSync, readdirSync, statSync, cpSync, renameSync, openSync, readSync, closeSync, createWriteStream } from 'node:fs';
 import { extname, join, resolve, dirname, normalize, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
@@ -13,7 +13,14 @@ import { getStickerStore } from '@zaofan/dsh-qqbot/sticker-store';
 import { getScheduleStore } from '@zaofan/dsh-qqbot/schedule-store';
 
 export const name = 'qqbot-settings';
-export const inject = ['settings', 'webServer', 'agentPresets'];
+/**
+ * 服务依赖(2026-09-10 排查修复): 只声明必备的 settings/webServer。
+ * ⚠️ 曾声明 ['settings','webServer','agentPresets'] —— cordis 对 inject 声明的服务是
+ *    「等齐才调用 apply」语义: 若宿主未提供 agentPresets, 桥的 apply 永远不被调用,
+ *    所有 /api/qqbot-settings/* 路由都不会注册(实测表现为全部 404, 面板显示「无账号」)。
+ *    agentPresets 现改为可选: apply 内使用时判空降级(缺失时该路由返回 500 提示)。
+ */
+export const inject = ['settings', 'webServer'];
 
 const NS = 'im-qqbot';
 /**
@@ -114,6 +121,15 @@ function route(ctx, method, path, handler) {
 }
 
 export function apply(ctx) {
+  // ── 桥装载诊断(2026-09-10 排查路由全 404): 落 ~/.dsh/qqbot-bridge-diag.log ──
+  // 用途: 宿主重启后可确认 apply 是否真的被 cordis 调用(以及当时 ctx 上有哪些服务)。
+  try {
+    const services = ['settings', 'webServer', 'agentPresets'].map((s) => s + '=' + (ctx && ctx[s] ? 'Y' : 'N')).join(' ');
+    appendFileSync(
+      join(homedir(), '.dsh', 'qqbot-bridge-diag.log'),
+      `[${new Date().toISOString()}] bridge apply 被调用 inject=${JSON.stringify(inject)} ${services}\n`,
+    );
+  } catch { /* 诊断失败不影响装载 */ }
   // ── 临时诊断(排查"设置读取失败"): settings 服务可用性 + 已注册命名空间 ──
   route(ctx, 'GET', '/api/qqbot-settings/_debug', async (_req, res) => {
     try {
