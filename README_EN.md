@@ -268,6 +268,7 @@ Then run `/tools-reload` (or ask the AI to call the `tools_reload` tool). Comman
 - Hot reload: `/tools-reload` (or call `tools_reload`) picks up **new** tools; **editing a tool under the same name is skipped by the registry → rename it or restart the host**; commands always need a restart.
 - Limitation: extensions **cannot register button callbacks** — those require a botplay event or the dock card editor. Extension-only flows are "card + user replies a number", with the AI acting as the state machine.
 - Example (song request): fetch a search API → build a markdown card (cover / title / artist / lyrics) → `sender.sendMarkdown(replyTarget, card)` → optionally `sender.sendMedia(...)` for a preview → return `{ ok: true, msg: 'card sent' }`.
+- API reference: when a field/event/error code is unclear, read the official QQ bot api-v2 docs <https://bot.q.qq.com/wiki/develop/api-v2/> instead of guessing (button `action.type` 0=link / 1=callback / 2=command, keyboard 5-row limit, error codes…).
 
 ## Core Modules
 
