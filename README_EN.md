@@ -43,15 +43,21 @@ Right: sticker-battle in action — the bot answers with stickers from its own l
 
 ### For developers
 - Standard tools available inside QQ sessions: `send_media` / `recall_message` / `list_stickers` / `sticker_tag` / `sticker_untagged` / `schedule_timer` / `schedule_cancel` …, routed per bot account.
-- **Group admin tools** (`group_join_requests` / `group_approve_join` / `group_mute_state` / `group_mute_member` …): join-request approval and mute management — requires the bot to be a group admin; inside a group session the current group is used, elsewhere the configured `manageGroup` applies. **Never auto-approve: approval always awaits the owner's instruction.**
+- **Group admin tools** (`group_join_requests` / `group_approve_join` / `group_mute_state` / `group_mute_member` …): join-request approval and mute management — requires the bot to be a group admin; inside a group session the current group is used, elsewhere the configured `manageGroup` applies. **Never auto-approve: first run `group_join_requests`, report the applicant + verify text to the owner, then act on an explicit "approve/deny" instruction (`group_approve_join`).**
 - **Plain text can send media or recall messages**: writing `[MEDIA:image|path-or-url]` in a reply turns it into a real image message (`voice`/`video`/`file` work the same); a lone `[RECALL]` line recalls the bot's own last message.
-- **Cross-session messaging (generic capability, v1.1.0+)**: `session_list` lists all sessions (including latent groups, reliable after restart); `session_wake` sends a message to a target session/group and wakes its LLM (web-injected for the AI), optionally also delivering to the bound QQ group/private chat via the QQBot channel (for humans), auto-tagged with `【来自会话 xxx…】`; supports `media` for cross-group images. Addressing goes through the module-level session-registry (precise across instances); sessions are lazily created / host-resumed when absent — **any session can be found and woken after a restart**.
-- **Join-request dual channel (v1.1.4+)**: the live QQ event arrives as an 【入群申请】 **message note** (silent append, no wake — the AI sees it on its next turn); the polling fallback arrives as an 【审批轮询】 **system alert** (wakes the AI to handle it). When the requesting group is the group-manager (hub) session itself, the note only goes to the hub; ordinary groups follow the dock switches below.
-- **Four independent group-admin switches (dock settings, v1.1.4+)**: `唤醒AI` = wake the hub-session AI; `注入群管会话` = hub web note (no wake); `通知普通群` = note the requesting group's web session (no wake); `唤醒普通群AI` = wake the requesting group's AI. Effective on both the event and polling paths, independently.
-- **Model binding (v1.1.4+)**: model changes in the Web settings persist across restarts (QQ-side overrides take precedence); `/model` lists only the current provider's models.
-- **Inbound `@bot` long-id cleanup (v1.1.4+)**: the long bot openid in inbound mentions is replaced by the short marker `@bot` (saves tokens); outbound `<@other-openid>` mentions for @-ing people are untouched.
-- **Multi-instance isolation (v1.1.4+)**: sticker stores / scheduled timers / sticker gates / history buffers are isolated per instance (`settingsNs`) — no more cross-instance bleed.
+- **Cross-session messaging**: `session_list` lists all sessions (incl. latent groups); `session_wake(session_id or scope+peer_id, text, send_qq?, media?)` sends a message to a target session/group and wakes its LLM, optionally also delivering to the bound QQ group/private chat (for humans); `media` supports cross-group images.
+- **Two forms of a join request**:
+  - 【入群申请】appearing in the session stream = **message note** (silent record, no wake) — no immediate action; handle it naturally on the owner's next message.
+  - 【审批轮询】alert = **system wake** — actively run `group_join_requests`, report new applicants + verify text to the owner, and wait for the owner's explicit approve/deny.
+  - A message containing `@bot` means someone @-ed this bot (`@bot` is yourself).
 - Host-level fixes (workspace session attachment, upstream PR #21) are included — idempotent and fully fail-soft.
+
+**What's new in v1.1.4** (user-facing):
+- **Join-request dual channel**: live QQ event = 【入群申请】 message note (silent, no wake); polling fallback = 【审批轮询】 system alert (wakes the AI to handle it). Notes land in the group-manager (hub) session; ordinary groups follow the dock switches.
+- **Four independent group-admin switches (dock settings)**: 唤醒AI (wake hub-session AI) / 注入群管会话 (hub web note) / 通知普通群 (note the requesting group) / 唤醒普通群AI (wake the requesting group's AI) — effective on both the event and polling paths.
+- **Inbound `@bot` long-id cleanup**: the bot's own openid in inbound mentions is shortened to `@bot` (saves tokens); outbound `<@other-openid>` mentions are untouched.
+- **Web model changes persist** across restarts (QQ-side overrides take precedence); `/model` lists only the current provider's models.
+- **Multi-instance isolation**: sticker stores / timers / gates / history buffers are isolated per instance (`settingsNs`).
 
 > 🛡️ This repo contains **no** bot credentials, sticker data, logs or personal paths (cleaned before publishing). Inject AppID/AppSecret via env vars or the Web panel — **never commit them**.
 

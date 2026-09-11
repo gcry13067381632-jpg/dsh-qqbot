@@ -58,14 +58,13 @@
 
 ### 给AI的话
 - QQ 会话内可直接调用的标准工具：发图/撤图/查库/打标/查未整理/定时（`send_media`/`recall_message`/`list_stickers`/`sticker_tag`/`sticker_untagged`/`schedule_timer`/`schedule_cancel`…），会话按账号精确路由
-- **群管理工具**（`group_join_requests`/`group_approve_join`/`group_mute_state`/`group_mute_member`…）：入群审批与禁言，需机器人为该群管理员；对话内管当前群，web/非群会话用配置的 `manageGroup`。**入群审批一律听主人的，不自动批**
+- **群管理工具**（`group_join_requests`/`group_approve_join`/`group_mute_state`/`group_mute_member`…）：入群审批与禁言，需机器人为该群管理员；对话内管当前群，web/非群会话用配置的 `manageGroup`。**入群审批一律听主人的，不自动批**——先 `group_join_requests` 查看，把申请人+验证信息汇报给主人，等主人明确说"通过/拒绝"再 `group_approve_join`
 - **纯文本也能发图撤消息**：让 AI 在回复里写 `[MEDIA:image|图片路径或网址]` 就自动变成真图发出去（`voice`/`video`/`file` 同理）；写 `[RECALL]` 撤回自己刚发的那条
-- **跨会话通信（通用插件能力，v1.1.0+）**：`session_list` 列出全部会话（含潜在群，重启后仍可靠）；`session_wake` 向指定会话/群发送消息并唤醒对方 LLM（web 注入给 AI 看），同时可走 QQBot 通道发到绑定的群/私聊（给人看），自动带 `【来自会话 xxx…】` 来源标注，支持 `media` 跨群发图。寻址走 module 级 session-registry（跨实例精确命中），会话未创建时懒创建/宿主 resume 恢复——**重启后也能找到并唤醒任何会话**
-- **入群申请双通道（v1.1.4+）**：QQ 实时事件=【入群申请】**消息注记**（静默 append 不唤醒，AI 下回合自然看到）；轮询兜底=【审批轮询】**系统提醒**（唤醒 AI 起来处理）。申请群=群组管理器(hub)会话时只在 hub 注记；普通群按 dock 开关决定是否也注记/唤醒
-- **群组管理四个独立开关（dock 设置，v1.1.4+）**：`唤醒AI`=唤醒群管会话 AI 处理；`注入群管会话`=hub web 注记（不唤醒）；`通知普通群`=申请所在群 web 注记（不唤醒）；`唤醒普通群AI`=唤醒申请所在群 AI——事件与轮询两条链路都生效，互不干扰
-- **模型绑定（v1.1.4+）**：Web 设置改模型持久生效（重启不回退，QQ 侧 override 优先）；`/model` 只列出当前服务商模型，不混其他服务商
-- **入站 @bot 长 id 自动转短标记 `@bot`**（v1.1.4+，省 token）：只清洗入站消息里的 bot 自身提及，出站写 `<@对方openid>` 去 @ 人不受影响
-- **多实例隔离（v1.1.4+）**：表情包库/定时任务/表情闸门/历史缓冲按实例(sessionSettings)隔离，不再互相串库
+- **跨会话通信**：`session_list` 列出全部会话（含潜在群）；`session_wake(session_id 或 scope+peer_id, text, send_qq?, media?)` 向指定会话/群发消息并唤醒对方 LLM，可同时走 QQBot 通道发给人看，`media` 支持跨群发图
+- **入群申请的两种形态**：
+  - 会话流里出现【入群申请】= **消息注记**（静默记录、未唤醒你）——不用立刻行动，等主人下一条消息时自然接应
+  - 收到【审批轮询】= **系统唤醒**——主动 `group_join_requests` 查看新申请，把申请人+验证信息汇报给主人，等主人拍板再批/拒
+  - 消息里带 `@bot` = 有人 @ 本机器人（`@bot` 就是自己）
 - 会话归属、工作区挂载等宿主问题已按官方机制修好（移植上游 PR #21，幂等、全 fail-soft）
 
 > 🛡️ 仓库**不含**任何机器人凭据、图库数据、日志与个人路径（发布前已清理）。AppID/AppSecret 请走环境变量或 Web 面板注入，**不要提交进 git**。
@@ -223,6 +222,13 @@ npx @deepseek-ai/dsh web --patch /path/to/dsh-qqbot/cordis.dev.yml
 > ⚠️ `watchJoinRequests` 需要连接期注册 intents(GROUP_MEMBER_EVENT, 1<<24)——**改它必须重启**,不是 live 热改;且需官方对该机器人开放对应能力,否则连接可能被拒(4914/4915)。
 
 **入群审批怎么用**: 事件到达 → bot 在群里发一条提醒(含申请人昵称/验证语)→ 你在对话里说"通过/拒绝"(AI 调 `group_approve_join`)→ 官方落库审批。也可以在设置面板「⑥ QQ 群管理 → 入群审批」页看待审批清单手动批。
+
+**入群申请双通道(v1.1.4+)**: 
+- **消息注记** = QQ 实时事件, 静默 append 到目标会话(web 可见、不唤醒 AI), 格式【入群申请】;
+- **系统提醒** = 轮询兜底, 唤醒 AI 起来处理, 格式【审批轮询】;
+- 申请群=群组管理器(hub)会话时只在 hub 注记; 普通群按下面开关决定是否也注记/唤醒。
+
+**群组管理四个独立开关(dock 设置, v1.1.4+)**: `唤醒AI`=唤醒群管会话 AI 处理; `注入群管会话`=hub web 注记(不唤醒); `通知普通群`=申请所在群 web 注记(不唤醒); `唤醒普通群AI`=唤醒申请所在群 AI——事件与轮询两条链路都生效, 互不干扰。
 
 **跨群/跨会话工具**(v1.1.0+): 
 - `group_join_requests(gid=…)` / `group_approve_join(member_openids=…)`: 传 `gid` 可查询/审批**指定群**的入群申请(不限于当前会话群), 支持一次批量审批多人;
