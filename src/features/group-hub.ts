@@ -139,7 +139,7 @@ export async function notifyGroupHub(
       if (ev.extra) lines.push(ev.extra);
       lines.push('可回复我处理(如: 查看入群申请 / 通过 / 拒绝)');
     } else if (ev.kind === 'member_add') {
-      lines.push(`新成员 openid: ${tail(ev.memberOpenid)}${ev.extra ? ' · ' + ev.extra : ''}`);
+      lines.push(`新成员 openid: ${ev.memberOpenid ?? '(未知)'}${ev.extra ? ' · ' + ev.extra : ''}`);
     } else {
       lines.push(`操作者: ${tail(ev.memberOpenid)}${ev.extra ? ' · ' + ev.extra : ''}`);
       lines.push('群台账已自动登记, 之后该群消息会持续累积。');
@@ -252,7 +252,7 @@ export async function handleGroupMemberAddEvent(
     kind: 'member_add',
     gid,
     memberOpenid: mid,
-    extra: ev.user_openid ? `user_openid ${tail(ev.user_openid)}` : undefined,
+    extra: ev.user_openid ? `user_openid ${ev.user_openid}` : undefined,
   });
   return true;
 }

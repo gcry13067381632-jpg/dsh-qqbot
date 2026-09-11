@@ -282,9 +282,9 @@ export function apply(ctx) {
   /** 解析 patch: 返回 {raw, bots:[{id,start,end,ins,cfg:{appId,appSecret,preset,cwd},disabled}], hasFile}
    *  patch 语义(宿主 dsh-app-boot applyEntryPatches): 顶层 `- id: X` 只能覆盖已存在 id(bundle insert 建的);
    *  新增实例必须 `- insert:` 包装(其下 4 空格 `- id: Y`)。本文件里两种形态都识别。 */
-  function parsePatch() {
+  function parsePatchFrom(rawText) {
     const hasFile = existsSync(PATCH_FILE);
-    const raw = hasFile ? readFileSync(PATCH_FILE, 'utf8') : '';
+    const raw = rawText !== undefined && rawText !== null ? String(rawText) : (hasFile ? readFileSync(PATCH_FILE, 'utf8') : '');
     // 行尾容错: 兼容 CRLF(2026-09-08 曾因 patch 被写成 CRLF 导致整段解析失败)
     const lines = raw.split(/\r?\n/);
     const bots = [];
@@ -309,7 +309,7 @@ export function apply(ctx) {
           }
           j += 1;
         }
-        bots.push({ id, start, end: j, ins: false, cfg, disabled });
+        bots.push({ id, start, end: j, ins: false, cfg, disabled, headLine: start });
         i = j;
       } else if (isTopLine(t) && /^\s*-\s*insert:\s*$/.test(t)) {
         // insert 形态: 找其下 4 空格 `- id: im-qqbot*`
@@ -342,7 +342,7 @@ export function apply(ctx) {
             if (isTopLine(lines[j])) break;
             j += 1;
           }
-          bots.push({ id, start: insStart, end: j, ins: true, cfg, disabled });
+          bots.push({ id, start: insStart, end: j, ins: true, cfg, disabled, headLine: found.line });
           i = j;
         } else {
           i += 1;
@@ -353,6 +353,8 @@ export function apply(ctx) {
     }
     return { raw, hasFile, bots };
   }
+  /** 从磁盘读取并解析(parsePatchFrom 的包装) */
+  function parsePatch() { return parsePatchFrom(undefined); }
 
   /** 渲染一个实例块。主 im-qqbot(bundle 已 insert)→ 顶层覆盖; 新实例 → `- insert:` 包装(4/6/8 缩进) */
   function renderBotBlock(inst) {
@@ -379,46 +381,157 @@ export function apply(ctx) {
     return out.join('\n');
   }
 
+  /** 在已有条目块内只更新指定键，保留原结构(缩进/位置/未知字段如 groupAdmin、dataRoot、name)。
+   *  ⚠️ 2026-09-10 新增: 原实现用 renderBotBlock 整块重建 —— 会把 insert: 下的 im-qqbot-2 提成顶层
+   *  `- id: im-qqbot`(新版无此 entry, 直接让整棵插件树加载失败), 并丢掉 name/settingsNs/historyLimit/
+   *  groupAdmin/dataRoot 等未在渲染里列出的字段。改为原地增量更新后结构不再被破坏。
+   *  ⚠️ 2026-09-10 二次修复: 除更新已存在的键外, 还要**补写缺失的键**(如原本没有 cwd 的实例),
+   *  否则前端填了 cwd 也保存不进去(实测 im-qqbot-3 只更新 3/4 个键)。disabled 走块头层(children of id)。
+   *  @param {string[]} lines 文件全部行(会被原地修改)
+   *  @param {number} start 块首行索引(含, 即 `- id:` 或 `- insert:` 行)
+   *  @param {number} end 块结束行索引(不含)
+   *  @param {Record<string,string>} kv 要写入的键值(值为字符串); 已存在则改, 缺失则按规矩新增
+   *  @returns {number} 实际写入的键数 */
+  function updateKeysInBlock(lines, start, end, kv) {
+    // 块头行: insert 包装时块首是 `- insert:`, 真正的 `- id:` 在下一行
+    let headIdx = start;
+    for (let i = start; i < Math.min(start + 3, end); i += 1) {
+      if (/^\s*-\s*id:/.test(lines[i])) { headIdx = i; break; }
+    }
+    const headIndent = ((lines[headIdx] ?? '').match(/^\s*/) ?? [''])[0].length;
+    const childIndent = headIndent + 2;      // name: / disabled: / config: 的缩进
+
+    const pending = new Map(Object.entries(kv));
+    let touched = 0;
+    // ① 已存在的键: 原地改写(保留原缩进)
+    for (let i = headIdx + 1; i < end && pending.size > 0; i += 1) {
+      const m = /^(\s*)([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$/.exec(lines[i]);
+      if (!m) continue;
+      const key = m[2];
+      if (!pending.has(key)) continue;
+      lines[i] = `${m[1]}${key}: ${pending.get(key)}`;
+      pending.delete(key);
+      touched += 1;
+    }
+    if (pending.size === 0) return touched;
+
+    // ② 缺失的键: 找本条目自己的 `config:` 行(缩进 = childIndent, 避免命中嵌套的 groupAdmin 等)
+    let cfgLine = -1;
+    for (let i = headIdx + 1; i < end; i += 1) {
+      if (new RegExp(`^\\s{${childIndent}}config:\\s*$`).test(lines[i])) { cfgLine = i; break; }
+    }
+    const keyIndent = childIndent + 2;       // config 下子键的缩进
+    const addLines = [];
+    for (const [key, val] of pending) {
+      // disabled 属于条目层(childIndent), 也放这里 —— YAML 不要求键顺序
+      addLines.push(`${' '.repeat(key === 'disabled' ? childIndent : keyIndent)}${key}: ${val}`);
+    }
+    if (cfgLine >= 0) {
+      // 找 config: 之下最后一个同级键(含其子块), 插在后面。
+      // 注意: 同级键的缩进 == keyIndent(不是 >), 用 >= 才能走到最后一个键;
+      //       带子块的键(如 groupAdmin:) 其子行缩进 > keyIndent 也要一并跨过。
+      let scan = cfgLine + 1;
+      let lastLine = cfgLine;
+      while (scan < end) {
+        const blank = lines[scan].trim() === '';
+        const ind = ((lines[scan].match(/^\s*/) ?? [''])[0]).length;
+        if (!blank && ind >= keyIndent) { lastLine = scan; scan += 1; continue; }
+        break;
+      }
+      lines.splice(lastLine + 1, 0, ...addLines);
+    } else {
+      // 没有 config: —— 在块头后补一个 config: 再放键
+      let insertAt = end;
+      for (let i = headIdx + 1; i < end; i += 1) {
+        const ind = ((lines[i].match(/^\s*/) ?? [''])[0]).length;
+        if (lines[i].trim() !== '' && ind <= headIndent && /- /.test(lines[i])) { insertAt = i; break; }
+      }
+      lines.splice(insertAt, 0, `${' '.repeat(childIndent)}config:`, ...addLines);
+    }
+    return touched + addLines.length;
+  }
+
+
   /** 保存实例清单(全量同步; 行级重建, 其它插件行/注释原样保留)
    *  借鉴 dsh-qqbot-panel(2026-09-06): appSecret 空值/掩码(********) = 保留原值,
    *  只有提供全新非掩码值才覆盖 —— 前端只回显掩码, 不会因漏传/未改而误清 secret。
    *  ⚠️ 2026-09-09: dataRoot 同理 —— 前端不编辑它, 保存时必须保留原值,
-   *     否则 accounts/save 会把 patch.yml 里的 dataRoot 覆盖掉(图库路径回退 cwd 的根因)。 */
+   *     否则 accounts/save 会把 patch.yml 里的 dataRoot 覆盖掉(图库路径回退 cwd 的根因)。
+   *  ⚠️ 2026-09-10: 已存在的条目改为"原地只更新字段", 不再整块重建(见 updateKeysInBlock 注释)。 */
   function saveInstances(instances) {
     const { raw, hasFile, bots } = parsePatch();
     if (!hasFile) return { ok: false, error: '找不到 cordis.patch.yml(仅 web profile 支持)' };
     const lines = raw.split('\n');
-    const edits = [];
+    const removals = [];
+    const updates = [];
+    const appends = [];
     const targetIds = new Set(instances.filter((x) => !x.remove).map((x) => String(x.id)));
-    for (const b of bots) {
-      if (!targetIds.has(b.id)) edits.push({ start: b.start, end: b.end, text: null });
+    // 删除: 只删「没被提交的机器人条目」或显式 remove 的条目, 且范围严格限定在该条目自身:
+    //   起点 = 它自己的 `- id:` 行(headLine, 不是包裹它的 `- insert:` 行),
+    //   终点 = 下一个同级机器人条目的 headLine(或该 insert 块结束)。
+    // ⚠️ 2026-09-10 事故一: 原用 { start: b.start }(insert 包装时为 `- insert:` 行) 且 end 取块末,
+    //    导致同一 insert 下的其它插件条目(mcp-chrome)被连带删除。现改为按 headLine 精确切分。
+    // ⚠️ 2026-09-10 事故二: 前端把"空骨架实例"(如用于禁用幽灵 im-qqbot 的 `- id: im-qqbot`
+    //    + disabled: true, appId/appSecret 均为空)过滤掉不提交 → 会被当成"要删除"而误删,
+    //    删掉后下次启动又触发扫码。故: 无凭据(appId/appSecret 皆空)的条目一律保留, 不参与自动删除。
+    const removeIds = new Set(instances.filter((x) => x.remove).map((x) => String(x.id)));
+    const doomed = bots.filter((b) => {
+      if (removeIds.has(b.id)) return true;
+      if (targetIds.has(b.id)) return false;
+      const hasCred = !!(b.cfg?.appId || b.cfg?.appSecret);
+      return hasCred;
+    });
+    for (const b of doomed) {
+      const sameGroup = bots
+        .filter((o) => o !== b && o.ins === b.ins && o.start === b.start && o.headLine > b.headLine)
+        .sort((x, y) => x.headLine - y.headLine);
+      const nextHead = sameGroup.length ? sameGroup[0].headLine : b.end;
+      let tail = nextHead;
+      while (tail > b.headLine + 1 && (lines[tail - 1] ?? '').trim() === '') tail -= 1;
+      removals.push({ start: b.headLine, end: tail });
     }
     for (const inst of instances) {
       if (inst.remove) continue;
-      const t = bots.find((b) => b.id === inst.id);
-      const orig = bots.find((b) => b.id === inst.id);
+      const orig = bots.find((b) => b.id === String(inst.id));
       // 掩码/空 → 保留原 secret(仅当原值存在; 全新账号本就无原值则维持空)
-      if (!inst.appSecret || inst.appSecret === SECRET_MASK) {
-        if (orig && orig.cfg?.appSecret) inst.appSecret = orig.cfg.appSecret;
-        else inst.appSecret = '';
-      }
+      let secret = String(inst.appSecret ?? '');
+      if (!secret || secret === SECRET_MASK) secret = orig?.cfg?.appSecret ? String(orig.cfg.appSecret) : '';
       // 前端不编辑 dataRoot → 保留原值(2026-09-09: 曾因保存覆盖丢失导致图库路径回退 cwd)
-      if (inst.dataRoot === undefined && orig && orig.cfg?.dataRoot) inst.dataRoot = orig.cfg.dataRoot;
-      const blockText = renderBotBlock(inst);
-      if (t) edits.push({ start: t.start, end: t.end, text: blockText });
-      else edits.push({ append: blockText });
+      let dataRoot = inst.dataRoot;
+      if (dataRoot === undefined && orig?.cfg?.dataRoot) dataRoot = orig.cfg.dataRoot;
+
+      if (orig) {
+        const kv = {};
+        if (inst.appId !== undefined) kv.appId = yq(String(inst.appId));
+        if (secret) kv.appSecret = ysec(secret);
+        if (inst.preset !== undefined && String(inst.preset) !== '') kv.preset = yq(String(inst.preset));
+        if (inst.cwd !== undefined && String(inst.cwd) !== '') kv.cwd = yq(String(inst.cwd));
+        if (inst.disabled !== undefined) kv.disabled = inst.disabled ? 'true' : 'false';
+        updates.push({ id: String(inst.id), kv });
+      } else {
+        appends.push(renderBotBlock({ ...inst, appSecret: secret, dataRoot }));
+      }
     }
-    edits.filter((e) => e.start !== undefined).sort((a, b) => b.start - a.start).forEach((e) => {
-      if (e.text === null) lines.splice(e.start, e.end - e.start);
-      else lines.splice(e.start, e.end - e.start, ...e.text.split('\n'));
-    });
+    // 先删块(倒序), 再逐条原地改字段。
+    // ⚠️ 每次更新前重新 parsePatch 取最新下标: splice 过(删除或插入新键)之后,
+    //    之前算好的 start/end 会错位, 曾导致插入落到错误缩进上把 YAML 写坏。
+    for (const r of removals.sort((a, b) => b.start - a.start)) lines.splice(r.start, r.end - r.start);
+    for (const u of updates) {
+      let fresh = null;
+      try {
+        const reparsed = parsePatchFrom(lines.join('\n'));
+        fresh = reparsed.bots.find((b) => b.id === u.id) ?? null;
+      } catch { fresh = null; }
+      if (!fresh) continue;
+      updateKeysInBlock(lines, fresh.start, fresh.end, u.kv);
+    }
     let out = lines.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
-    const appendParts = edits.filter((e) => e.append).map((e) => e.append);
-    if (appendParts.length) out += (out ? '\n' : '') + appendParts.join('\n') + '\n';
+    if (appends.length) out += (out.trimEnd() ? '\n' : '') + appends.join('\n') + '\n';
     writeFileSync(`${PATCH_FILE}.bak`, raw, 'utf8');
     writeFileSync(PATCH_FILE, out, 'utf8');
     return { ok: true, file: PATCH_FILE, needRestart: true };
   }
+
 
   // 账号列表(多账号: 每条带 settings ns 与数据目录, 供二级 UI 按账号读写)
   // 借鉴 zhengjy01/dsh-qqbot-panel(2026-09-06): appSecret 只回显掩码(不泄露明文),

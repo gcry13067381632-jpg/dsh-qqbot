@@ -90,16 +90,30 @@ export async function runQrSetup(source = 'dsh-qqbot'): Promise<SetupCredentials
  *
  * 行级编辑(不再整文件 YAML 解析)——cordis.patch.yml 常含宿主 `!!js` 自定义标签,
  * js-yaml 无法解析会抛错导致自动保存失败(实测线上文件即因此走到手动引导)。
- * 只定位/更新顶层 `- id: im-qqbot` 条目块中的 appId/appSecret 行,
- * 文件其它内容(含 !!js、其它实例、insert 包装)原样保留。文件不存在时安全重建。
+ * 只定位/更新目标实例条目块(顶层或 `- insert:` 内的 4 空格形态)中的 appId/appSecret 行,
+ * 文件其它内容(含 !!js、其它实例、insert 包装)原样保留。
+ *
+ * ⚠️ 2026-09-10 修复两处线上事故:
+ *   1. 旧实现把条目名硬编码成 `im-qqbot`, 对 `im-qqbot-2` 这类实例找不到块 →
+ *      在文件末尾追加了一个顶层 `- id: im-qqbot`(新版 dsh 无此 entry, 会让整棵插件树加载失败);
+ *      现按 instEntryId(来自 config.settingsNs)定位, 且**绝不新建顶层 entry id**。
+ *   2. appId 必须写为**带引号的字符串** —— 新版 cordis 严格校验 `$.appId expected string`,
+ *      裸数字(1905515836)会让 preset/插件树整体挂载失败。
+ *
+ * @param credentials 扫码得到的 appId/appSecret
+ * @param profileDir dsh profile 目录(含 cordis.patch.yml)
+ * @param logger 日志器
+ * @param instEntryId 目标条目 id(即 loader entry id, 默认 `im-qqbot`)
  */
 export function persistCredentialsToProfile(
   credentials: SetupCredentials,
   profileDir?: string,
   logger?: { info(msg: string, ...args: unknown[]): void; warn(msg: string, ...args: unknown[]): void },
+  instEntryId = 'im-qqbot',
 ): boolean {
   const log = logger ?? console;
   const dir = profileDir;
+  const entryId = (instEntryId || 'im-qqbot').trim() || 'im-qqbot';
   if (!dir) {
     // 开发模式：插件从源码加载、不在 node_modules 下，无法定位 profile 目录
     printEnvInstructions(credentials);
@@ -115,27 +129,28 @@ export function persistCredentialsToProfile(
     const eol = text.includes('\r\n') ? '\r\n' : '\n';
     const lines: string[] = text.length ? text.split(/\r\n|\n/) : [];
 
-    const yq = (v: string): string => {
-      // YAML 值引号化: 纯安全字符可不加引号; 否则单引号包裹(内部单引号翻倍)
-      return /^[A-Za-z0-9_./:\-]+$/.test(v) ? v : `'${v.replace(/'/g, "''")}'`;
-    };
+    /** appId/appSecret 一律单引号字符串: 宿主 schema 要求 string, 裸数字会挂载失败 */
+    const ystr = (v: string): string => `'${String(v).replace(/'/g, "''")}'`;
 
-    // 顶层条目行 "- id: im-qqbot"(允许引号包裹的 id)
-    const HEAD_RE = /^-\s*id:\s*['"]?im-qqbot['"]?\s*$/;
+    // 条目行: 允许任意缩进(顶层 0 / insert 内 4), id 需精确匹配 entryId
+    const esc = entryId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const HEAD_RE = new RegExp(`^\\s*-\\s*id:\\s*['"]?${esc}['"]?\\s*$`);
     const headIdx = lines.findIndex((l) => HEAD_RE.test(l));
 
     let outLines: string[];
     if (headIdx >= 0) {
-      // 2a. 已有 im-qqbot 顶层块: 块结束 = 下一个"顶格 - "条目行(或文件尾)
+      // 2a. 已有目标块: 块结束 = 下一个"缩进不更深的条目行"(或文件尾)
+      const headIndent = ((lines[headIdx] as string).match(/^\s*/) ?? [''])[0].length;
       let blockEnd = lines.length;
       for (let i = headIdx + 1; i < lines.length; i++) {
         const li = lines[i] as string;
-        if (/^\s*-\s/.test(li) && !/^\s+/.test(li)) { blockEnd = i; break; }
+        const ind = ((li.match(/^\s*/) ?? [''])[0]).length;
+        if (/- /.test(li) && ind <= headIndent) { blockEnd = i; break; }
       }
       const block = lines.slice(headIdx, blockEnd);
-      // config 字段缩进: 找块内 `config:` 行缩进; 默认 2
-      let cfgIndent = 2;
-      const cfgLine = block.findIndex((l) => /^\s*config:\s*$/.test(l));
+      // config 字段缩进: 找块内 `config:` 行缩进; 默认 headIndent + 2
+      let cfgIndent = headIndent + 2;
+      const cfgLine = block.findIndex((l) => new RegExp(`^\\s{${headIndent + 1},}config:\\s*$`).test(l));
       if (cfgLine >= 0) {
         cfgIndent = ((block[cfgLine] as string).match(/^\s*/) ?? [''])[0].length;
       }
@@ -146,49 +161,53 @@ export function persistCredentialsToProfile(
         const hit = arr.findIndex((l) => re.test(l));
         if (hit >= 0) {
           const indent = ((arr[hit] as string).match(/^\s*/) ?? [''])[0];
-          arr[hit] = `${indent}${key}: ${yq(value)}`;
+          arr[hit] = `${indent}${key}: ${value}`;
           return arr;
         }
         // 无该键: config: 行后插入; 无 config: 则在 id 行后补 config + 键
         const insertAt = cfgLine >= 0 ? cfgLine + 1 : 1;
         const pad = ' '.repeat(valIndent);
         if (cfgLine < 0) {
-          arr.splice(1, 0, ' '.repeat(cfgIndent) + 'config:', `${pad}${key}: ${yq(value)}`);
+          arr.splice(1, 0, ' '.repeat(cfgIndent) + 'config:', `${pad}${key}: ${value}`);
         } else {
-          // 找同 key 族(appId 先于 appSecret 落位; 插入到已有 appId/其它 config 键之前保持整洁)
-          arr.splice(insertAt, 0, `${pad}${key}: ${yq(value)}`);
+          arr.splice(insertAt, 0, `${pad}${key}: ${value}`);
         }
         return arr;
       };
-      const nb = upsertKey('appId', credentials.appId, block.slice());
-      upsertKey('appSecret', credentials.appSecret, nb);
+      const nb = upsertKey('appId', ystr(credentials.appId), block.slice());
+      upsertKey('appSecret', ystr(credentials.appSecret), nb);
       outLines = lines.slice(0, headIdx).concat(nb, lines.slice(blockEnd));
     } else {
-      // 2b. 没有 im-qqbot 顶层块: 文件末尾追加新条目(顶格 "- id:" 形态; 保留原有内容)
+      // 2b. 没有目标块: **不再新建顶层 `- id: xxx`**(顶层 id 只能覆盖已存在的 bundle entry,
+      //     否则宿主报 patch entry not found / 插件树加载失败)。改用 `- insert:` 包装新增。
       const tail = lines.slice();
       while (tail.length > 0 && tail[tail.length - 1] === '') tail.pop();
       outLines = tail.concat([
         '',
         '# QQ Bot 凭据（扫码绑定自动生成）',
-        '- id: im-qqbot',
-        '  config:',
-        `    appId: ${yq(credentials.appId)}`,
-        `    appSecret: ${yq(credentials.appSecret)}`,
+        '- insert:',
+        `    - id: ${entryId}`,
+        '      name: @zaofan/dsh-qqbot',
+        '      config:',
+        `        appId: ${ystr(credentials.appId)}`,
+        `        appSecret: ${ystr(credentials.appSecret)}`,
+        ...(entryId !== 'im-qqbot' ? [`        settingsNs: '${entryId}'`] : []),
       ]);
     }
 
     mkdirSync(dir, { recursive: true });
     const finalText = (outLines.join(eol)).replace(/\n{3,}/g, '\n\n').trimEnd() + eol;
     writeFileSync(patchPath, finalText, 'utf8');
-    log.info(`✔ 凭据已写入: ${patchPath}`);
+    log.info(`✔ 凭据已写入: ${patchPath} (entry id: ${entryId})`);
     log.info(`  下次启动将自动使用保存的凭据`);
     return true;
   } catch (err) {
     log.warn(`写入配置失败: ${err instanceof Error ? err.message : String(err)}`);
-    printYamlInstructions(credentials, patchPath);
+    printYamlInstructions(credentials, patchPath, entryId);
     return false;
   }
 }
+
 
 /** 开发模式引导：未定位到 profile 目录，引导用环境变量配置（console.log 确保可见） */
 function printEnvInstructions(credentials: SetupCredentials): void {
@@ -208,12 +227,14 @@ function printEnvInstructions(credentials: SetupCredentials): void {
 }
 
 /** 正式安装引导：自动写入失败，引导手动在 cordis.patch.yml 配置（console.log 确保可见） */
-function printYamlInstructions(credentials: SetupCredentials, patchPath: string): void {
+function printYamlInstructions(credentials: SetupCredentials, patchPath: string, entryId = 'im-qqbot'): void {
   console.log('无法自动保存凭据，请手动打开以下文件添加配置:');
   console.log(`  ${patchPath}`);
   console.log('');
-  console.log('  - id: im-qqbot');
-  console.log('    config:');
-  console.log(`      appId: "${credentials.appId}"`);
-  console.log(`      appSecret: "${credentials.appSecret}"`);
+  console.log('  - insert:');
+  console.log(`      - id: ${entryId}`);
+  console.log("        name: '@zaofan/dsh-qqbot'");
+  console.log('        config:');
+  console.log(`          appId: '${credentials.appId}'`);
+  console.log(`          appSecret: '${credentials.appSecret}'`);
 }
