@@ -4,6 +4,11 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [1.1.7] - 2026-09-11
+
+### 文档
+- **README 补全「扩展契约」(给 AI 看的两节)**: 明确 ① 卡片正文由 **AI 直接写 markdown**, 本插件**没有模板引擎**(模板就是模型); ② AI 可**自己写** `.qqbot-extensions/{tools,commands}/` 下的工具与斜杠命令, 且扩展位于**账号数据目录、升级/重装插件不会覆盖**; ③ 工具 `run(args, env)` 的 `env.sender` + `env.replyTarget` 就是内置 `send_media` 的发送器 → **工具能自己发 markdown 卡/图片/语音/文件**, "取数据→拼卡→发送"一个工具闭环; ④ 生效方式与坑(新工具 `/tools-reload`; **同名工具改内容会被注册表跳过 → 换名或重启**; 命令需重启); ⑤ 能力边界: 扩展**无法注册按钮回调**(须走 botplay 事件 / dock 卡片编辑器)。README_EN 同步更新。
+
 ## [1.1.6] - 2026-09-11
 
 ### 变更

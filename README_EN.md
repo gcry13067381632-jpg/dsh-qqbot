@@ -260,6 +260,15 @@ export default {
 ```
 Then run `/tools-reload` (or ask the AI to call the `tools_reload` tool). Commands need a host restart.
 
+**For AI agents — you can write these yourself (no feature request needed):**
+- Card bodies are **plain markdown you write** (`#`, bold, `![alt](url)`, fenced code). This plugin has **no template engine — the model is the engine**. Cards with buttons go through a botplay event or the dock card editor (button callbacks must be registered host-side).
+- Extensions live in the **account data directory** (`.qqbot-extensions/`), never inside the plugin package → **upgrading or reinstalling the plugin never overwrites them**.
+- `run(args, env)` receives `env = { cwd, manager, sender, replyTarget, exec }`. `sender` + `replyTarget` is the very same sender the built-in `send_media` tool uses, so a tool can **post markdown cards / images / voice / files by itself**: "fetch an API → build markdown → send" closes the loop inside one tool.
+- Tools reply `{ ok, msg }` (fed back to you as the tool result); commands return plain text.
+- Hot reload: `/tools-reload` (or call `tools_reload`) picks up **new** tools; **editing a tool under the same name is skipped by the registry → rename it or restart the host**; commands always need a restart.
+- Limitation: extensions **cannot register button callbacks** — those require a botplay event or the dock card editor. Extension-only flows are "card + user replies a number", with the AI acting as the state machine.
+- Example (song request): fetch a search API → build a markdown card (cover / title / artist / lyrics) → `sender.sendMarkdown(replyTarget, card)` → optionally `sender.sendMedia(...)` for a preview → return `{ ok: true, msg: 'card sent' }`.
+
 ## Core Modules
 
 ```
