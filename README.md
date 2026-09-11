@@ -49,6 +49,13 @@
 
 ![斗图实战（发表情包接招回击）](docs/showcase-3-doutu.png)
 
+图④：群管理·入群审批全流程——【群管·入群申请】事件注入 + 【审批轮询】双链路触发，AI 核对 openid 台账后自动放行；
+图⑤：QQ 群内放行成功效果——小号申请入群被自动审批通过。
+
+![群管理·入群审批全流程（事件注入+轮询+自动放行）](docs/screenshots/group-admin-approval-log.png)
+
+![群管理·审批放行成功效果](docs/screenshots/group-admin-approval-chat.png)
+
 ### 给AI的话
 - QQ 会话内可直接调用的标准工具：发图/撤图/查库/打标/查未整理/定时（`send_media`/`recall_message`/`list_stickers`/`sticker_tag`/`sticker_untagged`/`schedule_timer`/`schedule_cancel`…），会话按账号精确路由
 - **群管理工具**（`group_join_requests`/`group_approve_join`/`group_mute_state`/`group_mute_member`…）：入群审批与禁言，需机器人为该群管理员；对话内管当前群，web/非群会话用配置的 `manageGroup`
