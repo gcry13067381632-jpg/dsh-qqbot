@@ -193,7 +193,7 @@ async function installLiveSettings(ctx: Context, live: ImQQBotConfig, logger: Lo
   // 出站模式切换 writer(2026-09-07; 2026-09-11 多实例修复): 命令/工具调 switchOutboundMode → 这里执行
   // ①live.outboundMode 原地改(与 bootstrap/router 同引用, 立即热生效);
   // ②尽力经 settings 服务 update 持久化 —— dock/设置面板与 live 同一数据源, 三方一致(重启不丢)。
-  // ⚠️ 按 ns 注册: 多实例(im-qqbot/im-qqbot-2/im-qqbot-3)各自 apply 时不能共用一个 writer,
+  // ⚠️ 按 ns 注册: 多实例(多个实例)各自 apply 时不能共用一个 writer,
   //    否则切换会落到最后注册的那个实例(config 改错对象, dock 显示与实测不符)。修复于 2026-09-11。
   setOutboundModeWriter(ns, async (mode) => {
     live.outboundMode = mode;
@@ -273,3 +273,4 @@ async function legacyRegister(ctx: Context, ns: string, schema: unknown, entry: 
   logger.warn?.('im-qqbot: 当前 harness 未暴露可用的 settings 注册 API，跳过可视化设置(仍可用纯 yml/补丁配置)。');
   return false;
 }
+

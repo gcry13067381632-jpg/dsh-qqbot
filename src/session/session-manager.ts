@@ -19,6 +19,7 @@ import type { ChatScope, Logger, ReplyTarget } from '../types.js';
 import type { ImQQBotConfig } from '../config.js';
 import { FIXED_CHANNEL_CONTEXT } from '../config.js';
 import { dataRootOf, stickerDirOf } from '../gateway/data-root.js';
+import { SettingsReader } from '../model/settings-reader.js';
 import { ModelResolver } from '../model/model-resolver.js';
 import type { ModelRoute, ModelEntry } from '../model/types.js';
 import { IdleEvictor } from './idle-evictor.js';
@@ -40,7 +41,7 @@ import { createGroupAdmin } from '../api/group-admin.js';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { appendFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { attachSessionToWorkspace } from './workspace-attach.js';
+import { attachSessionToWorkspace, unarchiveSession } from './workspace-attach.js';
 
 /** 通道工具注册诊断: 默认关闭; 设环境变量 QQBOT_DIAG_FILE 启用 */
 const SM_DIAG_FILE = process.env.QQBOT_DIAG_FILE || '';
@@ -60,6 +61,8 @@ export class SessionManager {
   private channelSender: QQBotSender | undefined;
   /** 最近一次 setup 收到的 agent ctx(工具自愈用；getOrCreate 完成后读走并清空) */
   private lastSetupCtx: Context | undefined;
+  /** 群守则热更新: 每次 system prompt 渲染现读 settings.yaml(SettingsReader fresh 模式) */
+  private liveSettingsReader: SettingsReader | undefined;
 
   /** 注入 QQ 通道发送能力(供通道工具)；bootstrap 调用 */
   public installChannelSender(sender: QQBotSender): void {
@@ -129,6 +132,10 @@ export class SessionManager {
         void record.handle.dispose().catch(() => {});
       },
     );
+
+    // 2026-09-11 主人定: 被归档的 QQ 会话在**被消息触发时**自动拉回可见(见 workspace-attach.ts)。
+    // 这里不装任何守卫/拦截/定时器 —— 纯触发式, 落点在 getOrCreate 的两条路径上:
+    //   ① 命中已有活跃记录 → unarchiveSession(); ② 新建/恢复 → attachSessionToWorkspace()。
   }
 
   /**
@@ -191,11 +198,37 @@ export class SessionManager {
    * false = 全新空档(不继承旧上下文, 旧会话存档可回看)。
    * presetId 给定时: 记录该会话的 preset 覆盖并用于新档(如 /new code 切人格);
    * 不传则沿用当前生效 preset(config 或之前会话覆盖)。
+   * 无活跃记录(会话损坏/重启后没聊过)时不再失败: 轮换 sessionId 直接另起新档。
+   * @returns 'forked'=从当前会话 fork 出新档 | 'rotated'=无活跃记录另起全新档 | 'failed'=创建失败
    */
-  async startNewSession(scope: ChatScope, peerId: string, inherit = false, presetId?: string): Promise<boolean> {
+  async startNewSession(
+    scope: ChatScope,
+    peerId: string,
+    inherit = false,
+    presetId?: string,
+    fallback?: { replyTarget?: ReplyTarget; senderId?: string },
+  ): Promise<'forked' | 'rotated' | 'failed'> {
     const key = this.sessionKey(scope, peerId);
     const record = this.sessions.get(key);
-    if (!record) return false;
+
+    // 2026-09-11 主人反馈「炸了的会话在 QQ 上没法弃号重开」:
+    // 会话在磁盘上损坏(历史加载失败)时内存里没有活跃记录, 原实现在此直接 return false →
+    // QQ 侧 /bot-new 只会回「当前没有活跃会话, 无需开新」, 主人无路可走。
+    // 现改为: 轮换 sessionId 直接另起新档(坏档文件原样保留在磁盘, 不删也不修)。
+    if (!record) {
+      if (presetId) {
+        try { this.modelResolver.setSessionPreset(key, presetId); } catch { /* ignore */ }
+      }
+      const replyTarget: ReplyTarget = fallback?.replyTarget ?? { scope, targetId: peerId };
+      try {
+        await this.getOrCreate(scope, peerId, fallback?.senderId ?? '', replyTarget, { forceNew: true });
+        this.logger.info(`startNewSession: 无活跃记录 → 已另起新档 key=${key}${presetId ? ` preset=${presetId}` : ''}`);
+        return 'rotated';
+      } catch (err) {
+        this.logger.warn(`startNewSession(rotated) failed: key=${key} err=${err instanceof Error ? err.message : String(err)}`);
+        return 'failed';
+      }
+    }
 
     // preset 覆盖: 显式给出则落盘(重启后恢复同 preset)
     if (presetId) {
@@ -204,7 +237,7 @@ export class SessionManager {
 
     const route = this.modelResolver.getEffectiveRoute(key, record.sessionId);
     await this.forkCurrentSession(key, record, route, inherit);
-    return true;
+    return 'forked';
   }
 
   /** 当前会话生效 preset: 会话覆盖(/new 指定) > config.preset */
@@ -569,6 +602,7 @@ export class SessionManager {
     peerId: string,
     senderId: string,
     replyTarget: ReplyTarget,
+    opts?: { forceNew?: boolean },
   ): Promise<SessionRecord> {
     const key = this.sessionKey(scope, peerId);
     const wantCwd = this.config.cwd || process.cwd();
@@ -602,7 +636,21 @@ export class SessionManager {
       existing.lastActivity = Date.now();
       // 会话已存在且配置一致 → 指纹刷新为当前值(防止误判)
       try { this.modelResolver.setSessionCfg(key, { cwd: wantCwd }); } catch { /* ignore */ }
+      // 2026-09-11 主人定「触发会话时反归档」: 这条消息把该会话激活了 → 顺带把它从归档里拉回可见。
+      // (主人主动归档的会话保持归档, 只有真的被消息用到才回来; 幂等 + fail-soft, 不阻塞主链)
+      void unarchiveSession(this.ctx, existing.sessionId, this.logger);
       return existing;
+    }
+
+    // 2026-09-11 主人反馈「炸了的会话在 QQ 上没法弃号重开」: 磁盘会话损坏(历史加载失败)时
+    // resume 必失败, 且 sessionId 是 sessionKey 确定性派生的(重试还是同一个坏档)。
+    // forceNew → 先把本 peer 的 sessionId 轮换成全新随机 id(断开坏档, 旧档文件原样保留),
+    // 后面走标准创建链: resume 命中不到 → 落到 create, 得到干净新档; 下次入站也 resume 新档。
+    if (opts?.forceNew) {
+      const rotated = SessionId(randomUUID());
+      try { this.modelResolver.setSessionId(key, rotated); } catch { /* ignore */ }
+      try { this.modelResolver.setSessionCfg(key, { cwd: wantCwd }); } catch { /* ignore */ }
+      this.logger.info(`getOrCreate(forceNew): 弃档重开 key=${key} new=${rotated}`);
     }
 
     // 2026-09-11: 先定 sessionId, 再按「会话级」查模型路由 —— 新会话(sessionId 无 override)回落全局默认
@@ -795,55 +843,112 @@ export class SessionManager {
     return `✅ 工具热刷新完成: ${ok} 个会话成功${fail > 0 ? `, ${fail} 个失败(见日志)` : ''}。新工具下一条消息即可用。`;
   }
 
-  /**
-   * 守则/身份 context 注册自愈(幂等): 每次消息处理路径都会调用。
-   * 用 record.agent.ctx(恒有, 不依赖 setup; 重启恢复会话也覆盖)。
-   * 注册方式照审批 approval:policy: ctx.inject(['systemPrompt']) → systemPrompt.context;
-   * text 每次渲染现读 live config(空串不贡献、热更新)。
-   */
-  async ensureGroupRules(record: SessionRecord): Promise<void> {
-    const agentId = record.agent?.id;
-    const mounted = (this as unknown as Record<string, unknown>).__rulesMounted as Set<string> | undefined;
-    if (!agentId || (mounted && mounted.has(agentId))) return;
-    if (!mounted) (this as unknown as Record<string, unknown>).__rulesMounted = new Set<string>();
-    const agentCtx = (record.agent as { ctx?: Context }).ctx ?? (record.agentCtx as Context | undefined);
-    if (!agentCtx) { console.log('[qqbot-rules] skip (no ctx)'); return; }
+  /** cwd 分流(通用, 不写死实例名): 只对本实例配置的 cwd 匹配的 agent 注入本实例群守则。
+   *  每个实例在 patch 里配自己的 cwd + settingsNs, 即自动分流;
+   *  其他实例/项目(web、别的 cwd)的 agent 一律不注入, 避免群守则污染非本 bot 会话。 */
+  private nsForCwd(cwd: string): string {
+    const selfCwd = String(this.config.cwd ?? '').trim().replace(/[\\/]+$/, '');
+    const ns = String(this.config.settingsNs ?? '').trim() || 'im-qqbot';
+    if (!selfCwd) return ns; // 未配 cwd → 对本实例所有 agent 注入(保守)
+    const norm = String(cwd ?? '').replace(/[\\/]+$/, '');
+    if (norm === selfCwd || norm.startsWith(selfCwd + '\\') || norm.startsWith(selfCwd + '/')) return ns;
+    return '';
+  }
+
+  /** 群守则热更新: 现读 settings.yaml 对应 ns 的 groupPrompt; 读失败仅回退本实例 ns 的内存 config。 */
+  private readLiveGroupPromptForNs(ns: string): string {
     try {
-      const anyCtx = agentCtx as unknown as {
-        inject?: (svc: string[], cb: (scope: unknown) => void) => void;
-        systemPrompt?: { context?: (o: unknown) => unknown };
-        effect?: (fn: () => void, name?: string) => void;
-      };
-      console.log(`[qqbot-rules] ensure agent=${agentId} inject=${typeof anyCtx.inject} sp=${typeof anyCtx.systemPrompt} eff=${typeof anyCtx.effect}`);
-      const doReg = (sp?: { context?: (o: unknown) => unknown }): void => {
-        if (sp && typeof sp.context === 'function') {
-          // 通道固定上下文(与群守则无关, 无条件注入; 覆盖 @方法/富媒体等基础规则)
-          sp.context({
-            name: 'qqbot:fixed-channel-rules',
-            order: 115,
-            text: () => FIXED_CHANNEL_CONTEXT,
-          });
-          sp.context({
-            name: 'qqbot:group-rules',
-            order: 116,
-            text: () => this.config.groupPrompt?.trim() || '',
-          });
-          (this as unknown as Record<string, unknown>).__rulesMounted = ((this as unknown as Record<string, unknown>).__rulesMounted as Set<string> || new Set<string>()).add(agentId);
-          console.log(`[qqbot-rules] contexts registered agent=${agentId} (fixed + group)`);
-        } else {
-          console.log(`[qqbot-rules] context unavailable sp=${typeof sp}`);
-        }
-      };
-      if (typeof anyCtx.inject === 'function') {
-        anyCtx.inject(['systemPrompt'], (scope: unknown) => {
-          doReg((scope as { systemPrompt?: { context?: (o: unknown) => unknown } })?.systemPrompt);
+      const reader = (this.liveSettingsReader ??= new SettingsReader());
+      const gp = reader.readGroupPrompt(ns, true);
+      if (gp) return gp;
+    } catch { /* 读失败回退内存 */ }
+    const selfNs = String(this.config.settingsNs ?? '').trim() || 'im-qqbot';
+    return ns === selfNs ? (this.config.groupPrompt?.trim() || '') : '';
+  }
+
+  /**
+   * 群守则/固定规则 pre-step 直注(幂等): 每次消息入站调用, 全局只装一次注入器。
+   *
+   * 2026-09-11 考古定稿(参考 deepseek-harness/packages/context/agent-instructions):
+   *  - dsh 0.1.5 的 persona 是 complete section → assemble 只保留 persona,
+   *    运行时注册的 section 全被丢弃(system/message 只有人设, 实证);
+   *  - context() 快照链路(assemble → RuntimeContextProjection.project)实际不记录;
+   *  - 官方 agent-instructions 用 ctx.on('agent/pre-step') 把带来源 user/message
+   *    折入 decision.messages(紧随 claimed batch 之后) → 直接进模型请求, 绕开 assemble。
+   *
+   * 本实现:
+   *  - 宿主根 ctx 监听 agent/pre-step; cwd 分流(只对本实例 config.cwd 匹配的 agent 注入本实例群守则);
+   *  - 每回合现读 settings.yaml(热更新); 固定通道规则 + 群守则 拼成一条 <system-reminder> user/message;
+   *  - 去重靠 KV cache: 本次 messages 或会话 surface 已有同 ns+同内容 → 不重复注入;
+   *    热更新内容变化 → 注入新版(历史保留旧版, 后续回合靠新版 KV cache)。
+   */
+  async ensureGroupRules(_record: SessionRecord): Promise<void> {
+    const hostCtx = ((this.ctx as unknown as { root?: Context }).root ?? this.ctx) as unknown as {
+      on?: (event: string, listener: (...args: unknown[]) => unknown) => void;
+    };
+    if (!hostCtx?.on || (this as unknown as Record<string, unknown>).__rulesMounted) return;
+    (this as unknown as Record<string, unknown>).__rulesMounted = true;
+    hostCtx.on('agent/pre-step', async (payload: unknown, next: unknown) => {
+      const decision = await (next as () => Promise<unknown>)();
+      try {
+        const p = payload as {
+          agent?: {
+            session?: {
+              header?: { cwd?: string };
+              surface?: { nodes?: number[] };
+              eventAt?: (seq: number) => unknown;
+            };
+          };
+          messages?: unknown[];
+        };
+        const agent = p?.agent;
+        const cwd = String(agent?.session?.header?.cwd ?? '');
+        const ns = this.nsForCwd(cwd);
+        if (!ns) return decision; // 非本 bot agent, 不注入
+        const dec = decision as { kind?: string; messages?: unknown[] };
+        if (dec?.kind !== 'enter' || !Array.isArray(dec.messages)) return decision;
+        const rules = this.readLiveGroupPromptForNs(ns);
+        const body = [FIXED_CHANNEL_CONTEXT.trim(), rules.trim()].filter(Boolean).join('\n\n');
+        if (!body) return decision;
+        const text = `<system-reminder>\n${body}\n</system-reminder>`;
+        const desired = {
+          role: 'user',
+          id: randomUUID(),
+          content: [{ type: 'text', text }],
+          source: { kind: 'qqbot:group-rules', form: 'instructions', ns },
+        };
+        // 去重(靠 KV cache): 本次 messages 已含同 ns+同内容 → 不重复
+        const inBatch = dec.messages.some((m: unknown) => {
+          const mm = m as { source?: { kind?: string; ns?: string }; content?: { type?: string; text?: string }[] };
+          return mm?.source?.kind === 'qqbot:group-rules' && mm.source.ns === ns && mm.content?.[0]?.text === text;
         });
-      } else if (typeof anyCtx.effect === 'function') {
-        anyCtx.effect(() => doReg(anyCtx.systemPrompt), 'qqbot-rules.register');
-      } else {
-        doReg(anyCtx.systemPrompt);
+        if (!inBatch && agent?.session?.surface?.nodes && agent.session.eventAt) {
+          // 会话 surface 历史已有同 ns+同内容 → 靠 KV cache, 不重复注入
+          for (const seq of agent.session.surface.nodes) {
+            const ev = agent.session.eventAt(seq) as
+              | { type?: string; data?: { source?: { kind?: string; ns?: string }; content?: { type?: string; text?: string }[] } }
+              | undefined;
+            if (ev?.type === 'user/message'
+              && ev.data?.source?.kind === 'qqbot:group-rules'
+              && ev.data.source.ns === ns
+              && ev.data.content?.[0]?.text === text) {
+              return decision;
+            }
+          }
+        }
+        if (inBatch) return decision;
+        const claimed = Array.isArray(p.messages) ? p.messages : [];
+        let lastClaimedIndex = -1;
+        for (let i = dec.messages.length - 1; i >= 0; i--) {
+          if (claimed.includes(dec.messages[i])) { lastClaimedIndex = i; break; }
+        }
+        const at = Math.max(0, lastClaimedIndex + 1);
+        const entered = [...dec.messages.slice(0, at), desired, ...dec.messages.slice(at)];
+        return { ...dec, messages: entered };
+      } catch {
+        return decision;
       }
-    } catch (e) { console.log(`[qqbot-rules] error: ${e instanceof Error ? e.message : String(e)}`); }
+    });
   }
 
   findBySessionId(sessionId: string): SessionRecord | undefined {

@@ -153,7 +153,13 @@ export function apply(ctx) {
         const all = ctx.settings.describe({});
         nss = (Array.isArray(all) ? all : []).map((x) => x.ns);
       } catch (e) { describeErr = String(e?.message ?? e); }
-      writeJson(res, 200, { hasSettings, nss, describeErr });
+      // 触发式反归档诊断(2026-09-11): 有多少次真的把归档的 QQ 会话拉回可见(见 dist/session/workspace-attach.js)
+      let workspaceAttach = null;
+      try {
+        const wa = await import('./dist/session/workspace-attach.js');
+        workspaceAttach = typeof wa.workspaceAttachState === 'function' ? wa.workspaceAttachState() : null;
+      } catch { /* 模块未部署时忽略 */ }
+      writeJson(res, 200, { hasSettings, nss, describeErr, workspaceAttach });
     } catch (e) { writeJson(res, 500, { error: String(e?.message ?? e) }); }
   });
 

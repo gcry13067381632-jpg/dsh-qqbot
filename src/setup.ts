@@ -94,7 +94,7 @@ export async function runQrSetup(source = 'dsh-qqbot'): Promise<SetupCredentials
  * 文件其它内容(含 !!js、其它实例、insert 包装)原样保留。
  *
  * ⚠️ 2026-09-10 修复两处线上事故:
- *   1. 旧实现把条目名硬编码成 `im-qqbot`, 对 `im-qqbot-2` 这类实例找不到块 →
+ *   1. 旧实现把条目名硬编码成 `im-qqbot`, 对 某实例 这类实例找不到块 →
  *      在文件末尾追加了一个顶层 `- id: im-qqbot`(新版 dsh 无此 entry, 会让整棵插件树加载失败);
  *      现按 instEntryId(来自 config.settingsNs)定位, 且**绝不新建顶层 entry id**。
  *   2. appId 必须写为**带引号的字符串** —— 新版 cordis 严格校验 `$.appId expected string`,
@@ -238,3 +238,4 @@ function printYamlInstructions(credentials: SetupCredentials, patchPath: string,
   console.log(`          appId: '${credentials.appId}'`);
   console.log(`          appSecret: '${credentials.appSecret}'`);
 }
+

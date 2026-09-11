@@ -26,8 +26,8 @@ type Writer = (mode: OutboundMode) => Promise<{ ok: boolean; msg: string; mode: 
 
 /**
  * 多实例 writer 注册表(2026-09-11 主人实测修复): 原实现是模块级单例 `let writer` ——
- * 多个 dsh-qqbot 实例(im-qqbot / im-qqbot-2 / im-qqbot-3)各自 apply 时 setOutboundModeWriter
- * 会互相覆盖, 后启动的实例把前一个的 writer 顶掉。于是 `/outmode nothink` 在 im-qqbot-2 会话
+ * 多个 dsh-qqbot 实例(多个实例)各自 apply 时 setOutboundModeWriter
+ * 会互相覆盖, 后启动的实例把前一个的 writer 顶掉。于是 `/outmode nothink` 在 某实例会话
  * 里执行, switchOutboundMode 却调到了别的实例的 writer, 改的是别人的 config ——
  * 症状: dock 显示的模式与实际切换不一致、nothink/adaptive 切了不生效。
  * 改为按 settingsNs 注册, 切换时显式携带当前实例 ns。
@@ -54,3 +54,4 @@ export async function switchOutboundMode(m: unknown, ns?: string): Promise<{ ok:
   }
   return w(mode);
 }
+

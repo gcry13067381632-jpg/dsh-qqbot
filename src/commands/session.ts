@@ -20,15 +20,20 @@ export function resetCommand({ manager }: CommandDeps): SlashCommand {
   };
 }
 
-/** /bot-new — 开启新会话(真 fork: 旧会话存档可回看, 本会话开新档; 2026-09-08 修假实现) */
+/** /bot-new — 开启新会话(真 fork: 旧会话存档可回看, 本会话开新档; 2026-09-08 修假实现)
+ *  2026-09-11 补: 会话损坏(历史加载失败)导致无活跃记录时, 不再回「无需开新」,
+ *  而是轮换 sessionId 直接另起新档 —— 主人可在 QQ 上弃掉炸掉的档重开。 */
 export function newCommand({ manager }: CommandDeps): SlashCommand {
   return {
     name: 'bot-new',
-    description: '开启新会话(保留旧会话存档, 可回看)',
+    description: '开启新会话(保留旧会话存档, 可回看; 旧档损坏时直接另起新档)',
     handler: async (cmdCtx) => {
       const { scope, peerId } = getScopePeer(cmdCtx);
-      const ok = await manager.startNewSession(scope, peerId, false);
-      return ok ? '已开启新会话 ✓(旧会话已存档)' : '当前没有活跃会话, 无需开新';
+      const { target, triggererId } = resolveCommandTarget(cmdCtx as never);
+      const r = await manager.startNewSession(scope, peerId, false, undefined, { replyTarget: target, senderId: triggererId });
+      if (r === 'forked') return '已开启新会话 ✓(旧会话已存档)';
+      if (r === 'rotated') return '已开启新会话 ✓(原会话档无法加载或不存在, 已直接另起新档; 坏档文件保留在磁盘)';
+      return '开新会话失败, 请稍后再试(可先聊一句再试 /bot-new)';
     },
   };
 }
@@ -41,10 +46,13 @@ export function newPresetCommand({ manager }: CommandDeps): SlashCommand {
     usage: '/new [preset]',
     handler: async (cmdCtx) => {
       const { scope, peerId } = getScopePeer(cmdCtx);
+      const { target, triggererId } = resolveCommandTarget(cmdCtx as never);
       const args = String((cmdCtx.command?.raw ?? '').trim());
       if (!args) {
-        const ok = await manager.startNewSession(scope, peerId, false);
-        return ok ? '已开启新会话 ✓(使用当前默认人格)' : '当前没有活跃会话, 无需开新';
+        const r = await manager.startNewSession(scope, peerId, false, undefined, { replyTarget: target, senderId: triggererId });
+        if (r === 'forked') return '已开启新会话 ✓(使用当前默认人格)';
+        if (r === 'rotated') return '已开启新会话 ✓(原会话档无法加载或不存在, 已直接另起新档)';
+        return '开新会话失败, 请稍后再试';
       }
       // 精确匹配 preset id(先验存在, 避免未知 id 建错会话)
       const list = await manager.listPresets();
@@ -56,8 +64,10 @@ export function newPresetCommand({ manager }: CommandDeps): SlashCommand {
         }
         return lines.join('\n');
       }
-      const ok = await manager.startNewSession(scope, peerId, false, hit.id);
-      return ok ? `✅ 已用人格「${hit.id}」开启新会话(旧会话存档可回看)` : '当前没有活跃会话, 请先聊一句再切';
+      const r = await manager.startNewSession(scope, peerId, false, hit.id, { replyTarget: target, senderId: triggererId });
+      if (r === 'forked') return `✅ 已用人格「${hit.id}」开启新会话(旧会话存档可回看)`;
+      if (r === 'rotated') return `✅ 已用人格「${hit.id}」另起新档(原会话档无法加载或不存在)`;
+      return '开新会话失败, 请稍后再试(可先聊一句再试 /new)';
     },
   };
 }

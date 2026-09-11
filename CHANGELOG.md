@@ -4,6 +4,19 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [1.1.5] - 2026-09-11
+
+### 新增
+- **归档会话自动回家(触发式反归档)**: 被误点「归档」藏起来的 QQ 会话, **下次在 QQ 里被消息触发时**自动从归档集合里摘出、回到侧边栏可见(走宿主同一条持久化链, 热刷新, 不用重启)。你主动归档的其它会话不受影响。诊断: `/api/qqbot-settings/_debug` 的 `workspaceAttach` 计数 + `~/.dsh/qqbot-archive.log`。
+
+### 修复
+- **`/bot-new` 支持弃档重开**: 会话在磁盘上损坏(历史加载失败)时, 此前会回「当前没有活跃会话, 无需开新」而无路可走; 现改为轮换全新 sessionId 直接另起新档(坏档文件保留不删), 可在 QQ 上直接弃掉炸掉的会话。`/new`(不带参)与 `/new <人格>` 同步。
+- **群守则注入写坏会话**: `agent/pre-step` 注入的群守则 user/message 缺 `id`, 运行时能落盘、重启恢复时校验失败 → 会话报 `lacks an identified message` 直接打不开。已补 `randomUUID()`。
+- **群守则热更新**: 现读 `settings.yaml` 对应实例的 `groupPrompt`(绕过缓存), 面板改完即时生效。
+
+### 变更
+- 移除群守则注入的临时诊断探针(不再写 `~/.dsh/qqbot-rules-diag.log` 与启动期 console 探针)。
+
 ## [1.1.4] - 2026-09-11
 
 ### 新增

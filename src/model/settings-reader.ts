@@ -90,8 +90,21 @@ export class SettingsReader {
     return ga && typeof ga === 'object' ? ga : undefined;
   }
 
-  private loadSettings(): Record<string, unknown> | null {
-    if (this.settingsCache !== undefined) return this.settingsCache;
+  /**
+   * 从 settings.yaml 的 <ns> 段读取群守则 groupPrompt(热更新用)。
+   * fresh=true 时绕过缓存现读磁盘(每次 system prompt 渲染调用, 使 Web 改完即时生效);
+   * 返回 undefined = 无该 ns / 无 groupPrompt / 空串。
+   */
+  readGroupPrompt(ns: string, fresh = false): string | undefined {
+    const settings = this.loadSettings(fresh);
+    if (!settings) return undefined;
+    const nsBlock = settings[ns] as Record<string, unknown> | undefined;
+    const gp = nsBlock?.groupPrompt;
+    return typeof gp === 'string' && gp.trim() ? gp.trim() : undefined;
+  }
+
+  private loadSettings(fresh = false): Record<string, unknown> | null {
+    if (!fresh && this.settingsCache !== undefined) return this.settingsCache;
 
     try {
       const settingsPath = resolve(homedir(), '.dsh', 'settings.yaml');

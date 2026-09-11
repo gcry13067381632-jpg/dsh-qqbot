@@ -553,7 +553,7 @@ export function registerBotplayController(ns: string, c: BotplayController | und
 
 /** /botplay 命令触发入口: bootstrap 注册实现(带 sender/manager)。
  *  ⚠️ 2026-09-11 多实例修复: 原模块级单例会被多个实例互相覆盖(和 outbound writer 同款 bug,
- *  实测 /botplay 在 im-qqbot-2 会话执行却发卡到别的实例的群 86976C...)。改为按 ns 注册表。 */
+ *  实测 /botplay 在 某实例会话执行却发卡到别的实例的群 86976C...)。改为按 ns 注册表。 */
 type TriggerFn = (target: ReplyTarget, eventId: string, triggererId: string) => Promise<BotplayTriggerResult>;
 
 const triggerImpls = new Map<string, TriggerFn>();
@@ -625,3 +625,4 @@ export function resolveCommandTarget(
     triggererId: msg.senderId ?? '',
   };
 }
+

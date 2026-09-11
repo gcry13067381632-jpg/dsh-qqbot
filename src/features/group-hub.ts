@@ -150,7 +150,7 @@ export async function notifyGroupHub(
     // ② 宿主全局 registry(web/hub 非 QQ 会话) —— 2026-09-11 修复:
     //    之前只走 findBySessionId, hub 会话若在 QQ 会话表"未创建"则注入失败,
     //    事件驱动(GROUP_JOIN_REQUEST)就会 fallback 到"申请所在群群内提醒",
-    //    导致「今天开始包粽子」等普通群 web 会话也收到【入群申请】(主人实测不一致)。
+    //    导致「普通群」的 web 会话也收到【入群申请】(主人实测不一致)。
     //    与 wakeSessionAgent 同款三级 fallback: hub 注入成功即不再打扰普通群。
     const host = manager.findHostAgent(ga.hubSessionId);
     if (host) {
