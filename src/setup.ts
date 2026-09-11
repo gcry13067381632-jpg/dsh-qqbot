@@ -98,7 +98,7 @@ export async function runQrSetup(source = 'dsh-qqbot'): Promise<SetupCredentials
  *      在文件末尾追加了一个顶层 `- id: im-qqbot`(新版 dsh 无此 entry, 会让整棵插件树加载失败);
  *      现按 instEntryId(来自 config.settingsNs)定位, 且**绝不新建顶层 entry id**。
  *   2. appId 必须写为**带引号的字符串** —— 新版 cordis 严格校验 `$.appId expected string`,
- *      裸数字(1905515836)会让 preset/插件树整体挂载失败。
+ *      裸数字(appId 示例)会让 preset/插件树整体挂载失败。
  *
  * @param credentials 扫码得到的 appId/appSecret
  * @param profileDir dsh profile 目录(含 cordis.patch.yml)

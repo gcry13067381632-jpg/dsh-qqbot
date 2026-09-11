@@ -16,7 +16,10 @@ export function modelCommand({ manager, config }: CommandDeps): SlashCommand {
       // 无参数：显示当前模型 + 可用模型列表（可点击）
       if (!args) {
         const current = manager.getEffectiveModel(scope, peerId);
-        const models = manager.listAvailableModels();
+        const all = await manager.listAvailableModels();
+        // 2026-09-11 主人要求: 只显示当前服务商(provider)的模型 —— 点按钮只传模型名,
+        // provider 继承当前路由, 列表混杂其他服务商反而误导。
+        const models = current?.provider ? all.filter((m) => m.provider === current.provider) : all;
 
         // 当前模型展示：优先用别名（name），找不到别名时回退到 provider/model id
         let currentDisplay = '宿主默认配置';

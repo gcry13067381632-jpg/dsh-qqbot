@@ -219,6 +219,8 @@ export interface GroupAdminConfig {
     hubNotify: boolean;
     /** 是否同时在原群(普通群会话)发提醒。false=只注入群组管理器会话, 普通群不打扰 */
     notifyGroup: boolean;
+    /** 是否唤醒普通群(申请所在群)会话的 AI(2026-09-11 主人要求与唤醒群管 AI 分开设置) */
+    wakeGroup: boolean;
   };
 }
 
@@ -465,16 +467,18 @@ const groupAdminSchema = Schema.object({
     enabled: Schema.boolean().default(false).description('轮询入群申请总开关(事件驱动失效时的兜底: 定时拉取各群审批列表)'),
     intervalMin: Schema.number().min(1).default(5).description('每隔几分钟拉取一次审批列表(最小1分钟)'),
     minCount: Schema.number().min(1).default(2).description('待审批人数≥此值才唤醒 LLM 处理(攒够一批再报, 防打扰)'),
-    wakeLlm: Schema.boolean().default(true).description('达到阈值后唤醒 LLM 处理(伪造【审批轮询】入站消息; AI 按主人指令批/拒)'),
-    hubNotify: Schema.boolean().default(true).description('轮询到待审批时是否同时注入群组管理器会话(web 可见; 不勾=只在原群内提醒)'),
-    notifyGroup: Schema.boolean().default(true).description('是否同时在原群(普通群会话)发提醒。false=只注入群组管理器会话, 普通群不打扰'),
+    wakeLlm: Schema.boolean().default(true).description('唤醒【群管会话】AI(注入群组管理器会话并唤醒, AI 起来处理审批)'),
+    hubNotify: Schema.boolean().default(true).description('注入群管会话(web 可见, 不唤醒 AI; 与 wakeLlm 互斥——唤醒优先)'),
+    notifyGroup: Schema.boolean().default(false).description('通知普通群(申请所在群会话 append 一条, web 可见, 不唤醒 AI)。默认关=普通群不打扰(2026-09-11 修: 原来写死 true 与注释矛盾)'),
+    wakeGroup: Schema.boolean().default(false).description('唤醒【普通群】AI(申请所在群会话的 AI 起来处理审批; 2026-09-11 主人要求与唤醒群管 AI 分开设置)'),
   }).default({
     enabled: false,
     intervalMin: 5,
     minCount: 2,
     wakeLlm: true,
     hubNotify: true,
-    notifyGroup: true,
+    notifyGroup: false,
+    wakeGroup: false,
   }).description('入群申请轮询(事件兜底)'),
 }).default({
   enabled: false,
@@ -484,7 +488,7 @@ const groupAdminSchema = Schema.object({
   notifyInGroup: true,
   hubSessionId: '',
   hubNotify: true,
-  pollJoinRequests: { enabled: false, intervalMin: 5, minCount: 2, wakeLlm: true, hubNotify: true, notifyGroup: true },
+  pollJoinRequests: { enabled: false, intervalMin: 5, minCount: 2, wakeLlm: true, hubNotify: true, notifyGroup: false, wakeGroup: false },
 }).description('QQ 群管理');
 
 /** Web 设置页可编辑项的 schema(behavior/sticker.gates/injectRules/groupPrompt/schedule) */

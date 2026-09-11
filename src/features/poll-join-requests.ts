@@ -19,12 +19,23 @@ import { join } from 'node:path';
 import type { ImQQBotConfig } from '../config.js';
 import type { Logger } from '../types.js';
 import type { SessionManager } from '../session/index.js';
-import { handleInbound } from '../transport/inbound.js';
 import { pushPendingJoinRequest, type PendingJoinRequest } from './group-join-request.js';
-import { notifyGroupHub, wakeHubAgent } from './group-hub.js';
+import { notifyGroupHub, wakeHubAgent, safeAppendUserMessage, wakeSessionAgent } from './group-hub.js';
 import { groupRegistryPath } from '../api/group-admin.js';
 import { verifyHuman } from '../api/group-admin.js';
 import { dataRootOf } from '../gateway/data-root.js';
+
+/** 获取申请所在群会话(不在则 getOrCreate 恢复; 失败返回 undefined) */
+async function groupRecOf(manager: SessionManager, gid: string, senderId: string) {
+  let rec = manager.findByPeer('group', gid);
+  if (!rec) {
+    try {
+      const target = { scope: 'group' as const, targetId: gid };
+      rec = await manager.getOrCreate('group', gid, senderId, target);
+    } catch { return undefined; }
+  }
+  return rec;
+}
 
 /** 轮询 tick: 30s 精度足够(分钟级间隔) */
 const TICK_MS = 30_000;
@@ -200,10 +211,11 @@ export function startJoinRequestPolling(
     persist();
     const summary = lines.join('\n');
 
-    // ── 注入策略(主人 2026-09-10 定稿): 三开关独立, 唤醒与 hub 注入互斥, 都带完整明细 ──
-    //   hubNotify   → 注入 hub 会话(web 可见, 不唤醒)
-    //   wakeLlm     → followup 唤醒 hub agent(AI 起来处理) —— 与 hubNotify 互斥(避免双条)
-    //   notifyGroup → 是否同时伪造消息进普通群会话(默认关=只走群组管理器, 普通群不打扰)
+    // ── 注入策略(主人 2026-09-11 定稿): 四个独立开关, 各管一摊 ──
+    //   wakeLlm      → 唤醒【群管会话】AI(hub agent 起来处理审批)
+    //   hubNotify    → 注入群管会话(web 可见, 不唤醒; 与 wakeLlm 互斥——唤醒优先)
+    //   notifyGroup  → 通知普通群(申请所在群会话 append 一条, web 可见, 不唤醒 AI)
+    //   wakeGroup    → 唤醒【普通群】AI(申请所在群会话的 AI 起来处理; 2026-09-11 主人要求拆分)
     const first = wakeTargets[0];
     if (first) {
       if (poll.wakeLlm !== false) {
@@ -227,27 +239,27 @@ export function startJoinRequestPolling(
           logger.info(`[join-poll] wakeLlm=false 且 hubNotify=false, 仅落盘`);
         }
       }
-      // 通知普通群(独立开关, 默认 false): 在普通群会话也伪造一条(带明细)
+      // 通知普通群(独立开关, 默认 false): 申请所在群会话 append 一条(web 可见, **不唤醒 AI**)
+      // 2026-09-11 主人要求拆分: 原实现走 handleInbound 会唤醒普通群 AI 并可能发 QQ 消息;
+      // 现在「通知普通群」只做 web 可见, 唤醒由独立开关 wakeGroup 控制。
       if (poll.notifyGroup !== false) {
-        const now2 = new Date();
-        const pad = (n: number): string => String(n).padStart(2, '0');
-        const ts = `${now2.getFullYear()}-${pad(now2.getMonth() + 1)}-${pad(now2.getDate())} ${pad(now2.getHours())}:${pad(now2.getMinutes())}`;
-        const fakeMsg = {
-          kind: 'group' as const,
-          senderId: 'master',
-          senderName: '审批轮询',
-          content: `[审批轮询 ${ts}] ${summary}\n\n可回复我处理(如: 查看入群申请 / 通过 某人 / 拒绝 某人)`,
-          messageId: '',
-          timestamp: now2.toISOString(),
-          groupOpenid: first.gid,
-          msgType: 0,
-          attachments: undefined,
-        };
-        try {
-          await handleInbound(fakeMsg, manager, config, logger, undefined);
-          logger.info(`[join-poll] 普通群已提醒(notifyGroup)`);
-        } catch (err) {
-          logger.warn?.(`[join-poll] 普通群提醒失败: ${err instanceof Error ? err.message : String(err)}`);
+        const rec = await groupRecOf(manager, first.gid, first.items[0]?.member_openid ?? 'master');
+        if (rec) {
+          const r = await safeAppendUserMessage(rec.agent, summary, logger);
+          logger.info(`[join-poll] 普通群已通知(notifyGroup, 不唤醒): ${r}`);
+        } else {
+          logger.warn?.(`[join-poll] 普通群会话不可用(notifyGroup 跳过): ${first.gid.slice(0, 8)}…`);
+        }
+      }
+      // 唤醒普通群 AI(独立开关, 默认 false): followup 申请所在群会话的 AI
+      // 2026-09-11 主人确认: 【入群申请】=消息注记(不唤醒), 【审批轮询】=系统提醒(唤醒), 两者不同用途, 不互斥不去重。
+      if (poll.wakeGroup !== false) {
+        const rec = await groupRecOf(manager, first.gid, first.items[0]?.member_openid ?? 'master');
+        if (rec) {
+          const w = await wakeSessionAgent(manager, rec.sessionId, logger, `${summary}\n\n可回复我处理(如: 查看入群申请 / 通过 某人 / 拒绝 某人)`);
+          logger.info(`[join-poll] 唤醒普通群 AI: ${w}`);
+        } else {
+          logger.warn?.(`[join-poll] 普通群会话不可用(wakeGroup 跳过): ${first.gid.slice(0, 8)}…`);
         }
       }
     }
@@ -257,7 +269,7 @@ export function startJoinRequestPolling(
   timer.unref?.();
   void pollOnce();
   const poll = config.groupAdmin?.pollJoinRequests;
-  logger.info(`[join-poll] started (enabled=${poll?.enabled} interval=${poll?.intervalMin}min minCount=${poll?.minCount} wakeLlm=${poll?.wakeLlm} notifyGroup=${poll?.notifyGroup})`);
+  logger.info(`[join-poll] started (enabled=${poll?.enabled} interval=${poll?.intervalMin}min minCount=${poll?.minCount} wakeLlm=${poll?.wakeLlm} hubNotify=${poll?.hubNotify} notifyGroup=${poll?.notifyGroup} wakeGroup=${poll?.wakeGroup})`);
 
   return () => {
     clearInterval(timer);

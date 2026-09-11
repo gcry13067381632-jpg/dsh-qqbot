@@ -145,25 +145,43 @@ export class SessionManager {
   // ── 模型相关（委托给 ModelResolver） ──
 
   getEffectiveModel(scope: ChatScope, peerId: string): ModelRoute | undefined {
-    return this.modelResolver.getEffectiveRoute(this.sessionKey(scope, peerId));
+    const key = this.sessionKey(scope, peerId);
+    const rec = this.sessions.get(key);
+    // 2026-09-11: 优先读宿主 agent 实际生效模型 —— web 会话级模型设置会改宿主
+    // agent.options.provider/model(推理真用那个); 探测失败(fail-soft)回落配置链。
+    if (rec?.agent) {
+      try {
+        const o = (rec.agent as unknown as { options?: { provider?: string; model?: string } }).options;
+        if (o?.provider && o?.model) return { provider: o.provider, model: o.model };
+      } catch { /* fail-soft */ }
+    }
+    // 2026-09-11: 模型偏好绑定会话 —— 取当前会话的 sessionId 查 override
+    const sid = rec?.sessionId ?? this.currentSessionId(key);
+    return this.modelResolver.getEffectiveRoute(key, sid);
   }
 
   /**
    * 切换模型（fork + 重建，对齐 dsh-TUI 的 switchModel）
+   * ⚠️ 2026-09-11 主人定: 模型偏好改为绑定会话(sessionId)——override 存到 fork 后的
+   *    新会话 id, 使新会话/新档不再继承 peer 级旧偏好(修复"新建会话默认火山")。
    */
   async setModelOverride(scope: ChatScope, peerId: string, route: ModelRoute): Promise<void> {
     const key = this.sessionKey(scope, peerId);
 
-    this.modelResolver.setOverride(key, route);
-
     const record = this.sessions.get(key);
     if (!record) {
-      this.logger.info(`model pref saved (no active session): key=${key} → ${route.provider}/${route.model}`);
+      // 无活跃会话：挂到当前/派生 sessionId(下次 create/resume 会命中)
+      const sid = this.currentSessionId(key);
+      this.modelResolver.setOverride(key, sid, route);
+      this.logger.info(`model pref saved (no active session): key=${key} sid=${sid} → ${route.provider}/${route.model}`);
       return;
     }
 
     // fork 旧会话历史作为 seed → 子会话保留上下文继续聊(换模型不丢记忆)
     await this.forkCurrentSession(key, record, route, true);
+    // fork 后 record.sessionId = childId；override 挂到新会话(会话级绑定)
+    this.modelResolver.setOverride(key, record.sessionId, route);
+    this.logger.info(`model pref saved (forked): key=${key} sid=${record.sessionId} → ${route.provider}/${route.model}`);
   }
 
   /**
@@ -184,7 +202,7 @@ export class SessionManager {
       try { this.modelResolver.setSessionPreset(key, presetId); } catch { /* ignore */ }
     }
 
-    const route = this.modelResolver.getEffectiveRoute(key);
+    const route = this.modelResolver.getEffectiveRoute(key, record.sessionId);
     await this.forkCurrentSession(key, record, route, inherit);
     return true;
   }
@@ -369,11 +387,13 @@ export class SessionManager {
 
   clearModelOverride(scope: ChatScope, peerId: string): void {
     const key = this.sessionKey(scope, peerId);
-    this.modelResolver.clearOverride(key);
+    const rec = this.sessions.get(key);
+    const sid = rec?.sessionId ?? this.currentSessionId(key);
+    this.modelResolver.clearOverride(key, sid);
     this.modelResolver.clearSessionId(key);
   }
 
-  listAvailableModels(): ModelEntry[] {
+  async listAvailableModels(): Promise<ModelEntry[]> {
     return this.modelResolver.listModels();
   }
 
@@ -566,7 +586,7 @@ export class SessionManager {
         this.logger.info(`getOrCreate: cwd 已变更, fork 热迁移(继承历史): key=${key} old=${prevCfg.cwd ?? '(未记录)'} new=${wantCwd}`);
         // forkCurrentSession 内部用 this.config.cwd(新值)建子会话并继承历史 seed;
         // fork 后 active 记录的 sessionId/agent 已被替换为新档, 直接补 target 返回即可。
-        await this.forkCurrentSession(key, active, this.modelResolver.getEffectiveRoute(key), true);
+        await this.forkCurrentSession(key, active, this.modelResolver.getEffectiveRoute(key, active.sessionId), true);
         active.replyTarget = replyTarget;
         active.lastActivity = Date.now();
         return active;
@@ -585,8 +605,9 @@ export class SessionManager {
       return existing;
     }
 
-    const route = this.modelResolver.getEffectiveRoute(key);
+    // 2026-09-11: 先定 sessionId, 再按「会话级」查模型路由 —— 新会话(sessionId 无 override)回落全局默认
     const sessionId = SessionId(this.currentSessionId(key));
+    const route = this.modelResolver.getEffectiveRoute(key, sessionId);
     this.logger.info(`getOrCreate: key=${key} route=${route ? `${route.provider}/${route.model}` : 'host-default'} sessionId=${sessionId}`);
 
     let agent: DshAgent;
@@ -597,12 +618,19 @@ export class SessionManager {
     if (live) {
       agent = live;
       this.logger.info(`reusing live agent: key=${key}`);
+      // 2026-09-11 主人反馈修正: 「web 上改了模型, 重启后不应回退」。
+      // live agent 通常带宿主/ web 设置的模型(会话持久化恢复) → **无 QQ override 时尊重它**,
+      // 避免 QQ 默认路由(官方)把 web 设置覆盖回退。
+      // 仅当 QQ 侧 /bot-model 明确设过 override 时, 才用 QQ 设置覆盖(QQ 优先, 双向持久)。
+      if (this.modelResolver.hasOverride(key, sessionId)) {
+        this.applyModelRoute(agent, route, 'live-override');
+      }
     } else {
       // preset 只解析一次：resume/create 共用同一组合(会话覆盖 > config), 避免重复 resolve/mount 目录
       const composed = await this.composePreset(this.effectivePreset(key));
       agentPreset = composed.agentPreset;
       try {
-        const resumeRoute = this.modelResolver.getResumeRoute(key);
+        const resumeRoute = this.modelResolver.getResumeRoute(key, sessionId);
         const resumed = await this.agents.resume({
           resumeSessionId: sessionId,
           ...(resumeRoute ? { agentOptions: resumeRoute } : {}),
@@ -655,6 +683,25 @@ export class SessionManager {
     void attachSessionToWorkspace(this.ctx, this.config.cwd, sessionId, this.logger);
 
     return record;
+  }
+
+  /**
+   * 2026-09-11: 把 QQ 侧 override 路由应用到 agent.options。
+   * 仅当 QQ 侧 /bot-model 明确设过 override 时调用(QQ 设置优先, 持久生效);
+   * 无 override 时**不覆盖** —— 尊重宿主/ web 设置的模型(重启后不回退)。
+   */
+  private applyModelRoute(agent: DshAgent, route: ModelRoute | undefined, label: string): void {
+    if (!route) return;
+    const liveOpts = (agent as unknown as { options?: { provider?: string; model?: string } }).options;
+    if (!liveOpts) return;
+    if (liveOpts.provider !== route.provider || liveOpts.model !== route.model) {
+      (agent as unknown as { options: { provider: string; model: string } }).options = {
+        ...liveOpts,
+        provider: route.provider,
+        model: route.model,
+      };
+      this.logger.info(`getOrCreate: ${label} 模型覆盖 ${liveOpts.provider}/${liveOpts.model} -> ${route.provider}/${route.model}`);
+    }
   }
 
   /**

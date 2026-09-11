@@ -24,18 +24,33 @@ export function isSwitchable(m: unknown): m is SwitchableOutboundMode {
 
 type Writer = (mode: OutboundMode) => Promise<{ ok: boolean; msg: string; mode: OutboundMode }>;
 
-let writer: Writer | undefined;
+/**
+ * 多实例 writer 注册表(2026-09-11 主人实测修复): 原实现是模块级单例 `let writer` ——
+ * 多个 dsh-qqbot 实例(im-qqbot / im-qqbot-2 / im-qqbot-3)各自 apply 时 setOutboundModeWriter
+ * 会互相覆盖, 后启动的实例把前一个的 writer 顶掉。于是 `/outmode nothink` 在 im-qqbot-2 会话
+ * 里执行, switchOutboundMode 却调到了别的实例的 writer, 改的是别人的 config ——
+ * 症状: dock 显示的模式与实际切换不一致、nothink/adaptive 切了不生效。
+ * 改为按 settingsNs 注册, 切换时显式携带当前实例 ns。
+ */
+const writers = new Map<string, Writer>();
 
-/** bootstrap 注册切换实现(每实例一次) */
-export function setOutboundModeWriter(fn: Writer | undefined): void {
-  writer = fn;
+/** bootstrap 注册切换实现(每实例一次, 按 ns 隔离) */
+export function setOutboundModeWriter(ns: string, fn: Writer | undefined): void {
+  if (fn) writers.set(ns, fn);
+  else writers.delete(ns);
 }
 
-/** 执行切换: 命令/工具共用入口 */
-export async function switchOutboundMode(m: unknown): Promise<{ ok: boolean; msg: string; mode: OutboundMode }> {
+/** 执行切换: 命令/工具共用入口。ns=当前实例 settingsNs(多实例下必须传, 否则切错实例) */
+export async function switchOutboundMode(m: unknown, ns?: string): Promise<{ ok: boolean; msg: string; mode: OutboundMode }> {
   const mode = normalizeOutboundMode(m);
-  if (!writer) {
-    return { ok: false, msg: '出站模式切换器未注册(插件未就绪)', mode };
+  const w = ns ? writers.get(ns) : undefined;
+  if (!w) {
+    // 未传 ns / 找不到: 单实例时取唯一 writer 兜底; 多实例但无法判定 → 明确报错(宁拒绝不切错)
+    if (writers.size === 1) {
+      const only = writers.values().next().value as Writer | undefined;
+      if (only) return only(mode);
+    }
+    return { ok: false, msg: `出站模式切换器未注册(ns=${ns ?? '(未指定)'})`, mode };
   }
-  return writer(mode);
+  return w(mode);
 }

@@ -319,7 +319,7 @@ window.__ModuleLoader__.load({
           NumRow({ label: '群里没人 @ 她时,隔几秒才回一次(0=每条都回)', value: cfg.behavior.freeIntervalSec, onChange: function (v) { setBehavior({ freeIntervalSec: v }) } }),
           NumRow({ label: '有人 @ 她时,两次回复至少隔几秒(0=随叫随到)', value: cfg.behavior.mentionIntervalSec, onChange: function (v) { setBehavior({ mentionIntervalSec: v }) } }),
           NumRow({ label: '私聊里隔几秒回一次(0=不限制)', value: cfg.behavior.directIntervalSec, onChange: function (v) { setBehavior({ directIntervalSec: v }) } }),
-          h('div', { style: { fontSize: 12, color: '#666', margin: '10px 0 2px' } }, '出站方式(连发消息 QQ 端丢失时切主动):'),          h('div', { style: { display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' } },            ['adaptive', 'passive', 'silent', 'nothink'].map(function (m) {              var cur = (cfg.outboundMode || 'adaptive'); if (cur === 'active') cur = 'adaptive';              return h('label', { style: { display: 'inline-flex', gap: 5, alignItems: 'center', fontSize: 12, color: '#333', cursor: 'pointer' } },                h('input', { type: 'radio', name: 'qqs-outbound', checked: cur === m, onChange: function () { setCfg(function (c) { return Object.assign({}, c, { outboundMode: m }) }) } }),                m === 'adaptive' ? '适配主动(推荐默认)' : (m === 'passive' ? '被动(只回最后一句)' : (m === 'silent' ? '完全不出站(静默)' : '完全不思考(QQ入站不唤醒,仅设置页)')))            })),          h('div', { style: { fontSize: 12, color: '#888' } }, '适配主动=刚收到真人消息时前5条带引用回你, 第6条起自动转独立新消息(连发不被QQ吞); 一段时间没新消息的主动推送(定时等)也走独立消息。被动=始终回你那条(连发约4~5条后被QQ吞)。完全不出站=照常思考但不向QQ发任何回复(鲸鱼娘可用工具切回)。完全不思考=QQ入站不唤醒AI, 消息只记录(仅本页可开; 唤醒请发 /outmode adaptive)。保存即热更新, 不用重启。'),          h('div', { style: { fontSize: 12, color: '#666', margin: '10px 0 2px' } }, '延迟聚合(另一套机制,和上面冷却不冲突): 她收到消息先等一小会儿, 把连发的话攒一起综合回, 免得只回第一句。'),
+          h('div', { style: { fontSize: 12, color: '#666', margin: '10px 0 2px' } }, '出站方式(连发消息 QQ 端丢失时切主动):'),          h('div', { style: { display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' } },            ['adaptive', 'passive', 'silent', 'nothink'].map(function (m) {              var cur = (cfg.outboundMode || 'adaptive'); if (cur === 'active') cur = 'adaptive';              return h('label', { style: { display: 'inline-flex', gap: 5, alignItems: 'center', fontSize: 12, color: '#333', cursor: 'pointer' } },                h('input', { type: 'radio', name: 'qqs-outbound', checked: cur === m, onChange: function () { setCfg(function (c) { return Object.assign({}, c, { outboundMode: m }) }) } }),                m === 'adaptive' ? '适配主动(推荐默认)' : (m === 'passive' ? '被动(只回最后一句)' : (m === 'silent' ? '完全不出站(静默)' : '完全不思考(QQ入站不唤醒,仅设置页)')))            })),          h('div', { style: { fontSize: 12, color: '#888' } }, '适配主动=刚收到真人消息时前5条带引用回你, 第6条起自动转独立新消息(连发不被QQ吞); 一段时间没新消息的主动推送(定时等)也走独立消息。被动=始终回你那条(连发约4~5条后被QQ吞)。完全不出站=照常思考但不向QQ发任何回复(AI 可用工具切回)。完全不思考=QQ入站不唤醒AI, 消息只记录(仅本页可开; 唤醒请发 /outmode adaptive)。保存即热更新, 不用重启。'),          h('div', { style: { fontSize: 12, color: '#666', margin: '10px 0 2px' } }, '延迟聚合(另一套机制,和上面冷却不冲突): 她收到消息先等一小会儿, 把连发的话攒一起综合回, 免得只回第一句。'),
           BoolRow({ label: '开启延迟聚合(不勾=回到来一条回一条)', value: dbc.enabled !== false, onChange: function (v) { setBehavior({ debounce: { ...dbc, enabled: v } }) } }),
           NumRow({ label: '对方停口几秒后她才开口(默认3;0=不停顿)', value: dbc.silenceSec != null ? dbc.silenceSec : 3, onChange: function (v) { setBehavior({ debounce: { ...dbc, silenceSec: v } }) } }),
           NumRow({ label: '攒满几条立即开口,不等对方停(默认10)', value: dbc.maxMsgs != null ? dbc.maxMsgs : 10, onChange: function (v) { setBehavior({ debounce: { ...dbc, maxMsgs: v } }) } }),
@@ -2221,6 +2221,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           state.gaPollWake = read('#dk-ga-pollwake')
           state.gaHubNotify = read('#dk-ga-hubnotify')
           state.gaNotifyGroup = read('#dk-ga-notifygroup')
+          state.gaWakeGroup = read('#dk-ga-wakegroup')
           state.gaInterval = num('#dk-ga-interval', 5)
           state.gaMinCount = num('#dk-ga-mincount', 1)
           saveGroupAdmin()
@@ -2254,6 +2255,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           state.gaPollWake = poll.wakeLlm !== false
           state.gaHubNotify = poll.hubNotify !== false
           state.gaNotifyGroup = poll.notifyGroup !== false
+          state.gaWakeGroup = poll.wakeGroup === true
           state.gaInterval = poll.intervalMin || 5
           state.gaMinCount = poll.minCount || 1
           var e1 = panel && panel.querySelector('#dk-ga-enabled'); if (e1) e1.checked = state.gaEnabled
@@ -2261,6 +2263,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           var e3 = panel && panel.querySelector('#dk-ga-pollwake'); if (e3) e3.checked = state.gaPollWake
           var e4 = panel && panel.querySelector('#dk-ga-hubnotify'); if (e4) e4.checked = state.gaHubNotify
           var e4b = panel && panel.querySelector('#dk-ga-notifygroup'); if (e4b) e4b.checked = state.gaNotifyGroup
+          var e4c = panel && panel.querySelector('#dk-ga-wakegroup'); if (e4c) e4c.checked = state.gaWakeGroup
           var e5 = panel && panel.querySelector('#dk-ga-interval'); if (e5) e5.value = state.gaInterval
           var e6 = panel && panel.querySelector('#dk-ga-mincount'); if (e6) e6.value = state.gaMinCount
         }).catch(function () {})
@@ -2284,6 +2287,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
                 wakeLlm: state.gaPollWake,
                 hubNotify: state.gaHubNotify,
                 notifyGroup: state.gaNotifyGroup,
+                wakeGroup: state.gaWakeGroup,
               },
             })
             patch.groupAdmin = ga
@@ -2897,6 +2901,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             + '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px"><input type="checkbox" id="dk-ga-pollwake"' + (state.gaPollWake ? ' checked' : '') + '> 唤醒AI</label>'
             + '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px"><input type="checkbox" id="dk-ga-hubnotify"' + (state.gaHubNotify ? ' checked' : '') + '> 注入群管会话</label>'
             + '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px" title="取消勾选=只注入群组管理器会话, 普通群会话不再收到审批提醒"><input type="checkbox" id="dk-ga-notifygroup"' + (state.gaNotifyGroup ? ' checked' : '') + '> 通知普通群</label>'
+            + '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px" title="唤醒申请所在群会话的AI处理审批(与「唤醒AI」分开设置, 2026-09-11 主人要求)"><input type="checkbox" id="dk-ga-wakegroup"' + (state.gaWakeGroup ? ' checked' : '') + '> 唤醒普通群AI</label>'
             + '</div>'
             + '<div class="dk-row" style="gap:8px;flex-wrap:wrap">'
             + '<span style="font-size:12px;color:#666;display:inline-flex;align-items:center;gap:4px">间隔 <input type="number" id="dk-ga-interval" min="1" value="' + (state.gaInterval || 5) + '" style="width:52px;font-size:12px;padding:2px 4px"> 分钟</span>'
@@ -2948,7 +2953,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             + ['adaptive','passive','silent'].map(function (m2) { return '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;color:#333"><input type="radio" name="dk-outmode" value="' + m2 + '"' + (om === m2 ? ' checked' : '') + '> ' + (m2==='adaptive' ? '适配主动(推荐默认)' : (m2==='passive' ? '被动(只回最后一句)' : '完全不出站(静默)')) + '</label>' }).join('')
             + '</div>'
           body += '<div class="dk-msg" style="line-height:1.6">适配主动=和QQ有关的会话回复都发到QQ: 刚收到真人消息时前5条带引用回你(能看到回的是哪句), 第6条起自动转独立新消息, 连发不被QQ吞; 定时/后台等没有新真人消息的主动推送也走独立消息。'
-          body += '被动=始终以「回复你那条」发出, 连发约4~5条后会被QQ吞掉。完全不出站=本机静默, 不向QQ发任何回复(鲸鱼娘可用工具随时切回)。本开关对纯web(没绑QQ)的会话不生效。</div>'
+          body += '被动=始终以「回复你那条」发出, 连发约4~5条后会被QQ吞掉。完全不出站=本机静默, 不向QQ发任何回复(AI 可用工具随时切回)。本开关对纯web(没绑QQ)的会话不生效。</div>'
           body += '<span class="dk-msg" id="dk-out-hint" style="color:#2f9e44;margin:4px 0"></span>'
         } else if (state.tab === 'card') {
           // 📝 自定义 markdown 卡片(2026-09-10): 源码 + 实时预览 + 按钮配置 → 发送到选中群/私聊

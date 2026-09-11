@@ -327,11 +327,13 @@ class StickerGate {
 }
 
 // ── 多例注册表(多账号支持, 2026-09-03): 每账号实例一个 dataDir → 各自闸门状态/预算/日志。
+// ⚠️ 2026-09-11 B类修复: 单例时序坑同 sticker-store —— primary 按实例(ns)各记一份。
 const _gates = new Map<string, StickerGate>();
+const _primaryGateByNs = new Map<string, string>();
 let _primaryGateDir: string | undefined;
 
-/** 启动早期按 config.cwd 解析的 dataDir 预初始化(防目录分裂, 与 configureStickerStore 同款纪律) */
-export function initStickerGate(dataDir: string, logger?: Logger): StickerGate {
+/** 启动早期按 config.cwd 解析的 dataDir 预初始化(防目录分裂, 与 configureStickerStore 同款纪律)。ns=实例标识。 */
+export function initStickerGate(dataDir: string, logger?: Logger, ns?: string): StickerGate {
   const key = resolve(dataDir);
   let g = _gates.get(key);
   if (!g) {
@@ -339,6 +341,7 @@ export function initStickerGate(dataDir: string, logger?: Logger): StickerGate {
     _gates.set(key, g);
   }
   if (!_primaryGateDir) _primaryGateDir = key;
+  if (ns) _primaryGateByNs.set(ns, key);
   return g;
 }
 
@@ -347,8 +350,8 @@ export function hasStickerGate(): boolean {
   return _primaryGateDir !== undefined && _gates.has(_primaryGateDir);
 }
 
-/** 获取闸门实例。带 dataDir → 按目录取; 无参 → primary(主账号)。 */
-export function getStickerGate(dataDir?: string, logger?: Logger): StickerGate {
+/** 获取闸门实例。带 dataDir → 按目录取; 带 ns → 按该实例 primary; 无参 → 全局 primary。 */
+export function getStickerGate(dataDir?: string, logger?: Logger, ns?: string): StickerGate {
   if (dataDir) {
     const key = resolve(dataDir);
     let g = _gates.get(key);
@@ -357,7 +360,15 @@ export function getStickerGate(dataDir?: string, logger?: Logger): StickerGate {
       _gates.set(key, g);
     }
     if (!_primaryGateDir) _primaryGateDir = key;
+    if (ns) _primaryGateByNs.set(ns, key);
     return g;
+  }
+  if (ns) {
+    const p = _primaryGateByNs.get(ns);
+    if (p) {
+      const g = _gates.get(p);
+      if (g) return g;
+    }
   }
   if (_primaryGateDir) {
     const g = _gates.get(_primaryGateDir);
@@ -368,6 +379,7 @@ export function getStickerGate(dataDir?: string, logger?: Logger): StickerGate {
   const g = new StickerGate(dir, logger);
   _gates.set(resolve(dir), g);
   if (!_primaryGateDir) _primaryGateDir = resolve(dir);
+  if (ns) _primaryGateByNs.set(ns, resolve(dir));
   return g;
 }
 

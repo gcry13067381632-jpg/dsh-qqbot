@@ -4,6 +4,20 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [1.1.4] - 2026-09-11
+
+### 新增
+- **入群申请双通道**: QQ 实时事件=【入群申请】消息注记(静默 append 不唤醒, AI 下回合自然看到); 轮询兜底=【审批轮询】系统提醒(唤醒 AI 起来处理)。
+- **群组管理四个独立开关(dock 设置)**: 唤醒AI(唤醒群管会话) / 注入群管会话(web 注记) / 通知普通群(申请所在群 web 注记) / 唤醒普通群AI(唤醒申请所在群 AI); 事件与轮询两条链路都生效, 互不干扰。
+- **入站 @bot 长 id 清洗**: 入站消息里 bot 自身 openid 自动转短标记 `@bot`(省 token), 出站 @ 人不受影响。
+- **web 改模型持久化**: Web 设置改模型重启不回退(QQ 侧 override 优先); `/model` 只列出当前服务商模型。
+
+### 修复
+- **多实例单例 bug(B/C 类)**: 表情包库/定时任务/表情闸门/历史缓冲按实例(settingsNs)隔离, 不再串库。
+- **模型服务解析**: model-resolver getService 改先 `ctx.get()` 再属性访问(父链查找), 官方模型正常进列表。
+- **入群通知链路**: notifyGroupHub 补宿主三级 fallback(QQ 会话表 → 宿主 registry → 宿主 resume), hub 注入成功不再 fallback 普通群; 事件驱动链路按「通知普通群/唤醒普通群AI」开关通知申请所在群; 事件持久化去重防重启重推双条。
+- **notifyGroup 默认值修正**: 配置默认改为 false(与注释一致, 默认不打扰普通群)。
+
 ## [1.0.1] - 2026-09-09
 
 ### 修复
@@ -76,7 +90,7 @@
 ### 变更
 - 出站模式扩为四档: adaptive 适配主动(默认) / passive 被动 / silent 完全不出站(照常思考但不发) / nothink 完全不思考(QQ入站不唤醒LLM, 消息仅记录, web对话仍可见群聊上下文)。
 - 安全边界: nothink 仅设置页可配(AI 工具禁止自切防锁死); 新增 /outmode 斜杠命令(SDK直通不经LLM)可随时切换/唤醒。
-- 新增 AI 工具 outbound_mode: 鲸鱼娘自己可切 adaptive/passive/silent, 热更新并同步 dock/设置面板(settings 持久化)。
+- 新增 AI 工具 outbound_mode: AI 自己可切 adaptive/passive/silent, 热更新并同步 dock/设置面板(settings 持久化)。
 - 修复: dock ⚙️出站页保存 revision 冲突(保存前重读最新版本+冲突自动重试); 设置页 load/patch/回填支持 silent/nothink 不丢字段。
 
 ## [0.9.3] - 2026-09-07

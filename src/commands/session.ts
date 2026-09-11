@@ -63,7 +63,7 @@ export function newPresetCommand({ manager }: CommandDeps): SlashCommand {
 }
 
 /** /preset <id> — 热切换当前会话的人格(preset), 不丢对话历史(2026-09-10) */
-export function presetSwitchCommand({ manager }: CommandDeps): SlashCommand {
+export function presetSwitchCommand({ manager, config }: CommandDeps): SlashCommand {
   return {
     name: 'preset',
     description: '热切换当前会话人格: /preset <id>(不丢对话历史, 即时生效); /presets 查看可选',
@@ -75,7 +75,8 @@ export function presetSwitchCommand({ manager }: CommandDeps): SlashCommand {
         // 无参 → 发人格切换按钮卡片(点按钮热切; 仿 /botplay 目录卡翻页)
         const { target } = resolveCommandTarget(cmdCtx as never);
         if (!target.targetId) return '无法定位当前会话, 请稍后再试~';
-        return sendPresetCard(target, scope, peerId, 0);
+        const ns = (String(config.settingsNs ?? '').trim() || 'im-qqbot');
+        return sendPresetCard(ns, target, scope, peerId, 0);
       }
       const list = await manager.listPresets();
       const hit = list.find((p) => p.id === args && !p.broken);

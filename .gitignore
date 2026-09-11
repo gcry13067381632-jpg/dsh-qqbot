@@ -4,3 +4,6 @@ dist/
 .dsh-sessions/
 *.tsbuildinfo
 *.bak
+deploy.ps1
+deploy.bat
+install-local.ps1

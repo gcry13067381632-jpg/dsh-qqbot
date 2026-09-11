@@ -84,7 +84,10 @@ export function outModeCommand({ manager, config }: CommandDeps): SlashCommand {
         return lines.join('\n');
       }
       const want = normalizeOutboundMode(args.toLowerCase());
-      const r = await switchOutboundMode(want);
+      // 多实例修复(2026-09-11): 带当前实例 ns —— 原全局单例 writer 会被多实例互相覆盖,
+      // /outmode 在本实例会话执行却切到别的实例的 config(dock 显示与实际不符, nothink 不生效)。
+      const ns = (String(config.settingsNs ?? '').trim() || 'im-qqbot');
+      const r = await switchOutboundMode(want, ns);
       if (r.ok) {
         // 先回执; 后台等回合结束再通知 AI(回合安全, 不拆 tool_calls)
         void noteModeChange(manager, cmdCtx, r.mode);

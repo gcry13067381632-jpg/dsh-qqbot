@@ -551,32 +551,45 @@ export function registerBotplayController(ns: string, c: BotplayController | und
   else botplayControllers.delete(ns);
 }
 
-/** /botplay 命令触发入口: bootstrap 注册实现(带 sender/manager) */
+/** /botplay 命令触发入口: bootstrap 注册实现(带 sender/manager)。
+ *  ⚠️ 2026-09-11 多实例修复: 原模块级单例会被多个实例互相覆盖(和 outbound writer 同款 bug,
+ *  实测 /botplay 在 im-qqbot-2 会话执行却发卡到别的实例的群 86976C...)。改为按 ns 注册表。 */
 type TriggerFn = (target: ReplyTarget, eventId: string, triggererId: string) => Promise<BotplayTriggerResult>;
 
-let triggerImpl: TriggerFn | undefined;
+const triggerImpls = new Map<string, TriggerFn>();
 
-export function setBotplayTriggerImpl(fn: TriggerFn | undefined): void {
-  triggerImpl = fn;
+export function setBotplayTriggerImpl(ns: string, fn: TriggerFn | undefined): void {
+  if (fn) triggerImpls.set(ns, fn);
+  else triggerImpls.delete(ns);
 }
 
-export async function triggerBotplay(target: ReplyTarget, eventId: string, triggererId: string): Promise<BotplayTriggerResult> {
-  if (!triggerImpl) return { ok: false, msg: 'botplay 未就绪(插件未启动)' };
-  return triggerImpl(target, eventId, triggererId);
+export async function triggerBotplay(ns: string, target: ReplyTarget, eventId: string, triggererId: string): Promise<BotplayTriggerResult> {
+  const impl = triggerImpls.get(ns);
+  if (!impl) {
+    // 兼容旧调用(未传 ns): 单实例兜底
+    if (triggerImpls.size === 1) return (triggerImpls.values().next().value as TriggerFn)(target, eventId, triggererId);
+    return { ok: false, msg: 'botplay 未就绪(插件未启动)' };
+  }
+  return impl(target, eventId, triggererId);
 }
 
 /** 事件目录卡入口: bootstrap 注册实现(带 sender/manager); /botplay 无参调用 */
 type CatalogFn = (target: ReplyTarget, page: number) => Promise<BotplayTriggerResult>;
 
-let catalogImpl: CatalogFn | undefined;
+const catalogImpls = new Map<string, CatalogFn>();
 
-export function setBotplayCatalogImpl(fn: CatalogFn | undefined): void {
-  catalogImpl = fn;
+export function setBotplayCatalogImpl(ns: string, fn: CatalogFn | undefined): void {
+  if (fn) catalogImpls.set(ns, fn);
+  else catalogImpls.delete(ns);
 }
 
-export async function botplayCatalog(target: ReplyTarget, page = 0): Promise<BotplayTriggerResult> {
-  if (!catalogImpl) return { ok: false, msg: 'botplay 未就绪(插件未启动)' };
-  return catalogImpl(target, page);
+export async function botplayCatalog(ns: string, target: ReplyTarget, page = 0): Promise<BotplayTriggerResult> {
+  const impl = catalogImpls.get(ns);
+  if (!impl) {
+    if (catalogImpls.size === 1) return (catalogImpls.values().next().value as CatalogFn)(target, page);
+    return { ok: false, msg: 'botplay 未就绪(插件未启动)' };
+  }
+  return impl(target, page);
 }
 
 /** 取某 ns 的事件列表(dock 装配器读; settings value 里其实已有, 此出口备用) */

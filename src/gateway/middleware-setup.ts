@@ -112,12 +112,12 @@ export async function setupMiddlewares(
   }));
 
   // 4. 群历史缓冲 — 放在门控之前，确保所有消息（含未 @bot）都计入上下文
-  //    store 走共享单例（getHistoryStore），groupKey 带 appId 前缀，供回复后清空
+  //    store 按 appId 独立(getHistoryStore(config.appId)), groupKey 带 appId 前缀, 供回复后清空
   //    ⚠️ 用增强版 mediaHistoryBuffer(本地手改，替代 SDK historyBuffer)：
   //       记历史时把带 URL 的附件折叠进 content，冷却期群友发的图/媒体在历史里也带链接
   bot.use(mediaHistoryBuffer({
     limit: config.historyLimit,
-    store: getHistoryStore(),
+    store: getHistoryStore(config.appId),
     recordOnSkip: true,
     groupKey: (ctx) => {
       const gid = ctx.message.groupOpenid;

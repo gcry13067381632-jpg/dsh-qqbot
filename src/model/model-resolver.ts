@@ -37,16 +37,19 @@ export class ModelResolver {
   /**
    * 获取指定 sessionKey 的有效模型路由（create 用）
    *
-   * 优先级：per-peer 偏好 > config 显式指定 > settings.yaml > 宿主服务
+   * 优先级：会话级偏好(sessionKey@sessionId) > config 显式指定 > settings.yaml > 宿主服务
+   * ⚠️ 2026-09-11 主人定: 模型偏好改为「绑定会话(sessionId)」而非「绑定聊天 id(peer)」——
+   *    新会话/新群不再继承旧偏好(此前 peer 级 override 导致新会话也默认火山)。
+   *    sessionId 缺省时兼容旧 peer 级读取(回退/单会话用)。
    */
-  getEffectiveRoute(sessionKey: string): ModelRoute | undefined {
-    return this.prefs.getOverride(sessionKey) ?? this.resolveDefault();
+  getEffectiveRoute(sessionKey: string, sessionId?: string): ModelRoute | undefined {
+    return this.prefs.getOverride(this.overrideKey(sessionKey, sessionId)) ?? this.resolveDefault();
   }
 
   /**
    * 获取 resume 时覆盖 session 的模型路由
    *
-   * 优先级：per-peer 偏好 > cordis.yml 显式配置 > 默认链（settings.yaml > host）
+   * 优先级：会话级偏好 > cordis.yml 显式配置 > 默认链（settings.yaml > host）
    *
    * 注意：不能像 dsh-TUI 那样返回 undefined 让 session 沿用 requestHeader。
    * dsh-TUI 靠 installModelSelection 从 session.requestHeader 恢复 {{model}}，
@@ -55,8 +58,8 @@ export class ModelResolver {
    * "prompt variable {{model}} has no value for this assembly"。
    * 因此这里兜底到默认链，确保 agent.options.model 始终有值。
    */
-  getResumeRoute(sessionKey: string): ModelRoute | undefined {
-    const override = this.prefs.getOverride(sessionKey);
+  getResumeRoute(sessionKey: string, sessionId?: string): ModelRoute | undefined {
+    const override = this.prefs.getOverride(this.overrideKey(sessionKey, sessionId));
     if (override) return override;
 
     if (this.config.provider && this.config.model) {
@@ -67,24 +70,25 @@ export class ModelResolver {
   }
 
   /**
-   * 设置 per-peer 模型偏好并持久化到隔离文件
+   * 设置会话级模型偏好并持久化到隔离文件
+   * (2026-09-11: key 从 peer 级改为 sessionKey@sessionId, 模型偏好跟随会话)
    */
-  setOverride(sessionKey: string, route: ModelRoute): void {
-    this.prefs.setOverride(sessionKey, route);
+  setOverride(sessionKey: string, sessionId: string | undefined, route: ModelRoute): void {
+    this.prefs.setOverride(this.overrideKey(sessionKey, sessionId), route);
   }
 
   /**
-   * 清除 per-peer 模型偏好并持久化
+   * 清除会话级模型偏好并持久化
    */
-  clearOverride(sessionKey: string): void {
-    this.prefs.clearOverride(sessionKey);
+  clearOverride(sessionKey: string, sessionId?: string): void {
+    this.prefs.clearOverride(this.overrideKey(sessionKey, sessionId));
   }
 
   /**
-   * 是否存在指定 session 的模型偏好
+   * 是否存在指定会话的模型偏好
    */
-  hasOverride(sessionKey: string): boolean {
-    return this.prefs.hasOverride(sessionKey);
+  hasOverride(sessionKey: string, sessionId?: string): boolean {
+    return this.prefs.hasOverride(this.overrideKey(sessionKey, sessionId));
   }
 
   /**
@@ -160,9 +164,54 @@ export class ModelResolver {
 
   /**
    * 列出所有可用模型
+   * ⚠️ 2026-09-11 主人要求: 合并「宿主 llm 服务的模型目录」(官方 deepseek-flash/V41 等)
+   *    + settings.yaml llm-pi-ai.providers(火山/豆包) —— 之前只读 settings, 官方模型永远不在列表。
+   *    宿主 llm.listModels 是异步的, 因此本方法改为 async。
    */
-  listModels(): ModelEntry[] {
-    return this.settings.readModels();
+  async listModels(): Promise<ModelEntry[]> {
+    const models: ModelEntry[] = [];
+
+    // ① 宿主 llm 服务的模型目录(deepseek-official 等内置 provider 的模型)
+    try {
+      const llm = this.getService('llm') as
+        | { listProviders(): Promise<unknown> | unknown; listModels(provider: string): Promise<readonly unknown[]> }
+        | undefined;
+
+      console.log(`[model] listModels: llm=${llm ? 'found' : 'MISSING'} listProviders=${typeof llm?.listProviders} listModels=${typeof (llm as { listModels?: unknown } | undefined)?.listModels}`);
+      if (llm && typeof llm.listProviders === 'function') {
+        const providers = await llm.listProviders();
+        console.log(`[model] listProviders -> ${Array.isArray(providers) ? providers.length + ' 个' : typeof providers}`);
+        if (Array.isArray(providers)) {
+          for (const p of providers) {
+            const pid = typeof p === 'string' ? p : (p as { id?: string })?.id;
+            if (!pid) continue;
+            try {
+              if (typeof llm.listModels !== 'function') continue;
+              const ms = await llm.listModels(pid);
+              console.log(`[model] provider=${pid} models=${Array.isArray(ms) ? ms.length : '非数组'}`);
+              if (!Array.isArray(ms)) continue;
+              for (const m of ms) {
+                const mid = (m as { id?: string })?.id;
+                if (!mid) continue;
+                models.push({ provider: pid, id: mid, name: (m as { name?: string })?.name || undefined });
+              }
+            } catch (err) {
+              console.log(`[model] provider=${pid} listModels 异常: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.log(`[model] 宿主 llm 服务异常: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    // ② settings.yaml llm-pi-ai.providers(火山/豆包等, 去重)
+    for (const m of this.settings.readModels()) {
+      if (!models.some((x) => x.provider === m.provider && x.id === m.id)) models.push(m);
+    }
+
+    console.log(`[model] listModels 合计 ${models.length} 个`);
+    return models;
   }
 
   /**
@@ -191,6 +240,11 @@ export class ModelResolver {
 
   // ── 私有方法 ──
 
+  /** 2026-09-11: 模型偏好绑定会话 —— key = sessionKey@sessionId; 无 sessionId 时回退 peer 级(旧数据/单会话) */
+  private overrideKey(sessionKey: string, sessionId?: string): string {
+    return sessionId ? `${sessionKey}@${sessionId}` : sessionKey;
+  }
+
   private readFromHost(): ModelRoute | undefined {
     try {
       const agentDefaultModel = this.getService('agentDefaultModel') as
@@ -211,10 +265,22 @@ export class ModelResolver {
     return undefined;
   }
 
-  /** 统一的 Cordis 服务访问 */
+  /** 统一的 Cordis 服务访问
+   *  ⚠️ 2026-09-11: 先走 ctx.get(name)(cordis 标准, 父链查找, 子 scope 可拿宿主服务);
+   *     原实现先属性访问 ctxAny[name] —— cordis Service getter 在作用域外可能抛错/undefined,
+   *     导致 llm 服务拿不到, /model 列表只剩 settings 模型(火山/豆包, 官方模型缺失)。 */
   private getService(name: string): unknown {
     const ctxAny = this.ctx as unknown as Record<string, unknown>;
-    return ctxAny[name] ??
-      (typeof ctxAny.get === 'function' ? (ctxAny.get as (key: string) => unknown)(name) : undefined);
+    if (typeof ctxAny.get === 'function') {
+      try {
+        const viaGet = (ctxAny.get as (key: string) => unknown)(name);
+        if (viaGet !== undefined && viaGet !== null) return viaGet;
+      } catch { /* fallthrough 属性访问 */ }
+    }
+    try {
+      return ctxAny[name];
+    } catch {
+      return undefined;
+    }
   }
 }

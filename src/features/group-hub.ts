@@ -128,11 +128,6 @@ export async function notifyGroupHub(
   const ga = config.groupAdmin;
   if (!ga?.hubNotify || !ga.hubSessionId) return 'no-hub';
   try {
-    const rec = manager.findBySessionId(ga.hubSessionId);
-    if (!rec) {
-      logger.warn?.(`[group-hub] hub 会话未找到: ${ga.hubSessionId.slice(0, 8)}…(该会话可能已重建/换绑, 请在 dock 重新设置)`);
-      return 'no-session';
-    }
     const lines = [`【群管·${ev.kind === 'join_request' ? '入群申请' : ev.kind === 'member_add' ? '新成员入群' : '机器人被拉入群'}】群 ${ev.gid}`];
     if (ev.kind === 'join_request') {
       lines.push(`申请人: ${ev.name ?? '(未知昵称)'}(${tail(ev.memberOpenid)})`);
@@ -144,13 +139,60 @@ export async function notifyGroupHub(
       lines.push(`操作者: ${tail(ev.memberOpenid)}${ev.extra ? ' · ' + ev.extra : ''}`);
       lines.push('群台账已自动登记, 之后该群消息会持续累积。');
     }
-    const r = await safeAppendUserMessage(rec.agent, lines.join('\n'), logger);
-    logger.info(`[group-hub] ${ev.kind} → hub(${ga.hubSessionId.slice(0, 8)}…) ${r}`);
-    return r;
+    const text = lines.join('\n');
+    // ① 本插件 QQ 会话表(宿主 QQ 会话 record)
+    const rec = manager.findBySessionId(ga.hubSessionId);
+    if (rec) {
+      const r = await safeAppendUserMessage(rec.agent, text, logger);
+      logger.info(`[group-hub] ${ev.kind} → hub(${ga.hubSessionId.slice(0, 8)}…) ${r}`);
+      return r;
+    }
+    // ② 宿主全局 registry(web/hub 非 QQ 会话) —— 2026-09-11 修复:
+    //    之前只走 findBySessionId, hub 会话若在 QQ 会话表"未创建"则注入失败,
+    //    事件驱动(GROUP_JOIN_REQUEST)就会 fallback 到"申请所在群群内提醒",
+    //    导致「今天开始包粽子」等普通群 web 会话也收到【入群申请】(主人实测不一致)。
+    //    与 wakeSessionAgent 同款三级 fallback: hub 注入成功即不再打扰普通群。
+    const host = manager.findHostAgent(ga.hubSessionId);
+    if (host) {
+      const r = await safeAppendUserMessage(host.agent, text, logger);
+      logger.info(`[group-hub] ${ev.kind} → hub-host(${ga.hubSessionId.slice(0, 8)}…) ${r}`);
+      return r;
+    }
+    const resumed = await manager.resumeHostAgent(ga.hubSessionId);
+    if (resumed) {
+      const r = await safeAppendUserMessage(resumed.agent, text, logger);
+      logger.info(`[group-hub] ${ev.kind} → hub-resumed(${ga.hubSessionId.slice(0, 8)}…) ${r}`);
+      return r;
+    }
+    logger.warn?.(`[group-hub] hub 会话未找到且无法恢复: ${ga.hubSessionId.slice(0, 8)}…(该会话可能已重建/换绑, 请在 dock 重新设置)`);
+    return 'no-session';
   } catch (err) {
     logger.warn?.(`[group-hub] 转发异常: ${err instanceof Error ? err.message : String(err)}`);
     return 'fail';
   }
+}
+
+/**
+ * 判断某 scope/peer 是否就是群组管理器(hub)会话绑定的目标(2026-09-11):
+ * 事件/poll 通知申请所在群前调用——申请群即 hub 群时, hub 注记已覆盖,
+ * 再对同一会话 notifyGroup/wakeGroup 就是重复。返回 true=应跳过。
+ */
+export async function isHubPeerOf(
+  manager: SessionManager,
+  config: ImQQBotConfig,
+  scope: 'group' | 'c2c',
+  peerId: string,
+): Promise<boolean> {
+  const hubId = config.groupAdmin?.hubSessionId?.trim();
+  if (!hubId || scope !== 'group') return false;
+  try {
+    // ① QQ 会话表: hub record 的 peer 就是申请群
+    const hubRec = manager.findBySessionId(hubId);
+    if (hubRec && hubRec.scope === 'group' && hubRec.peerId === peerId) return true;
+    // ② 确定性派生: 申请群的 sessionId 就是 hub 会话 id(如 8DBA 群 ↔ hub 65279bec 同源)
+    if (manager.sessionIdFor('group', peerId) === hubId) return true;
+  } catch { /* 判定失败默认 false(保守: 宁可有提示不静默丢) */ }
+  return false;
 }
 
 /**

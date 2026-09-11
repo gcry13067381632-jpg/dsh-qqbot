@@ -17,6 +17,7 @@ import type { DownloadedFile } from './attachment.js';
 import { clearGroupHistory } from '../features/history-store.js';
 import { applyInjectRules } from './inject-rules.js';
 import { inferMediaKind, mediaKindLabel } from './media-kind.js';
+import { replaceBotMention, type MentionLike } from '../shared/mention-clean.js';
 
 // ── 类型定义 ──
 
@@ -258,7 +259,12 @@ function assembleAgentBody(
 function buildUserContent(msg: ProcessedMessage, state: MiddlewareState, logger: Logger): string {
   const parts: string[] = [];
 
-  const text = (msg.content ?? '').trim();
+  // 2026-09-11 主人要求: 入站 @bot 长 openid 转短标记 @bot 省 token(精确按 mentions.is_you 替换)
+  const text = replaceBotMention(
+    (msg.content ?? '').trim(),
+    (msg as { mentions?: MentionLike[] }).mentions,
+    state.mention?.wasMentioned,
+  );
   if (text) {
     parts.push(text);
   }

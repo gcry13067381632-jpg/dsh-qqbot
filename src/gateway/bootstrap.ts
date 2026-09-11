@@ -58,6 +58,8 @@ export async function bootstrapGateway(
   logger: Logger,
 ): Promise<void> {
   const manager = new SessionManager(ctx, agents, config, logger);
+  // 实例标识(settingsNs), 全 bootstrap 共用: 注册表按 ns 隔离(B类修复 2026-09-11)
+  const myNs = (config as { settingsNs?: string }).settingsNs?.trim() || 'im-qqbot';
   // ── dataRoot 启动迁移: 若配置了 dataRoot(如 cwd/dshqqbot), 先把 cwd 下的旧数据目录
   //    搬进去(幂等, 不覆盖); 必须在任何数据目录初始化/写入之前执行。──
   migrateLegacyData(config, logger);
@@ -73,7 +75,7 @@ export async function bootstrapGateway(
   // ⚠️ 单例时序坑：谁先 getStickerStore 谁定路径。必须在启动早期按数据根
   //    初始化，否则 list_stickers(无参)会以 process.cwd 建错目录(线上踩坑:C盘幽灵库)。
   const stickerDataDir = stickerDirOf(config);
-  const stickerStore = configureStickerStore(stickerDataDir, logger);
+  const stickerStore = configureStickerStore(stickerDataDir, logger, myNs);
   // 启动维护: 清理损坏/空文件 + 物理清除超30天回收站条目
   try {
     const broken = stickerStore.cleanupBroken();
@@ -84,14 +86,14 @@ export async function bootstrapGateway(
 
   // ── 表情包发送闸门单例预初始化(P1): 与图库同 dataDir, 绑定 live config getter ──
   // 配置现读(getter 每次判定取 config.sticker.gates), Web 设置热更新即时生效。
-  initStickerGate(stickerDataDir, logger);
+  initStickerGate(stickerDataDir, logger, myNs);
   bindStickerGates(() => config.sticker.gates);
-  const stickerGate = getStickerGate(stickerDataDir, logger);
+  const stickerGate = getStickerGate(stickerDataDir, logger, myNs);
 
   // ── 会话自设定时任务单例预初始化(schedule_timer 工具用) ──
   // 落盘 {cwd}/.qqbot/timers.json; 与图库同策略: 启动早期按 config.cwd 定路径防分裂。
   const scheduleDataDir = join(dataRootOf(config), '.qqbot');
-  configureScheduleStore(scheduleDataDir, logger);
+  configureScheduleStore(scheduleDataDir, logger, myNs);
 
   // ── 初始化 QQ Bot SDK ──
   const userAgent = buildUserAgent();
@@ -349,11 +351,12 @@ export async function bootstrapGateway(
   // ①dispatch: ownership(只处理本 bot 的 agent)+ enableApprovals 闸门;
   // ②监听: 注册在插件 apply ctx, 用 {prepend:true} 插到链首(抢在宿主 GUI 转发器 dsh-api-remotes 之前)。
   approvalController = new QqApprovalController(manager, sender, logger, () => config.approvalTimeoutMs);
-  // 注册进 ns 注册表(Web 审批浮层经 settings-host 同源路由读写); ns 取 settingsNs 与 index.ts 一致
-  const myNs = (config as { settingsNs?: string }).settingsNs?.trim() || 'im-qqbot';
+  // 注册进 ns 注册表(Web 审批浮层经 settings-host 同源路由读写); ns 取 settingsNs 与 index.ts 一致(myNs 见顶部)
   registerApprovalController(myNs, approvalController);
   registerSessionManager(myNs, manager);
-  setApprovalDispatch(((request: unknown, next: () => Promise<string>) => {
+  // ⚠️ 2026-09-11 多实例修复: dispatch 不再走模块级单例(会被多实例覆盖) —— 直接把本实例的
+  //    处理逻辑作为 handler 传入 makeApprovalListener(闭包捕获本实例 manager/controller)。
+  const myApprovalHandler = ((request: unknown, next: () => Promise<string>) => {
     const diagA = (line: string) => { try { (globalThis as Record<string, unknown>).qqApprovalDiag = ((globalThis as Record<string, unknown>).qqApprovalDiag || []); ((globalThis as Record<string, unknown>).qqApprovalDiag as string[]).push('[' + new Date().toISOString() + '] ' + line); } catch { /* 忽略 */ } };
     diagA('dispatch enter enable=' + config.enableApprovals);
     if (!config.enableApprovals) { diagA('dispatch next: disabled'); return next(); }
@@ -363,12 +366,13 @@ export async function bootstrapGateway(
     if (!reqAgent || !rec) return next(); // 非本 bot agent → 放行给 GUI/ACP
     diagA('dispatch -> request()');
     return approvalController!.request(request as never, next as never);
-  }) as never);
+  }) as never;
+  setApprovalDispatch(myNs, myApprovalHandler as never);
   // 挂到宿主根 ctx(与 Web GUI 审批转发器同层)并 prepend 插链首 —— 保证本 bot 的审批先被 QQ 通道接管
   const approvalCtx = (((ctx as unknown as { root?: { ctx?: unknown } | unknown }).root) || ctx) as unknown as {
     on(event: string, handler: (...args: unknown[]) => unknown, config?: { prepend?: boolean }): void;
   };
-  approvalCtx.on('approval/request', makeApprovalListener() as never, { prepend: true });
+  approvalCtx.on('approval/request', makeApprovalListener(myApprovalHandler as never) as never, { prepend: true });
   console.log('[qq-approval] ACP-mode listener registered (root-ctx + prepend)');
   logger.info(`[im-qqbot] QQ 远程审批接线就绪(${config.enableApprovals ? '已启用' : '默认关闭, Web 设置可热开'})`);
 
@@ -418,11 +422,11 @@ export async function bootstrapGateway(
     () => stickerDataDir,
   );
   registerBotplayController(myNs, botplayController);
-  setBotplayTriggerImpl((target, eventId, triggererId) => botplayController!.trigger(target, eventId, triggererId));
-  setBotplayCatalogImpl((target, page) => botplayController!.sendCatalog(target, page));
+  setBotplayTriggerImpl(myNs, (target, eventId, triggererId) => botplayController!.trigger(target, eventId, triggererId));
+  setBotplayCatalogImpl(myNs, (target, page) => botplayController!.sendCatalog(target, page));
   // 预设切换卡片(2026-09-10): /preset 无参发按钮卡, 点击热切人格(仿 botplay 翻页)
   const presetSwitcher = new PresetSwitcherController(manager, sender, logger);
-  setPresetCardImpl((target, scope, peerId, page) => presetSwitcher.sendCard(target, scope, peerId, page ?? 0));
+  setPresetCardImpl(myNs, (target, scope, peerId, page) => presetSwitcher.sendCard(target, scope, peerId, page ?? 0));
   // 指令型按钮(Phase2): 点击后执行斜杠命令(不经 AI)。复用 buildCommandList 的 handler,
   // 模拟一个最小命令 ctx(command 名称/空参 + 消息壳), 返回 handler 结果文本。
   // 指令型按钮(Phase2): 点击后执行斜杠命令(不经 AI)。复用 buildCommandList 的 handler,
@@ -600,8 +604,8 @@ export async function bootstrapGateway(
         registerApprovalController(myNs, undefined);
         registerQuestionController(myNs, undefined);
         registerBotplayController(myNs, undefined);
-        setBotplayTriggerImpl(undefined);
-        setBotplayCatalogImpl(undefined);
+        setBotplayTriggerImpl(myNs, undefined);
+        setBotplayCatalogImpl(myNs, undefined);
         registerSessionManager(myNs, undefined);
         approvalController?.dispose();
         questionController?.dispose();

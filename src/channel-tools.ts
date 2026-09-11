@@ -115,6 +115,15 @@ function channelOf(exec: { agent?: unknown }): QQChannel | undefined {
   } catch (e) {
     diag(`channelOf: ctx.get 异常 ${e instanceof Error ? e.message : String(e)}, 尝试全局桥`);
   }
+  // ⚠️ C类修复(2026-09-11): 多实例下不能直接回退 channelBridges[0](可能是别的实例的桥)。
+  //    先按 exec.agent 精确匹配所属实例的桥(不会张冠李戴), 匹配不到才回退第一个。
+  if (exec.agent) {
+    for (const b of channelBridges) {
+      try {
+        if (b.manager?.findByAgent(exec.agent as never)) return b;
+      } catch { /* ignore */ }
+    }
+  }
   if (channelBridges.length) {
     diag('channelOf: 走全局桥成功');
     return channelBridges[0];
@@ -164,8 +173,14 @@ function stickerStoreOf(exec: { agent?: unknown }): ReturnType<typeof getSticker
   } catch (e) {
     diag(`stickerStoreOf: 解析异常 ${e instanceof Error ? e.message : String(e)}`);
   }
-  diag('stickerStoreOf: 回退 primary');
-  return getStickerStore();
+  // 回退 primary(2026-09-11 B类: 尽力按 exec 所属实例 ns 取, 避免串到别的实例的库)
+  let ns: string | undefined;
+  try {
+    const s2 = findSessionRec(undefined, exec);
+    ns = s2?.ch.manager.settingsNs;
+  } catch { /* ignore */ }
+  diag(`stickerStoreOf: 回退 primary${ns ? ` ns=${ns}` : ''}`);
+  return getStickerStore(undefined, undefined, ns);
 }
 
 /** 装载本插件时把 qqChannel 一并注入(由 dsh-qqbot setup 提供) */
@@ -767,7 +782,14 @@ export async function apply(ctx: Context): Promise<void> {
       if (args.mode !== 'adaptive' && args.mode !== 'passive' && args.mode !== 'silent') {
         return { ok: false, msg: '只允许 adaptive/passive/silent(nothink 需主人在设置页配置)', mode: String(args.mode ?? '') };
       }
-      const r = await switchOutboundMode(args.mode);
+      // 多实例修复(2026-09-11): 按当前会话所属实例(ns)切换 —— 原全局单例 writer 会被多实例覆盖,
+      // 导致切到别的实例的 config(dock 显示与实际不符)。
+      let ns: string | undefined;
+      try {
+        const _sess0 = findSessionRec(channelOf(exec as never), exec as never);
+        ns = _sess0?.ch.manager.settingsNs;
+      } catch { /* 解析失败则交给 switchOutboundMode 单实例兜底 */ }
+      const r = await switchOutboundMode(args.mode, ns);
       if (!r.ok) return { ok: false, msg: r.msg, mode: r.mode };
       // 切换成功后用 bot 直发确认消息(绕过出站路由): 即使切到 silent(不出站)/被动,
       // 主人也一定能收到"模式已切换"的通知(与 send_media 同款工具直发通道, 不受 outboundMode 拦截)。

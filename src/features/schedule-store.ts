@@ -224,11 +224,13 @@ export class ScheduleStore {
 }
 
 // ── 多例注册表(多账号支持, 2026-09-03): 每账号实例一个 dataDir({cwd}/.qqbot) → 各自定时任务。
+// ⚠️ 2026-09-11 B类修复: 单例时序坑同 sticker-store —— primary 按实例(ns)各记一份。
 const _stores = new Map<string, ScheduleStore>();
+const _primaryByNs = new Map<string, string>();
 let _primaryDir: string | undefined;
 
-/** 配置定时任务实例(启动早期每账号按自己 dataDir 预初始化; 同目录幂等) */
-export function configureScheduleStore(dataDir: string, logger?: Logger): ScheduleStore {
+/** 配置定时任务实例(启动早期每账号按自己 dataDir 预初始化; 同目录幂等)。ns=实例标识。 */
+export function configureScheduleStore(dataDir: string, logger?: Logger, ns?: string): ScheduleStore {
   const key = resolve(dataDir);
   let s = _stores.get(key);
   if (!s) {
@@ -236,11 +238,12 @@ export function configureScheduleStore(dataDir: string, logger?: Logger): Schedu
     _stores.set(key, s);
   }
   if (!_primaryDir) _primaryDir = key;
+  if (ns) _primaryByNs.set(ns, key);
   return s;
 }
 
-/** 获取实例。带 dataDir → 按目录取(不在则容错新建); 无参 → primary(主账号, 兼容旧调用)。 */
-export function getScheduleStore(dataDir?: string, logger?: Logger): ScheduleStore {
+/** 获取实例。带 dataDir → 按目录取(不在则容错新建); 带 ns → 按该实例 primary; 无参 → 全局 primary。 */
+export function getScheduleStore(dataDir?: string, logger?: Logger, ns?: string): ScheduleStore {
   if (dataDir) {
     const key = resolve(dataDir);
     let s = _stores.get(key);
@@ -249,6 +252,13 @@ export function getScheduleStore(dataDir?: string, logger?: Logger): ScheduleSto
       _stores.set(key, s);
     }
     return s;
+  }
+  if (ns) {
+    const p = _primaryByNs.get(ns);
+    if (p) {
+      const s = _stores.get(p);
+      if (s) return s;
+    }
   }
   if (_primaryDir) {
     const s = _stores.get(_primaryDir);
@@ -259,5 +269,6 @@ export function getScheduleStore(dataDir?: string, logger?: Logger): ScheduleSto
   const s = new ScheduleStore(dir, logger);
   _stores.set(resolve(dir), s);
   if (!_primaryDir) _primaryDir = resolve(dir);
+  if (ns) _primaryByNs.set(ns, resolve(dir));
   return s;
 }

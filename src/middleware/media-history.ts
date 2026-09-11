@@ -12,6 +12,7 @@
 import type { Middleware, MiddlewareContext } from '@tencent-connect/qqbot-nodejs';
 import type { HistoryEntry, HistoryStore } from '@tencent-connect/qqbot-nodejs';
 import { inferMediaKind } from '../transport/media-kind.js';
+import { replaceBotMention, type MentionLike } from '../shared/mention-clean.js';
 
 export interface MediaHistoryOptions {
   /** 每群保留的最大条数 */
@@ -30,6 +31,9 @@ export interface MediaHistoryOptions {
 interface FoldableMsg {
   content?: string;
   attachments?: Array<{ content_type?: string; url?: string; asr_refer_text?: string }>;
+  /** QQ mentions 数组(含 is_you 标记 bot 自身), 用于入站 @bot 长 id 清洗 */
+  mentions?: MentionLike[];
+  wasMentioned?: boolean;
 }
 
 /** 文本 + 带 URL 附件折叠为一行段。
@@ -42,7 +46,8 @@ interface FoldableMsg {
  *    `[语音: <url>]` 单独一行 → dock 的 chatAttachmentKind 认 `[语音` 判 voice 并建播放器。 */
 function foldMedia(msg: FoldableMsg): string {
   const parts: string[] = [];
-  const text = (msg.content ?? '').trim();
+  // 2026-09-11 主人要求: 历史里的 @bot 长 id 也清洗成 @bot(省 token)
+  const text = replaceBotMention((msg.content ?? '').trim(), msg.mentions, msg.wasMentioned);
   if (text) parts.push(text);
   for (const att of msg.attachments ?? []) {
     if (!att.url) continue;
@@ -85,6 +90,7 @@ export function mediaHistoryBuffer(options: MediaHistoryOptions): Middleware {
       return;
     }
     const raw = ctx.message as unknown as FoldableMsg;
+    raw.wasMentioned = (ctx.state as { mention?: { wasMentioned?: boolean } })?.mention?.wasMentioned === true;
     const entry: HistoryEntry = {
       senderId: ctx.message.senderId,
       senderName: ctx.message.senderName,

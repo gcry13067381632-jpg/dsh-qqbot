@@ -28,22 +28,30 @@ type PresetCardImpl = (
   page?: number,
 ) => Promise<string>;
 
-let presetCardImpl: PresetCardImpl | undefined;
+/** ⚠️ 2026-09-11 多实例修复: 原模块级单例会被多个实例互相覆盖(和 outbound writer/botplay 同款 bug,
+ *  实测 /preset 无参发卡失败/发到别的实例)。改为按 ns 注册表。 */
+const presetCardImpls = new Map<string, PresetCardImpl>();
 
-/** bootstrap 接线: 注入真实实现 */
-export function setPresetCardImpl(impl: PresetCardImpl): void {
-  presetCardImpl = impl;
+/** bootstrap 接线: 注入真实实现(按实例 ns) */
+export function setPresetCardImpl(ns: string, impl: PresetCardImpl | undefined): void {
+  if (impl) presetCardImpls.set(ns, impl);
+  else presetCardImpls.delete(ns);
 }
 
-/** 命令层调用: 发预设选择卡片 */
+/** 命令层调用: 发预设选择卡片(带当前实例 ns) */
 export async function sendPresetCard(
+  ns: string,
   target: Parameters<QQBotSender['sendMarkdownWithKeyboard']>[0],
   scope: 'group' | 'c2c',
   peerId: string,
   page = 0,
 ): Promise<string> {
-  if (!presetCardImpl) return '预设切换卡片未就绪(宿主未接线), 可用 /presets 查看、/preset <id> 切换';
-  return presetCardImpl(target, scope, peerId, page);
+  const impl = presetCardImpls.get(ns);
+  if (!impl) {
+    if (presetCardImpls.size === 1) return (presetCardImpls.values().next().value as PresetCardImpl)(target, scope, peerId, page);
+    return '预设切换卡片未就绪(宿主未接线), 可用 /presets 查看、/preset <id> 切换';
+  }
+  return impl(target, scope, peerId, page);
 }
 
 /**

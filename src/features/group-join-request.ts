@@ -23,7 +23,7 @@ import type { QQBotSender } from '../transport/outbound-buffer.js';
 import type { ImQQBotConfig } from '../config.js';
 import type { Logger } from '../types.js';
 import type { SessionManager } from '../session/index.js';
-import { notifyGroupHub, safeAppendUserMessage, joinDataDir } from './group-hub.js';
+import { notifyGroupHub, safeAppendUserMessage, joinDataDir, wakeSessionAgent, isHubPeerOf } from './group-hub.js';
 import { appendGroupMember } from './chat-ledger.js';
 import { verifyHuman } from '../api/group-admin.js';
 
@@ -163,6 +163,17 @@ export async function handleGroupJoinRequestEvent(
   }
   recentIds.set(jid, now);
 
+  // 持久化去重(2026-09-11 主人实测重复通知): 宿主重启后 recentIds 清空,
+  // QQ 可能重推 GROUP_JOIN_REQUEST → 同一条申请被处理两次、双条通知;
+  // pending 里同 join_request_id 已 notified(上次通知成功) → 视为重复跳过。
+  try {
+    const existed = readPendingJoinRequests(config.cwd, gid).find((x) => x.join_request_id === jid);
+    if (existed?.notified) {
+      logger.info(`[group-join] 已通知过的重复事件跳过(重启重推): ${jid.slice(0, 16)}…`);
+      return false;
+    }
+  } catch { /* 读失败不阻断(走正常流程) */ }
+
   // 自动审批下行: 只记审计, 不提醒(结果已确定, 无需管理员操作)
   if (ev.auto_approved && ev.auto_approved.strategy_id) {
     logger.info(`[group-join] 自动审批通过(下行): gid=${gid} user=${ev.username}(${mid}) strategy=${ev.auto_approved.strategy_id}`);
@@ -217,7 +228,39 @@ export async function handleGroupJoinRequestEvent(
   if (hubR === 'ok') {
     item.notified = true;
     pushPendingJoinRequest(config.cwd, item);
-    logger.info(`[group-join] 已转发群组管理器(hub), 跳过群内提醒 gid=${gid}`);
+    logger.info(`[group-join] 已转发群组管理器(hub) gid=${gid}`);
+    // ⚠️ 2026-09-11 主人实测: hub 注入成功≠申请群不用通知。
+    //    主人开「通知普通群/唤醒普通群AI」(pollJoinRequests 的开关, 与轮询总开关独立)时,
+    //    期望申请所在群(非 hub 群)的 web 会话也收到: notifyGroup=注记, wakeGroup=唤醒。
+    //    申请群就是 hub 群时跳过(hub 注记已覆盖, 避免同一会话重复)。
+    const isHub = await isHubPeerOf(manager, config, 'group', gid);
+    if (!isHub) {
+      const pollOpts = config.groupAdmin?.pollJoinRequests;
+      if (pollOpts?.notifyGroup || pollOpts?.wakeGroup) {
+        let record = manager.findByPeer('group', gid);
+        if (!record) {
+          try {
+            const target = { scope: 'group' as const, targetId: gid };
+            record = await manager.getOrCreate('group', gid, mid, target);
+            logger.info(`[group-join] 申请群会话不在, 已 getOrCreate 恢复 gid=${gid}`);
+          } catch (err) {
+            logger.warn(`[group-join] 申请群 getOrCreate 失败: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+        if (record) {
+          if (pollOpts.notifyGroup) {
+            const r = await safeAppendUserMessage(record.agent, summary, logger);
+            logger.info(`[group-join] 通知普通群(notifyGroup, 不唤醒): ${r} gid=${gid.slice(0, 8)}…`);
+          }
+          if (pollOpts.wakeGroup) {
+            const w = await wakeSessionAgent(manager, record.sessionId, logger, `${summary}\n\n可回复我处理(如: 查看入群申请 / 通过 某人 / 拒绝 某人)`);
+            logger.info(`[group-join] 唤醒普通群 AI(wakeGroup): ${w} gid=${gid.slice(0, 8)}…`);
+          }
+        }
+      }
+    } else {
+      logger.info(`[group-join] 申请群即 hub 群, 不再额外通知(注记已在 hub) gid=${gid.slice(0, 8)}…`);
+    }
     return true;
   }
 

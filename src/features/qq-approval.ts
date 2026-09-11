@@ -370,25 +370,35 @@ export class QqApprovalController {
 
 type ApprovalDispatch = (req: ApprovalRequestLike, next: () => Promise<ApprovalOutcome>) => Promise<ApprovalOutcome>;
 
-let dispatch: ApprovalDispatch | undefined;
+/**
+ * 生成挂在插件 apply ctx 的审批监听(ACP 模式): 非本 bot agent / 未启用 → next() 快速放行。
+ * ⚠️ 2026-09-11 多实例修复: 原实现读模块级单例 dispatch(被多实例互相覆盖 → 审批串到别的实例的
+ * controller)。改为 handler 参数=每实例闭包捕获自己的 manager/controller(ownership 判断在各实例
+ * 自己的 handler 里)。无参调用保留单实例兜底(读注册表唯一项)。
+ */
+export function makeApprovalListener(handler?: ApprovalDispatch): (req: unknown, next: () => Promise<string>) => Promise<string> {
+  return ((req: unknown, next: () => Promise<string>) => {
+    console.log('[qq-approval] ctx listener fired'); diagApprov('listener fired');
+    if (handler) return handler(req as never, next as never);
+    const only = approvalDispatches.values().next().value;
+    if (!only) return next();
+    return only(req as never, next as never);
+  }) as (req: unknown, next: () => Promise<string>) => Promise<string>;
+}
 
-/** bootstrap 注册实际处理器(内含开关闸门 + ownership 由调用方处理); 传 undefined 可卸载 */
-export function setApprovalDispatch(fn: ApprovalDispatch | undefined): void {
-  dispatch = fn;
+/** 按 ns 的 dispatch 注册表(2026-09-11: 原单例 setApprovalDispatch 废弃为按 ns 注册, 兼容旧调用) */
+const approvalDispatches = new Map<string, ApprovalDispatch>();
+
+/** bootstrap 注册实际处理器(按实例 ns; 传 undefined 可卸载) */
+export function setApprovalDispatch(ns: string, fn: ApprovalDispatch | undefined): void {
+  if (fn) approvalDispatches.set(ns, fn);
+  else approvalDispatches.delete(ns);
 }
 
 /** 审批诊断落盘(排查 QQ 通道未接管): ~/.dsh/qq-approval-diag.log */
 const DIAG_FILE = (typeof process !== 'undefined' ? ((process.env.USERPROFILE || process.env.HOME || '') + '/.dsh/qq-approval-diag.log') : '').replace(/\\/g, '/');
 function diagApprov(line: string): void {
   try { appendFileSync(DIAG_FILE, '[' + new Date().toISOString() + '] ' + line + '\n'); } catch { /* 忽略 */ }
-}
-/** 生成挂在插件 apply ctx 的审批监听(ACP 模式): 非本 bot agent / 未启用 → next() 快速放行 */
-export function makeApprovalListener(): (req: unknown, next: () => Promise<string>) => Promise<string> {
-  return ((req: unknown, next: () => Promise<string>) => {
-    console.log('[qq-approval] ctx listener fired'); diagApprov('listener fired');
-    if (!dispatch) return next();
-    return dispatch(req as never, next as never);
-  }) as (req: unknown, next: () => Promise<string>) => Promise<string>;
 }
 
 // ── 按实例(ns)注册的审批控制器注册表 —— Web 审批浮层(settings-host 同源路由)经此读写 ──

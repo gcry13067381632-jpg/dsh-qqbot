@@ -56,15 +56,10 @@ interface DebounceEntry {
 interface DebounceWindow {
   entries: DebounceEntry[];
   timer: NodeJS.Timeout | null;
-  /** 回合忙聚合起始时间(ms): 忙超过 MAX_BUSY_MS 强制派发, 防 turn/end 丢失导致消息永远攒着 */
-  busySince?: number;
   /** 是否因「LLM 回合中」defer 过(主人定 2026-09-07): 只有这类聚合才带系统时间提示;
    *  原版 debounce 的"等用户连发完综合回"是正常对话, 不加提示。 */
   turnDeferred?: boolean;
 }
-
-/** 回合忙聚合超时(ms): 超过则不再等回合结束, 强制批量派发(宁丢聚合也不丢消息) */
-const MAX_BUSY_MS = 60_000;
 
 /** 解析消息服务器时间戳(ISO 字符串或 ms 数字; 解析失败回落"到达时刻"兜底) */
 function msgTs(msg: Record<string, unknown>): number {
@@ -132,8 +127,9 @@ export function debounceLayer(
     const fKind = String(f0.msg.kind ?? '');
     const hasMention = pre.some(e => e.wasMentioned);
 
-    // ── LLM 回合中聚合(2026-09-07 主人定): 我正在思考/输出时, 新消息全攒着,
-    //    不派发不入站 —— 等 turn/end(record.turnActive=false)后窗口再批量 flush。──
+    // ── LLM 回合中聚合(2026-09-07 主人定, 2026-09-11 主人改): 我正在思考/输出时, 新消息全攒着,
+    //    不派发不入站 —— 无时间限制, 必须等 turn/end(record.turnActive=false)后窗口才批量 flush;
+    //    只受条数约束(窗口防御上限 + maxMsgs 攒满尝试派发)。──
     {
       const recPeer = fKind === 'group'
         ? String(f0.msg.groupOpenid ?? f0.msg.senderId ?? '')
@@ -141,23 +137,12 @@ export function debounceLayer(
       if (recPeer) {
         const busyRec = manager.findByPeer(fKind === 'group' ? 'group' : 'c2c', recPeer);
         if (busyRec?.turnActive) {
-          const nowMs = Date.now();
-          if (w.busySince === undefined) w.busySince = nowMs;
           w.turnDeferred = true; // 本次窗口因回合忙被 defer → 派发时带系统时间提示
-          // 忙超过阈值 → 强制派发(防 turn/end 丢失卡死窗口)
-          if (nowMs - w.busySince > MAX_BUSY_MS) {
-            w.busySince = undefined;
-            dbg(`flush 回合忙超 ${Math.round(MAX_BUSY_MS / 1000)}s 强制派发 key=${key} n=${pre.length}`);
-            // 继续往下走正常派发(不再 return)
-          } else {
-            clearTimer(w);
-            w.timer = setTimeout(() => void flush(key, w), 800); // 回合中: 800ms 后重查
-            w.timer.unref?.();
-            dbg(`flush 回合忙 defer(等 turn/end) key=${key} n=${pre.length}`);
-            return; // 窗口保留, 不派发
-          }
-        } else {
-          w.busySince = undefined; // 回合结束/空闲 → 复位忙标记
+          clearTimer(w);
+          w.timer = setTimeout(() => void flush(key, w), 800); // 回合中: 800ms 后重查(一直等到回合结束)
+          w.timer.unref?.();
+          dbg(`flush 回合忙 defer(等 turn/end, 无时间上限) key=${key} n=${pre.length}`);
+          return; // 窗口保留, 不派发
         }
       }
     }
@@ -204,7 +189,7 @@ export function debounceLayer(
         // 避免 current 取成"群冷却放行的第一条"导致上下文整体倒序。
         let storeHist: HistoryEntry[] = [];
         try {
-          storeHist = await getHistoryStore().list(historyGroupKey(config.appId, gid), num(config.historyLimit, 20));
+          storeHist = await getHistoryStore(config.appId).list(historyGroupKey(config.appId, gid), num(config.historyLimit, 20));
         } catch (err) {
           logger.warn?.(`[debounce] 拉群历史失败: ${err instanceof Error ? err.message : String(err)}`);
         }

@@ -669,15 +669,20 @@ export class StickerStore {
 
 // ── 多例注册表(多账号支持, 2026-09-03): 每账号实例一个 dataDir → 各自独立的图库。
 // Map<realpath(dataDir), StickerStore>; primary = 最早 configure 的实例(兼容原单账号无参调用)。
+// ⚠️ 2026-09-11 B类修复: 单例时序坑 —— 多实例下"谁先 configure 谁定 primary",
+//    无参 getStickerStore() 会拿到别的实例的库(多实例时序坑: list_stickers 串到别的实例图库)。
+//    加 ns 维度: primary 按实例(ns)各记一份, 无参调用优先按调用者 ns 取。
 const _stores = new Map<string, StickerStore>();
+const _primaryByNs = new Map<string, string>();
 let _primaryDir: string | undefined;
 
 /**
  * 配置图库实例(启动期每账号按自己 dataDir 预初始化; 同目录幂等)。
  * ⚠️ 时序坑(线上踩坑)：必须启动早期按 config.cwd 解析的 dataDir 初始化，
  * 避免无参 getStickerStore 读到 process.cwd 的错目录(C盘幽灵库)。
+ * ns: 实例标识(settingsNs), 多实例时用于无参调用精确取本实例库。
  */
-export function configureStickerStore(dataDir: string, logger?: Logger): StickerStore {
+export function configureStickerStore(dataDir: string, logger?: Logger, ns?: string): StickerStore {
   const key = resolve(dataDir);
   let s = _stores.get(key);
   if (!s) {
@@ -685,11 +690,13 @@ export function configureStickerStore(dataDir: string, logger?: Logger): Sticker
     _stores.set(key, s);
   }
   if (!_primaryDir) _primaryDir = key;
+  if (ns) _primaryByNs.set(ns, key);
   return s;
 }
 
-/** 获取图库实例。带 dataDir → 按目录取(不在则容错新建); 无参 → primary(主账号库, 兼容旧调用)。 */
-export function getStickerStore(dataDir?: string, logger?: Logger): StickerStore {
+/** 获取图库实例。带 dataDir → 按目录取(不在则容错新建); 带 ns → 按该实例的 primary 取;
+ *  无参 → 全局 primary(兼容单账号旧调用)。 */
+export function getStickerStore(dataDir?: string, logger?: Logger, ns?: string): StickerStore {
   if (dataDir) {
     const key = resolve(dataDir);
     let s = _stores.get(key);
@@ -698,6 +705,13 @@ export function getStickerStore(dataDir?: string, logger?: Logger): StickerStore
       _stores.set(key, s);
     }
     return s;
+  }
+  if (ns) {
+    const p = _primaryByNs.get(ns);
+    if (p) {
+      const s = _stores.get(p);
+      if (s) return s;
+    }
   }
   if (_primaryDir) {
     const s = _stores.get(_primaryDir);
@@ -708,5 +722,6 @@ export function getStickerStore(dataDir?: string, logger?: Logger): StickerStore
   const s = new StickerStore(dir, logger);
   _stores.set(resolve(dir), s);
   if (!_primaryDir) _primaryDir = resolve(dir);
+  if (ns) _primaryByNs.set(ns, resolve(dir));
   return s;
 }
