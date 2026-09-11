@@ -2,7 +2,19 @@
  * 杂项命令：/ping /version /stop
  */
 import type { SlashCommand } from '@tencent-connect/qqbot-nodejs';
+import { readFileSync } from 'node:fs';
 import type { CommandDeps } from './types.js';
+
+/**
+ * 读包内 package.json 的真实版本号(2026-09-11 修: 原实现硬编码 "v0.1.0" 一路没改, 版本显示骗人)。
+ * dist/commands/misc.js → ../../package.json 即包根。
+ */
+function pkgVersion(): string {
+  try {
+    const p = new URL('../../package.json', import.meta.url);
+    return String(JSON.parse(readFileSync(p, 'utf8')).version ?? 'unknown');
+  } catch { return 'unknown'; }
+}
 
 /** /bot-ping — 测试当前 dsh 与 QQ 连接的网络延迟(对齐上游 0.5.0) */
 export function pingCommand(): SlashCommand {
@@ -43,7 +55,7 @@ export function versionCommand({ manager }: CommandDeps): SlashCommand {
     handler: () => {
       const current = manager.getEffectiveModel('c2c', '');
       const modelInfo = current ? `${current.provider}/${current.model}` : '宿主默认';
-      return `dsh-qqbot v0.1.0 | model: ${modelInfo}`;
+      return `dsh-qqbot v${pkgVersion()} | model: ${modelInfo}`;
     },
   };
 }
