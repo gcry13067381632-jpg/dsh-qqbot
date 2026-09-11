@@ -4,6 +4,11 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [1.1.6] - 2026-09-11
+
+### 变更
+- **补全 npm 包元数据**(纯元数据, 代码零改动): 新增 `repository` / `homepage` / `bugs` 指向 GitHub 仓库 —— npm 包页侧边栏从此有回仓库/回 issue 的链接(此前三项皆空, 双向导流白丢); `keywords` 由 5 个扩到 10 个(`dsh-plugin`、`qq-bot`、`chatbot`、`ai-agent`、`llm` 等), 利于 npm 搜索与插件目录收录。
+
 ## [1.1.5] - 2026-09-11
 
 ### 新增

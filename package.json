@@ -1,6 +1,6 @@
 {
   "name": "@zaofan/dsh-qqbot",
-  "version": "1.1.5",
+  "version": "1.1.6",
   "description": "QQ Bot IM channel plugin for deepseek-harness (dsh)",
   "type": "module",
   "main": "./dist/index.js",
@@ -34,12 +34,25 @@
     "clean": "rm -rf dist",
     "ci:prepare-test-pkg": "node scripts/prepare-test-pkg.js"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gcry13067381632-jpg/dsh-qqbot.git"
+  },
+  "homepage": "https://github.com/gcry13067381632-jpg/dsh-qqbot#readme",
+  "bugs": {
+    "url": "https://github.com/gcry13067381632-jpg/dsh-qqbot/issues"
+  },
   "keywords": [
     "deepseek-harness",
     "dsh",
+    "dsh-plugin",
     "qqbot",
+    "qq-bot",
+    "chatbot",
+    "ai-agent",
     "cordis",
-    "plugin"
+    "plugin",
+    "llm"
   ],
   "license": "MIT",
   "files": [
