@@ -9,7 +9,8 @@
  */
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import type { Context } from '@deepseek-ai/cordis';
-import { appendFileSync, existsSync, readFileSync, statSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { SessionManager } from './session/session-manager.js';
 import type { QQBotSender } from './transport/outbound-buffer.js';
 import { getStickerStore } from './features/sticker-store.js';
@@ -19,6 +20,7 @@ import { getScheduleStore } from './features/schedule-store.js';
 import { switchOutboundMode } from './features/outbound-mode-switch.js';
 import { loadExtensionTools } from './features/extension-store.js';
 import { verifyHuman, groupRegistryPath } from './api/group-admin.js';
+import * as broadcastQueue from './features/broadcast.js';
 import { wakeSessionAgent, safeAppendUserMessage } from './features/group-hub.js';
 import { managersOf, findManagerByPeer, findManagerBySessionId } from './features/session-registry.js';
 
@@ -764,9 +766,9 @@ export async function apply(ctx: Context): Promise<void> {
   // 切换走 outbound-mode-switch 注册表 → live 热生效 + settings 持久化 → dock/设置一致。
   const outboundModeTool = defineTool({
     name: 'outbound_mode',
-    description: '出站模式开关(自己决定): 切换本 bot 向 QQ 发消息的方式, 保存即热更新(不用重启, dock与设置同步)。三档任选: adaptive=适配主动(默认推荐): 真人消息前5条带引用回你、连发自动转独立消息不被QQ吞; passive=被动: 始终回复最后一条(连发约4~5条后被QQ吞); silent=完全不出站: 照常思考但这条回复不发出(潜水观察用; web上仍可对话)。注意: 不提供 nothink(完全不思考)——那档只能由主人在设置页配置。根据当下场景选: 正常聊天/被@回应→adaptive; 想保持引用感→passive; 判断不该在群里说话(冷场/打扰)→silent。',
+    description: '出站模式开关(自己决定): 切换本 bot 向 QQ 发消息的方式, 保存即热更新(不用重启, dock与设置同步)。四档任选: adaptive=适配主动(默认推荐): 真人消息前5条带引用回你、连发自动转独立消息不被QQ吞; detail=详细主动(2026-09-11 主人加): 聊天行为与 adaptive 完全一样, 但额外把工具调用/工具结果也推到 QQ —— 主人在 QQ 上就能看见你正在调什么工具(主人明确要求"看进度"时用, 消息会明显变多, 用完记得切回 adaptive); passive=被动: 始终回复最后一条(连发约4~5条后被QQ吞); silent=完全不出站: 照常思考但这条回复不发出(潜水观察用; web上仍可对话)。注意: 不提供 nothink(完全不思考)——那档只能由主人在设置页配置。根据当下场景选: 正常聊天/被@回应→adaptive; 主人要求看工具进度→detail; 想保持引用感→passive; 判断不该在群里说话(冷场/打扰)→silent。',
     parameters: {
-      mode: { type: 'string', required: true, enum: ['adaptive', 'passive', 'silent'], description: '目标模式: adaptive(默认推荐) / passive / silent' },
+      mode: { type: 'string', required: true, enum: ['adaptive', 'detail', 'passive', 'silent'], description: '目标模式: adaptive(默认推荐) / detail(详细主动: 连工具调用一起推) / passive / silent' },
       reason: { type: 'string', required: true, description: '为什么切到这档(简短理由)' },
     },
     output: {
@@ -779,8 +781,8 @@ export async function apply(ctx: Context): Promise<void> {
       ],
     },
     async execute(args, exec) {
-      if (args.mode !== 'adaptive' && args.mode !== 'passive' && args.mode !== 'silent') {
-        return { ok: false, msg: '只允许 adaptive/passive/silent(nothink 需主人在设置页配置)', mode: String(args.mode ?? '') };
+      if (args.mode !== 'adaptive' && args.mode !== 'detail' && args.mode !== 'passive' && args.mode !== 'silent') {
+        return { ok: false, msg: '只允许 adaptive/detail/passive/silent(nothink 需主人在设置页配置)', mode: String(args.mode ?? '') };
       }
       // 多实例修复(2026-09-11): 按当前会话所属实例(ns)切换 —— 原全局单例 writer 会被多实例覆盖,
       // 导致切到别的实例的 config(dock 显示与实际不符)。
@@ -795,6 +797,7 @@ export async function apply(ctx: Context): Promise<void> {
       // 主人也一定能收到"模式已切换"的通知(与 send_media 同款工具直发通道, 不受 outboundMode 拦截)。
       const MODE_LABEL: Record<string, string> = {
         adaptive: '适配主动(推荐默认): 真人消息前5条带引用回你, 连发自动转独立消息',
+        detail: '详细主动: 聊天同适配主动, 额外把工具调用/工具结果也推给你(看进度用)',
         passive: '被动: 始终回复你那条(连发约4~5条后被QQ吞)',
         silent: '完全不出站: 照常思考但这条回复不发出(潜水观察用; web上仍可对话)',
       };
@@ -946,7 +949,6 @@ export async function apply(ctx: Context): Promise<void> {
       render: (_a, v: { ok: boolean; msg: string }) => [{ type: 'text' as const, text: v.ok ? v.msg : `失败: ${v.msg}` }],
     },
     async execute(_args, exec) {
-      const tail = (s: string | undefined, n = 10): string => (s && s.length > n ? '…' + s.slice(-n) : (s ?? ''));
       const lines: string[] = [];
       // 遍历全部已注册实例(module 级注册表, 重启后仍可枚举; 不依赖 channelBridges)
       const managers = managersOf();
@@ -960,23 +962,354 @@ export async function apply(ctx: Context): Promise<void> {
       for (const manager of managers) {
         const list = manager.listSessions();
         const ns = manager.settingsNs;
+        // 群名映射(注册表 {cwd}/.qqbot/groups.json: gid → {name}) —— 让 AI 能用"群名"寻址, 不必抄 openid
+        // 群名取自**数据根**注册表({dataRoot}/.qqbot/groups.json, 本机=cwd\dshqqbot\.qqbot) —— 2026-09-12 修正:
+        // 以前用 manager.cwd(=**工作目录** <工作目录>) 读, 拿到的是旧位置那份, 群名过时
+        // (「群C」显示成「AI（旧备注）」)、新群(群B)整个缺席。
+        let reg: Record<string, { name?: string }> = {};
+        try {
+          reg = JSON.parse(readFileSync(groupRegistryPath(manager.dataRoot), 'utf8')) as Record<string, { name?: string }>;
+        } catch { reg = {}; }
         for (const s of list) {
           n++;
-          lines.push(`${n}. [${s.scope}]${ns !== 'im-qqbot' ? `(${ns})` : ''} peer=${tail(s.peerId)} sender=${tail(s.senderId, 8)} id=${s.sessionId}${s.agentPreset ? ` (${s.agentPreset})` : ''} 活跃=${new Date(s.lastActivity).toLocaleTimeString()}`);
+          const label = s.scope === 'group' && reg[s.peerId]?.name ? ` "${reg[s.peerId]!.name}"` : '';
+          // ⚠️ peer/sender 一律给**完整** openid(2026-09-12 主人要求): 以前截成 …F01DC41545,
+          // 跨群寻址还得去翻日志才拼得出来, 等于不可用。
+          lines.push(`${n}. [${s.scope}]${ns !== 'im-qqbot' ? `(${ns})` : ''} peer=${s.peerId}${label} sender=${s.senderId} id=${s.sessionId}${s.agentPreset ? ` (${s.agentPreset})` : ''} 活跃=${new Date(s.lastActivity).toLocaleTimeString()}`);
         }
         // 潜在会话: 群注册表里的群可能还没 getOrCreate(无活跃记录), 但 sessionId 可确定性算出
         try {
-          const raw = readFileSync(groupRegistryPath(manager.cwd), 'utf8');
-          const reg = JSON.parse(raw) as Record<string, { name?: string }>;
           const ids = new Set(list.map((s) => s.sessionId));
           for (const gid of Object.keys(reg ?? {})) {
             const sid = manager.sessionIdFor('group', gid);
-            if (!ids.has(sid)) lines.push(`[潜在群] ${reg[gid]?.name ?? ''}(${tail(gid)}) id=${sid} 活跃=未创建`);
+            if (!ids.has(sid)) lines.push(`[潜在群] ${reg[gid]?.name ?? ''} peer=${gid} id=${sid} 活跃=未创建`);
           }
-        } catch { /* 无注册表/读失败则跳过 */ }
+        } catch { /* 注册表异常则跳过 */ }
       }
       if (lines.length === 0) return { ok: true, msg: '当前无活跃会话, 也无已注册群' };
       return { ok: true, msg: `会话 ${lines.length} 个:\n${lines.join('\n')}` };
+    },
+  });
+
+  /**
+   * 群发目标解析(2026-09-12): 完整 openid 直接用; 否则按**群名/备注**模糊匹配
+   * (注册表 {cwd}/.qqbot/groups.json + 各实例活跃会话)。命中 0 个或多个 → 只回候选清单,
+   * **绝不猜着发**(这是"默认不 dry-run"还能安全的原因)。
+   */
+  function resolveBroadcastTargets(rawTargets: string[], root: string): { targets: broadcastQueue.BroadcastTarget[]; error?: string } {
+    const isOpenid = (s: string): boolean => /^[A-Za-z0-9_-]{20,40}$/.test(s);
+    // 合并多份 groups.json：同一目标**按 lastAt 最新者胜**。
+    // ⚠️ 2026-09-12 实测踩到：旧位置的注册表(`{cwd}/.qqbot/groups.json`)还在、名字是过时的 ——
+    // 同一个群在旧文件里叫「AI（旧备注）」，在 dataRoot 那份里才叫「群C」；
+    // 而「群B」只存在于 dataRoot 那份里，只读旧文件就完全查不到。
+    const known = new Map<string, { scope: 'group' | 'c2c'; peerId: string; name: string; lastAt: number }>();
+    const add = (scope: 'group' | 'c2c', peerId: string, name: string, lastAt = 0): void => {
+      const k = `${scope}:${peerId}`;
+      const cur = known.get(k);
+      if (!cur) { known.set(k, { scope, peerId, name, lastAt }); return; }
+      if (lastAt > cur.lastAt) { cur.lastAt = lastAt; if (name) cur.name = name; return; }
+      if (!cur.name && name) cur.name = name;
+    };
+    const readReg = (dir: string): void => {
+      try {
+        const reg = JSON.parse(readFileSync(groupRegistryPath(dir), 'utf8')) as Record<string, { name?: string; lastAt?: number }>;
+        for (const [gid, v] of Object.entries(reg ?? {})) add('group', gid, String(v?.name ?? ''), Number(v?.lastAt ?? 0));
+      } catch { /* 该目录没有注册表则跳过 */ }
+    };
+    const managers = managersOf();
+    const dirs = new Set<string>();
+    // 只认**数据根**：manager.dataRoot = dataRootOf(config) = config.dataRoot(=cwd\dshqqbot) ——
+    // 数据目录早就定好了, 不该再去 cwd 捞旧注册表(2026-09-12 主人指正: 就是 cwd\dshqqbot, 别绕)。
+    for (const m of managers) dirs.add(m.dataRoot);
+    dirs.add(root);
+    for (const d of dirs) readReg(d);
+    // 🗂 自定义分组(dock「📇 群组管理 → 🗂 分组」; 2026-09-12 起由浏览器搬到 host) → **与主人共用同一份**:
+    // 主人在面板上点几下分的组, AI 直接写分组名就能群发。结构: [{ id, name, members:['group:xxx'|'c2c:yyy'] }]
+    const targetGroups = new Map<string, string[]>();
+    for (const d of dirs) {
+      try {
+        const o = JSON.parse(readFileSync(join(d, '.qqbot', 'target-groups.json'), 'utf8')) as { groups?: Array<{ name?: string; members?: string[] }> };
+        for (const g of (Array.isArray(o?.groups) ? o.groups : [])) {
+          if (g?.name && Array.isArray(g.members) && g.members.length > 0) targetGroups.set(String(g.name), g.members.map(String));
+        }
+      } catch { /* 该数据根没有分组文件则跳过 */ }
+    }
+    for (const m of managers) {
+      try {
+        for (const s of m.listSessions()) add(s.scope as 'group' | 'c2c', s.peerId, '');
+      } catch { /* ignore */ }
+    }
+    const all = [...known.values()];
+
+    const targets: broadcastQueue.BroadcastTarget[] = [];
+    for (const raw of rawTargets) {
+      // ① 分组名(优先于群名): "群友" 或 "分组:群友" → 展开成组内全部目标(与 dock 同一份分组数据)
+      const gname = raw.replace(/^分组[:：]\s*/u, '');
+      const members = targetGroups.get(raw) ?? targetGroups.get(gname);
+      if (members) {
+        for (const m of members) {
+          const mm = /^(group|c2c):(.+)$/i.exec(m);
+          if (!mm) continue;
+          const scope = mm[1]!.toLowerCase() === 'c2c' ? ('c2c' as const) : ('group' as const);
+          const peerId = mm[2]!.trim();
+          const hit = all.find((x) => x.scope === scope && x.peerId === peerId);
+          targets.push({ scope, peerId, ...(hit?.name ? { name: hit.name } : {}) });
+        }
+        continue;
+      }
+      const prefixed = /^(group|c2c):(.+)$/i.exec(raw);
+      if (prefixed) {
+        const scope = prefixed[1]!.toLowerCase() === 'c2c' ? ('c2c' as const) : ('group' as const);
+        const peerId = prefixed[2]!.trim();
+        const hit = all.find((x) => x.scope === scope && x.peerId === peerId);
+        targets.push({ scope, peerId, ...(hit?.name ? { name: hit.name } : {}) });
+        continue;
+      }
+      if (isOpenid(raw)) {
+        const hit = all.find((x) => x.peerId === raw);
+        targets.push({ scope: hit?.scope ?? 'group', peerId: raw, ...(hit?.name ? { name: hit.name } : {}) });
+        continue;
+      }
+      const kw = raw.toLowerCase();
+      const hits = [...new Map(all.filter((x) => x.name && x.name.toLowerCase().includes(kw)).map((h) => [h.peerId, h])).values()];
+      if (hits.length === 1) {
+        const h = hits[0]!;
+        targets.push({ scope: h.scope, peerId: h.peerId, ...(h.name ? { name: h.name } : {}) });
+      } else if (hits.length === 0) {
+        const list = all.filter((x) => x.name).map((x) => `· ${x.name} — ${x.peerId}`).join('\n');
+        return { targets: [], error: `没找到叫「${raw}」的群/私聊。已知目标:\n${list || '(暂无带备注的目标, 请用完整 openid)'}\n\n请用上面的名字或完整 openid 再调一次。` };
+      } else {
+        const list = hits.map((x) => `· ${x.name} — ${x.peerId}`).join('\n');
+        return { targets: [], error: `「${raw}」匹配到多个目标, 请指定一个:\n${list}` };
+      }
+    }
+    return { targets: [...new Map(targets.map((t) => [`${t.scope}:${t.peerId}`, t])).values()] };
+  }
+
+  /** 群发任务 → 人话摘要(逐目标状态 + message_id + 失败原因 + 撤回提示) */
+  function fmtBroadcastTask(t: broadcastQueue.BroadcastTask | undefined, fallbackId?: string): string {
+    if (!t) return `任务不存在(可能已被清理); task_id=${fallbackId ?? '(未给)'}`;
+    const rows = t.targets.map((tg) => {
+      const r = t.results[tg.peerId];
+      const who = tg.name ? `${tg.name}(${tg.peerId})` : tg.peerId;
+      if (!r) return `· ${who} ⏳ 待发`;
+      if (r.ok) return `· ${who} ✅ message_id=${r.message_id ?? '(无)'}`;
+      return `· ${who} ❌ ${r.err ?? '失败'}(已重试 ${t.retries[tg.peerId] ?? 0} 次)`;
+    });
+    const okN = t.targets.filter((tg) => t.results[tg.peerId]?.ok).length;
+    const done = t.state === 'done' || t.state === 'partial_failed' || t.state === 'cancelled';
+    const head = done
+      ? `群发${t.state === 'done' ? '完成' : t.state === 'cancelled' ? '已取消' : '部分失败'}: ${okN}/${t.targets.length} 成功 task_id=${t.task_id}`
+      : `群发进行中(${t.state}): ${okN}/${t.targets.length} 已成功 task_id=${t.task_id} —— 后台队列会继续推进, 稍后用 action="status" 查`;
+    return [
+      head,
+      ...rows,
+      okN > 0 ? `（2 分钟内可撤回：action="recall", task_id="${t.task_id}", targets=[要撤的目标]）` : '',
+    ].filter(Boolean).join('\n');
+  }
+
+  /**
+   * 群发工具(2026-09-12 主人要求): 把插件现成的**广播队列**(features/broadcast.ts)接给 agent。
+   * 设计(主人定): **默认直接发**, 不做 dry-run 预览 —— 主人当场指挥、自己就是发起人, 多一轮确认纯属烧 token;
+   *   只有"按群名解析"命中 0 个/多个候选时才回一轮(那是必要信息, 不猜着发);
+   *   护栏 = 工具描述写死"仅主人明确要求时调用" + **2 分钟撤回窗口**(返回 task_id 与 message_id)。
+   * 白拿的队列能力: 串行逐目标、失败指数退避重试 3 次、任务落盘 {dataRoot}/.qqbot/broadcast-tasks.json、与 dock 面板同一份任务。
+   * ⚠️ 不支持文件/图片群发(QQ 上传接口按群隔离 + 占主动消息配额), 资源请在正文放链接。
+   */
+  const broadcastSendTool = defineTool({
+    name: 'broadcast_send',
+    description:
+      '群发(写,高影响,**仅主人明确要求时调用**): 同一段内容一次发到多个 QQ 群/私聊, 走插件广播队列(串行+失败重试, 与 dock「📤 群发 · 广播」同一份任务, 2 分钟内可逐目标撤回)。targets 写**分组名/群名或备注**或完整 openid; 名字有歧义时只列候选让你确认, 不猜着发。默认直接发送(dry_run=true 才预览)。不支持发文件/图片 —— 资源把链接写进正文。' +
+      '\n最小示例(照抄改值):\n' +
+      '· 发分组 {targets:["群友"], text:"早上好呀各位～"}\n' +
+      '· 发指定群 {targets:["群A","群B"], text:"公告:…"}\n' +
+      '· 撤回/查进度 {action:"recall", task_id:"bc-xxx", targets:["群友"]} / {action:"status", task_id:"bc-xxx"}',
+    parameters: {
+      targets: { type: 'array', items: { type: 'string' }, required: true, description: '目标: 分组名(如"群友") / 群名或群备注(模糊匹配) / 完整 openid(32位) / "group:xxx" / "c2c:xxx"' },
+      text: { type: 'string', description: '群发内容(text ≤2000 字 / markdown ≤8000 字); 链接直接写在里面' },
+      type: { type: 'string', enum: ['text', 'markdown'], description: '默认 text(纯文本最稳); markdown 需模板权限(已开通)' },
+      dry_run: { type: 'boolean', description: 'true=只预览"发给谁+内容"; 默认 false 直接发' },
+      action: { type: 'string', enum: ['send', 'recall', 'status'], description: '默认 send; recall=撤回(需 task_id+targets, 2 分钟内); status=查进度' },
+      task_id: { type: 'string', description: 'recall/status 用的任务 id(从发送结果里拿)' },
+    },
+    output: {
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: { ok: { type: 'boolean', required: true }, msg: { type: 'string', required: true } },
+      },
+      render: (_a, v: { ok: boolean; msg: string }) => [{ type: 'text' as const, text: v.ok ? v.msg : `失败: ${v.msg}` }],
+    },
+    async execute(args, exec) {
+      const a = args as { targets?: unknown; text?: unknown; type?: unknown; dry_run?: unknown; action?: unknown; task_id?: unknown };
+      const ga = groupAdminOf(exec as never);
+      const ch = channelOf(exec as never);
+      // ⚠️ 数据根 ≠ 工作目录: manager.dataRoot = dataRootOf(config)(本机=<cwd>\AI\dshqqbot),
+      // 而 manager.cwd = config.cwd(本机=<cwd>\AI)。2026-09-12 主人实测发现我一开始写成了 cwd,
+      // 结果广播任务落到 AI\.qqbot\(旧位置), dock 在 dshqqbot\.qqbot\ 里根本看不到。
+      const root = ch?.manager?.dataRoot ?? managersOf()[0]?.dataRoot ?? managersOf()[0]?.cwd;
+      if (!root) return { ok: false, msg: '找不到数据根(无已注册实例)' };
+      if (!ga) return { ok: false, msg: '群管理未开启(设置页→QQ群管理): 群发要走官方接口, 需要机器人凭据' };
+      const action = String(a.action ?? 'send');
+      const rawTargets = Array.isArray(a.targets) ? (a.targets as unknown[]).map((t) => String(t).trim()).filter(Boolean) : [];
+      if (rawTargets.length === 0) return { ok: false, msg: 'targets 至少给一个(群名或 openid)' };
+
+      if (action === 'status') {
+        const t = a.task_id ? broadcastQueue.getTask(root, String(a.task_id)) : undefined;
+        if (!t) return { ok: false, msg: '没找到该任务(或没传 task_id)' };
+        return { ok: true, msg: fmtBroadcastTask(t) };
+      }
+
+      const resolved = resolveBroadcastTargets(rawTargets, root);
+      if (resolved.error) return { ok: false, msg: resolved.error };
+
+      if (action === 'recall') {
+        const taskId = String(a.task_id ?? '');
+        if (!taskId) return { ok: false, msg: 'recall 需要 task_id(从发送结果里拿)' };
+        const out: string[] = [];
+        for (const tg of resolved.targets) {
+          const r = await broadcastQueue.recallTaskMessage(root, taskId, tg.peerId, ga.client);
+          out.push(`${r.ok ? '✅ 已撤回' : '❌ 撤回失败'} ${tg.name ?? ''}(${tg.peerId})${r.err ? ' — ' + r.err : ''}`);
+        }
+        return { ok: true, msg: out.join('\n') };
+      }
+
+      // ── send ──
+      const text = String(a.text ?? '');
+      const type: 'text' | 'markdown' = a.type === 'markdown' ? 'markdown' : 'text';
+      const limit = type === 'markdown' ? 8000 : 2000;
+      if (!text.trim()) return { ok: false, msg: 'text 必填(要群发的内容)' };
+      if (text.length > limit) return { ok: false, msg: `内容过长: ${text.length} 字(${type} 上限 ${limit} 字)` };
+      if (resolved.targets.length > 20) return { ok: false, msg: `目标太多(${resolved.targets.length} 个), 单次最多 20 个` };
+
+      if (a.dry_run === true) {
+        return {
+          ok: true,
+          msg: `【dry-run, 未发送】将发到 ${resolved.targets.length} 个目标:\n` +
+            resolved.targets.map((t) => `· ${t.name ?? '(无备注)'} — ${t.peerId}`).join('\n') +
+            `\n\n内容(${type}, ${text.length} 字):\n${text.slice(0, 300)}${text.length > 300 ? '…' : ''}`,
+        };
+      }
+
+      const task = broadcastQueue.createTask(root, { type, content: text, targets: resolved.targets, created_by: 'agent' });
+      broadcastQueue.confirmTask(root, task.task_id);
+      // 同步推进: 每次一个目标, 最多等 ~20 秒; 目标多/网络慢时交给 host 的定时器继续, 用 action=status 查。
+      // 目标之间隔 1.5s —— 群发是**主动消息**, 官方频控 Bot 维度 60/qpm(认证)/30/qpm(未认证),
+      // 留余量给被动回复与别的推送(原来无间隔, 目标一多会瞬时打满额度)。
+      const STEP_MS = 1500;
+      const deadline = Date.now() + 20_000;
+      let cur = broadcastQueue.getTask(root, task.task_id);
+      while (cur && (cur.state === 'queued' || cur.state === 'sending') && Date.now() < deadline) {
+        cur = await broadcastQueue.advanceTask(root, task.task_id, ga.client);
+        if (cur && (cur.state === 'queued' || cur.state === 'sending') && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, STEP_MS));
+        }
+      }
+      return { ok: true, msg: fmtBroadcastTask(cur, task.task_id) };
+    },
+  });
+
+  /**
+   * 目标分组管理(2026-09-12 主人要求"AI 也要能编辑分组"):
+   * 读写的就是 dock「📇 群组管理 → 🗂 分组」那份 host 数据({dataRoot}/.qqbot/target-groups.json),
+   * 所以 AI 建/改的分组主人刷新面板就能看到; 反过来主人分的组, AI 直接拿来群发(targets 写分组名)。
+   */
+  const targetGroupTool = defineTool({
+    name: 'target_group',
+    description:
+      '目标分组管理(与 dock「📇 群组管理 → 🗂 分组」共用同一份数据, 改完主人刷新面板就能看到): 查看/新建/改名/删除分组, 或把目标加进/移出分组。建好后 broadcast_send 的 targets 直接写**分组名**即可群发。改动类动作仅主人明确要求时调用; 重名/找不到会明确报错。' +
+      '\n最小示例: {action:"list"} · {action:"create", name:"开发群"} · {action:"add", name:"群友", targets:["群A"]} · {action:"remove", name:"群友", targets:["群B"]}',
+    parameters: {
+      action: { type: 'string', enum: ['list', 'create', 'rename', 'delete', 'add', 'remove'], required: true, description: 'list=查看全部分组 / create=新建 / rename=改名 / delete=删除 / add=把 targets 加进分组 / remove=把 targets 移出分组' },
+      name: { type: 'string', description: '分组名(除 list 外必填)' },
+      new_name: { type: 'string', description: 'rename 时的新分组名' },
+      targets: { type: 'array', items: { type: 'string' }, description: 'add/remove 的目标(群名/群备注/完整 openid/分组名 均可, 写法同 broadcast_send)' },
+    },
+    output: {
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: { ok: { type: 'boolean', required: true }, msg: { type: 'string', required: true } },
+      },
+      render: (_a, v: { ok: boolean; msg: string }) => [{ type: 'text' as const, text: v.ok ? v.msg : `失败: ${v.msg}` }],
+    },
+    async execute(args, exec) {
+      const a = args as { action?: unknown; name?: unknown; new_name?: unknown; targets?: unknown };
+      const ch = channelOf(exec as never);
+      const root = ch?.manager?.dataRoot ?? managersOf()[0]?.dataRoot ?? managersOf()[0]?.cwd;
+      if (!root) return { ok: false, msg: '找不到数据根(无已注册实例)' };
+      const file = join(root, '.qqbot', 'target-groups.json');
+      type TG = { id?: string; name?: string; members?: string[] };
+      const read = (): TG[] => {
+        try {
+          const o = JSON.parse(readFileSync(file, 'utf8')) as { groups?: TG[] };
+          return Array.isArray(o?.groups) ? o.groups : [];
+        } catch { return []; }
+      };
+      const save = (groups: TG[]): void => {
+        try {
+          mkdirSync(join(root, '.qqbot'), { recursive: true });
+          writeFileSync(file, JSON.stringify({ groups }, null, 1), 'utf8');
+        } catch { /* 落盘失败: 内存结果照常返回, 主人可重试 */ }
+      };
+      const fmt = (g: TG): string => {
+        const ms = g.members ?? [];
+        const tail = ms.slice(0, 6).map((m) => '…' + String(m).replace(/^[a-z]+:/i, '').slice(-4)).join(', ');
+        return `· ${g.name}(${ms.length})${ms.length ? ' — ' + tail + (ms.length > 6 ? ' …' : '') : ''}`;
+      };
+
+      const action = String(a.action ?? 'list');
+      const name = String(a.name ?? '').trim();
+      let groups = read();
+
+      if (action === 'list') {
+        if (groups.length === 0) return { ok: true, msg: '当前没有任何分组(dock「📇 群组管理 → 🗂 分组」可新建, 也可以让我建)' };
+        return { ok: true, msg: `分组 ${groups.length} 个:\n${groups.map(fmt).join('\n')}` };
+      }
+      if (name === '') return { ok: false, msg: `${action} 需要 name(分组名)` };
+      const idx = groups.findIndex((g) => String(g.name ?? '') === name);
+
+      if (action === 'create') {
+        if (idx >= 0) return { ok: false, msg: `分组「${name}」已经存在了` };
+        groups.push({ id: 'tg-' + Date.now().toString(36), name, members: [] });
+        save(groups);
+        return { ok: true, msg: `✅ 已新建分组「${name}」(空组) —— 可以用 action=add 加目标, 或让主人在面板勾选加入` };
+      }
+      if (idx < 0) return { ok: false, msg: `找不到分组「${name}」。现有: ${groups.map((g) => g.name).join('、') || '(无)'}` };
+
+      if (action === 'rename') {
+        const nn = String(a.new_name ?? '').trim();
+        if (nn === '') return { ok: false, msg: 'rename 需要 new_name' };
+        if (groups.some((g) => String(g.name ?? '') === nn)) return { ok: false, msg: `已经有个分组叫「${nn}」了` };
+        groups[idx]!.name = nn;
+        save(groups);
+        return { ok: true, msg: `✅ 分组「${name}」已改名为「${nn}」` };
+      }
+      if (action === 'delete') {
+        const n = (groups[idx]!.members ?? []).length;
+        groups = groups.filter((_, i) => i !== idx);
+        save(groups);
+        return { ok: true, msg: `✅ 已删除分组「${name}」(${n} 个成员; 只是取消分组, 不影响这些群/人本身)` };
+      }
+      if (action === 'add' || action === 'remove') {
+        const rawTargets = Array.isArray(a.targets) ? (a.targets as unknown[]).map((t) => String(t).trim()).filter(Boolean) : [];
+        if (rawTargets.length === 0) return { ok: false, msg: `${action} 需要 targets(至少一个)` };
+        const resolved = resolveBroadcastTargets(rawTargets, root);
+        if (resolved.error) return { ok: false, msg: resolved.error };
+        const cur = new Set(groups[idx]!.members ?? []);
+        const before = cur.size;
+        for (const t of resolved.targets) {
+          const k = `${t.scope}:${t.peerId}`;
+          if (action === 'add') cur.add(k);
+          else cur.delete(k);
+        }
+        groups[idx]!.members = [...cur];
+        save(groups);
+        const delta = action === 'add' ? cur.size - before : before - cur.size;
+        return {
+          ok: true,
+          msg: `✅ 分组「${name}」${action === 'add' ? '加入' : '移出'} ${delta} 个目标, 现共 ${cur.size} 个${delta < resolved.targets.length ? '(重复的已跳过; 未命中的按上面提示处理)' : ''}\n${resolved.targets.map((t) => '· ' + (t.name || t.peerId)).join('\n')}`,
+        };
+      }
+      return { ok: false, msg: `未知 action: ${action}` };
     },
   });
 
@@ -1033,11 +1366,17 @@ export async function apply(ctx: Context): Promise<void> {
 
   const sessionWakeTool = defineTool({
     name: 'session_wake',
-    description: '跨会话(写,需谨慎): 向指定会话发送一条消息; mode=wake(默认)唤醒该会话的 LLM(给 AI 看), mode=append 只把消息写进该会话上下文不唤醒(省 token, 喇叭模式, AI 下次回合自然看到)。同时把带来源标注的消息通过 QQBot 通道发到该会话绑定的群/私聊(给人看)。可用 session_list 查目标 id; 也支持按 peerId(群/私聊) 寻址。支持 batch 批量: 一次向多个会话各发不同文本(每项带自己的 session_id/peer_id/text/mode/send_qq/media)。仅主人明确要求时调用。',    parameters: {
+    description:
+      '跨会话(写,谨慎,**仅主人明确要求时调用**): 向指定会话发一条消息。mode=wake(默认)唤醒对方 LLM; mode=append 只写上下文不唤醒(省 token 的喇叭模式)。同时经 QQ 通道把消息发到该会话绑定的群/私聊。目标用 session_id(见 session_list) 或 peer_id+scope。' +
+      '\n最小示例(照抄改值):\n' +
+      '· 唤醒单发 {session_id:"<uuid>", text:"帮我看下这个"}\n' +
+      '· 跨群喇叭不唤醒 {peer_id:"<群openid>", scope:"group", text:"公告:…", mode:"append"}\n' +
+      '· 批量(每项自带 text) {batch:[{peer_id:"<g1>",scope:"group",text:"A"},{peer_id:"<g2>",scope:"group",text:"B",media:"D:/pic.png"}]} ← 用 batch 时**不要再传顶层 text**',
+    parameters: {
       session_id: { type: 'string', description: '目标会话 id(完整 sessionId, 来自 session_list)' },
       peer_id: { type: 'string', description: '或按 peer 寻址: 群 openid/私聊 openid(需带 scope)' },
       scope: { type: 'string', enum: ['group', 'c2c'], description: 'peer_id 寻址时的范围(group=群 / c2c=私聊)' },
-      text: { type: 'string', required: true, description: '要发送的消息内容(唤醒模式会作为用户消息喂给 AI)' },
+      text: { type: 'string', description: '要发送的消息内容(单发必填; 用 batch 时**不要**传这个, 每项自带 text)' },
       mode: { type: 'string', enum: ['wake', 'append'], description: 'wake=唤醒 LLM 开回合(默认); append=只追加上下文不唤醒(省 token, 喇叭模式)' },
       send_qq: { type: 'boolean', description: '是否同时发到绑定的 QQ 群/私聊(给人看, 默认 true)。false=只处理 LLM 侧不走 QQ 通道' },
       media: { type: 'string', description: '跨群发图: 图片本地路径或 http(s) URL, 随消息发到目标群(需 send_qq=true)' },
@@ -1085,7 +1424,7 @@ export async function apply(ctx: Context): Promise<void> {
       /** 单条发送(单发与 batch 共用): one={session_id?|peer_id?+scope?, text, mode?, send_qq?, media?} */
       const sendOne = async (one: Record<string, unknown>): Promise<string> => {
         const text = String(one.text || '');
-        if (!text) return '❌ 缺少 text';
+        if (!text) return '❌ 缺少 text —— 单发请传顶层 text; 用 batch 时**每项自带 text**(顶层 text 不必传, 传了也不算错)。最小示例见本工具描述';
         const body = `【来自会话 ${from}】\n${text}${one.media ? `\n[附带图片: ${one.media}]` : ''}`;
         const sid = String(one.session_id || '');
         if (sid) {
@@ -1282,6 +1621,8 @@ export async function apply(ctx: Context): Promise<void> {
     { name: 'group_mute_member', tool: muteMemberTool },
     { name: 'session_list', tool: sessionListTool },
     { name: 'session_wake', tool: sessionWakeTool },
+    { name: 'broadcast_send', tool: broadcastSendTool },
+    { name: 'target_group', tool: targetGroupTool },
     { name: 'list_stickers', tool: listStickersTool },
     { name: 'sticker_tag', tool: tagStickerTool },
     { name: 'sticker_delete', tool: deleteStickerTool },

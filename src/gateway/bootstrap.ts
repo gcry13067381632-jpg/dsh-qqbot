@@ -148,6 +148,21 @@ export async function bootstrapGateway(
         logger.warn(`approval inbound error: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
+    // QQ 远程提问的**文字兜底**(2026-09-11 主人定): 有待答提问时, 发起者发来的文字也算回答 ——
+    // 字母/序号/选项原文 → 选中选项(支持多选); 其它文字 → 作为自由回答(custom)透传给 AI。
+    // 没有待答提问时该方法立即返回 false, 零副作用(消息照常进 agent)。
+    if (questionController) {
+      const qScope: 'c2c' | 'group' = msg.kind === 'group' ? 'group' : 'c2c';
+      const qPeerId = qScope === 'group' ? (msg.groupOpenid ?? msg.senderId) : msg.senderId;
+      try {
+        const consumed = await questionController.handleInbound(msg as never, {
+          scope: qScope, targetId: qPeerId, msgId: msg.messageId,
+        });
+        if (consumed) return;
+      } catch (err) {
+        logger.warn(`question inbound error: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     if (config.debug) {
       logger.debug(`← message (post-middleware): ${JSON.stringify(msg, null, 2).slice(0, 500)}`);
     }

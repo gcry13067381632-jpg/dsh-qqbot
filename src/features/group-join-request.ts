@@ -24,6 +24,7 @@ import type { ImQQBotConfig } from '../config.js';
 import type { Logger } from '../types.js';
 import type { SessionManager } from '../session/index.js';
 import { notifyGroupHub, safeAppendUserMessage, joinDataDir, wakeSessionAgent, isHubPeerOf } from './group-hub.js';
+import { dataRootOf } from '../gateway/data-root.js';
 import { appendGroupMember } from './chat-ledger.js';
 import { verifyHuman } from '../api/group-admin.js';
 
@@ -167,7 +168,7 @@ export async function handleGroupJoinRequestEvent(
   // QQ 可能重推 GROUP_JOIN_REQUEST → 同一条申请被处理两次、双条通知;
   // pending 里同 join_request_id 已 notified(上次通知成功) → 视为重复跳过。
   try {
-    const existed = readPendingJoinRequests(config.cwd, gid).find((x) => x.join_request_id === jid);
+    const existed = readPendingJoinRequests(dataRootOf(config), gid).find((x) => x.join_request_id === jid);
     if (existed?.notified) {
       logger.info(`[group-join] 已通知过的重复事件跳过(重启重推): ${jid.slice(0, 16)}…`);
       return false;
@@ -194,7 +195,7 @@ export async function handleGroupJoinRequestEvent(
     seen_at: new Date().toISOString(),
     notified: false,
   };
-  pushPendingJoinRequest(config.cwd, item);
+  pushPendingJoinRequest(dataRootOf(config), item);
   logger.info(`[group-join] 新入群申请: gid=${gid} user=${ev.username ?? '?'}(${mid.slice(0, 10)}…) src=${ev.apply_source ?? '?'}${ev.risk_tips ? ` risk=${ev.risk_tips}` : ''}`);
 
   // 入群申请者也是"见过的成员": 记入本地成员台账(名字留空, 进群后群内发言会补上; 2026-09-10 M3)
@@ -227,7 +228,7 @@ export async function handleGroupJoinRequestEvent(
   });
   if (hubR === 'ok') {
     item.notified = true;
-    pushPendingJoinRequest(config.cwd, item);
+    pushPendingJoinRequest(dataRootOf(config), item);
     logger.info(`[group-join] 已转发群组管理器(hub) gid=${gid}`);
     // ⚠️ 2026-09-11 主人实测: hub 注入成功≠申请群不用通知。
     //    主人开「通知普通群/唤醒普通群AI」(pollJoinRequests 的开关, 与轮询总开关独立)时,
@@ -283,7 +284,7 @@ export async function handleGroupJoinRequestEvent(
       const safeR = await safeAppendUserMessage(record?.agent, summary, logger);
       if (safeR === 'ok') {
         item.notified = true;
-        pushPendingJoinRequest(config.cwd, item);
+        pushPendingJoinRequest(dataRootOf(config), item);
         logger.info(`[group-join] 已 append user/message 到会话 log(不唤醒, 模拟用户消息+停止) gid=${gid}`);
         return true;
       }
@@ -293,7 +294,7 @@ export async function handleGroupJoinRequestEvent(
         const target = { scope: 'group' as const, targetId: gid };
         await sender.sendMarkdown(target, `${summary}\n\n主人可回复让我查看/审批(如: 查看入群申请)。`);
         item.notified = true;
-        pushPendingJoinRequest(config.cwd, item);
+        pushPendingJoinRequest(dataRootOf(config), item);
       } catch (err) {
         logger.warn(`[group-join] 群内提醒发送失败: ${err instanceof Error ? err.message : String(err)}`);
       }

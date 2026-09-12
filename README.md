@@ -239,10 +239,11 @@ npx @deepseek-ai/dsh web --patch /path/to/dsh-qqbot/cordis.dev.yml
 
 **群组管理四个独立开关(dock 设置, v1.1.4+)**: `唤醒AI`=唤醒群管会话 AI 处理; `注入群管会话`=hub web 注记(不唤醒); `通知普通群`=申请所在群 web 注记(不唤醒); `唤醒普通群AI`=唤醒申请所在群 AI——事件与轮询两条链路都生效, 互不干扰。
 
-**跨群/跨会话工具**(v1.1.0+): 
+**跨群/跨会话工具**(v1.1.0+ / **v1.2.0 扩充**): 
 - `group_join_requests(gid=…)` / `group_approve_join(member_openids=…)`: 传 `gid` 可查询/审批**指定群**的入群申请(不限于当前会话群), 支持一次批量审批多人;
-- `session_list`: 列出全部会话(含群注册表里的"潜在群", 重启后仍可靠), 给出每个会话/群的 sessionId 供寻址;
-- `session_wake(session_id 或 scope+peer_id, text, send_qq?, media?)`: 向指定会话/群发消息并唤醒对方 LLM, 同时可走 QQBot 通道发到绑定的群/私聊(带 `【来自会话 xxx…】` 来源标注), `media` 支持跨群发图。
+- `session_list` / `session_wake`: 列出全部会话(含群注册表里的"潜在群", 重启后仍可靠)供寻址 / 向指定会话发消息并唤醒对方 LLM(可带 `media` 跨群发图);
+- **`broadcast_send`(v1.2.0)**: **一键群发** —— 同一段内容一次发到多个群/私聊, `targets` 直接写**分组名 / 群名 / 备注或 openid**; 走插件广播队列(串行+失败重试, 与 dock「📤 群发 · 广播」面板**同一份任务**), 默认直接发, 返回逐目标 `message_id`, 2 分钟内可 `action:"recall"` 撤回;
+- **`target_group`(v1.2.0)**: **分组管理** —— list/create/rename/delete/add/remove, 读写的正是 dock「📇 群组管理 → 🗂 分组」那份数据 → **AI 与主人共用同一份分组**: 主人在面板分好组, AI 直接"发给群友"就能群发。
 
 **配置项**(Web 面板 ⑥ 可改, 见下表 `groupAdmin.*`)
 
@@ -255,7 +256,8 @@ npx @deepseek-ai/dsh web --patch /path/to/dsh-qqbot/cordis.dev.yml
 | `provider` | string | `deepseek-official` | LLM 提供商名称 |
 | `model` | string | `deepseek-chat` | 模型名称 |
 | `preset` | string | - | Agent preset id |
-| `cwd` | string | `process.cwd()` | Agent 工作目录 |
+| `cwd` | string | `process.cwd()` | Agent 工作目录(**不是**数据目录) |
+| `dataRoot` | string | `{cwd}/dshqqbot` | 插件数据根(表情包 / `.qqbot` / `.qqbot-extensions`)。**默认就在 `{cwd}/dshqqbot`** —— 工作目录保持干净; 想放别处显式配置; 老数据首次启动自动迁入 |
 | `requireMention` | boolean | `true` | 群聊是否需要 @bot 才触发 |
 | `groupPrompt` | string | - | 群聊额外 system prompt |
 | `directPrompt` | string | - | 私聊额外 system prompt |
@@ -278,6 +280,7 @@ npx @deepseek-ai/dsh web --patch /path/to/dsh-qqbot/cordis.dev.yml
 |------|------|
 | `/outmode` | 查看当前出站模式与四档说明 |
 | `/outmode adaptive` | 切到 **适配主动**(默认): 收到真人消息前5条带引用回你, 之后自动转独立消息, 连发不被吞 |
+| `/outmode detail` | 切到 **详细主动**(v1.2.0): 聊天同"适配主动", 但**额外把 AI 的工具调用/结果也推到 QQ**(看进度用, 消息会变多) |
 | `/outmode passive` | 切到 **被动**: 始终回复你那条(连发约4~5条后被QQ吞) |
 | `/outmode silent` | 切到 **完全不出站**: 她照常思考但不向QQ发任何回复(web可对话) |
 | `/outmode nothink` | 切到 **完全不思考**: QQ入站不唤醒AI, 消息只记录(逃生通道, 可随时切回) |
@@ -292,6 +295,7 @@ npx @deepseek-ai/dsh web --patch /path/to/dsh-qqbot/cordis.dev.yml
 | `/botplay` | 出互动事件目录卡(点事件直接触发, 自动翻页); `/botplay 事件名` 直接触发(如 `/botplay 签到`) |
 | `/perm` | 切换权限档: `/perm` 查看; `/perm 只读\|工作区\|全权` 切换(即时生效) |
 | `/new [preset]` | 以指定人格开新会话(旧会话存档可回看); `/presets` 看可用人格 |
+| `/答 <内容>` / `/ans` | **回答提问卡片**(v1.2.0): 按钮点不动或想自己打字时用 —— `/答 A`(选第1个)、`/答 1 3`(多选)、`/答 #2 B`(多个提问时指定第2问)、`/答 你的话`(不是选项 → 当自由回答原样转给 AI) |
 | `/bot-help` | 查看所有指令 |
 | `/tools-reload` | 热刷新 QQ 通道工具(开发用, 新工具无需重启即可用) |
 

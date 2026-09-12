@@ -12,6 +12,7 @@ import { statusCommand } from './status.js';
 import { helpCommand } from './help.js';
 import { pingCommand, versionCommand, stopCommand, toolsReloadCommand } from './misc.js';
 import { outModeCommand } from './outmode.js';
+import { answerCommand, answerAliasCommand } from './answer.js';
 import { permissionCommand } from './permission.js';
 import { botplayCommand } from './botplay.js';
 import { injectCommand } from './inject.js';
@@ -38,6 +39,10 @@ export function buildCommandList(deps: CommandDeps): SlashCommand[] {
     outModeCommand(deps),
     // 权限档位切换(宿主 permissionPresets)
     permissionCommand(deps),
+    // 提问兜底(2026-09-11): /答 A 或 /ans A —— 提问卡片的文字回答通道
+    // (必须带斜杠: 群聊裸文字被 @门控拦、私聊被 debounce 聚合层直接吞进 agent)
+    answerCommand(deps),
+    answerAliasCommand(deps),
     // botplay 互动事件(/botplay 列表/触发发卡)
     botplayCommand(deps),
     // 安全注入: /inject 文本 → 插入当前会话 LLM 回合(不打断当前回合)

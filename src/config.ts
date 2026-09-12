@@ -246,8 +246,8 @@ export interface EditableConfig {
   enableApprovals?: boolean;
   /** QQ 权限申请等待时长(ms), 超时自动拒绝 */
   approvalTimeoutMs?: number;
-  /** 出站模式: adaptive=适配主动(默认; 前5次带msg_id被动回复后自动转主动), passive=全被动回复, silent=完全不出站(思考但不发), nothink=完全不思考(QQ入站不唤醒LLM, 仅记录; 仅设置页可配防自锁) */
-  outboundMode?: 'adaptive' | 'active' | 'passive' | 'silent' | 'nothink';
+  /** 出站模式: adaptive=适配主动(默认; 前5次带msg_id被动回复后自动转主动), detail=详细主动(adaptive 发送行为 + 额外推送工具调用/结果), passive=全被动回复, silent=完全不出站(思考但不发), nothink=完全不思考(QQ入站不唤醒LLM, 仅记录; 仅设置页可配防自锁) */
+  outboundMode?: 'adaptive' | 'active' | 'passive' | 'detail' | 'silent' | 'nothink';
   /** botplay 互动事件列表(dock「🎮 互动事件」装配器编辑; live 热更, 无需重启) */
   botplayEvents: BotplayEventConfig[];
 }
@@ -506,7 +506,7 @@ export const EditableConfigSchema: Schema<EditableConfig> = Schema.object({
   schedule: scheduleSchema,
   enableApprovals: Schema.boolean().default(false).description('QQ 远程审批: dsh 权限申请发到 QQ, 用 /approve CODE 放行(保存后对新请求生效)'),
   approvalTimeoutMs: Schema.number().default(120000).description('QQ 权限申请等待时长(ms), 超时自动拒绝'),
-  outboundMode: Schema.union(['adaptive', 'active', 'passive', 'silent', 'nothink']).default('adaptive').description('出站模式: 适配主动(默认)=收到新消息后前5次带msg_id被动回复, 超出/无新消息自动转主动(保连发); 被动=全程带回复id(连发受QQ上限); 完全不出站=思考但不发(静默); 完全不思考=QQ入站不唤醒LLM(仅记录, 仅设置页可配)'),
+  outboundMode: Schema.union(['adaptive', 'detail', 'active', 'passive', 'silent', 'nothink']).default('adaptive').description('出站模式: 适配主动(默认)=收到新消息后前5次带msg_id被动回复, 超出/无新消息自动转主动(保连发); 详细主动=与适配主动相同 + 额外把工具调用/工具结果也推到QQ(看进度用, 会更啰嗦); 被动=全程带回复id(连发受QQ上限); 完全不出站=思考但不发(静默); 完全不思考=QQ入站不唤醒LLM(仅记录, 仅设置页可配)'),
   botplayEvents: Schema.array(botplayEventSchema).default(DEMO_BOTPLAY_EVENTS as never).description('botplay 互动事件(dock🎮装配器编辑, 保存即热更; /botplay 触发发卡)'),
 });
 
@@ -567,8 +567,8 @@ export interface ImQQBotConfig {
   approvalTimeoutMs: number;
   /** QQ 远程提问(ask_user_question → QQ 按钮卡片), 默认开; false=交回 Web UI */
   enableUserQuestions?: boolean;
-  /** 出站模式: adaptive=适配主动(默认) / active=旧全主动(兼容) / passive=全被动回复 / silent=完全不出站 / nothink=完全不思考(仅设置页可配) */
-  outboundMode?: 'adaptive' | 'active' | 'passive' | 'silent' | 'nothink';
+  /** 出站模式: adaptive=适配主动(默认) / detail=详细主动(adaptive + 工具调用/结果推送) / active=旧全主动(兼容) / passive=全被动回复 / silent=完全不出站 / nothink=完全不思考(仅设置页可配) */
+  outboundMode?: 'adaptive' | 'active' | 'passive' | 'detail' | 'silent' | 'nothink';
   /** botplay 互动事件列表(运行时 live, 与 settings 同源) */
   botplayEvents: BotplayEventConfig[];
 }
@@ -634,6 +634,6 @@ export const ConfigSchema: Schema<ImQQBotConfig> = Schema.object({
   debug: Schema.boolean().default(false),
   enableApprovals: Schema.boolean().default(false).description('通过 QQ 接收并处理 dsh 一次性权限申请(远程审批: 发起者用 /approve CODE 放行)'),
   approvalTimeoutMs: Schema.number().default(120000).description('QQ 权限申请超时(ms), 超时自动拒绝'),
-  outboundMode: Schema.union(['adaptive', 'active', 'passive', 'silent', 'nothink']).default('adaptive').description('出站模式: 适配主动(默认)=收到新消息后前5次带msg_id被动回复, 超出/无新消息自动转主动(连发不受限); 被动=携带msg_id回复(连发受QQ回复同一消息上限); 完全不出站=思考但不发(静默); 完全不思考=QQ入站不唤醒LLM, 仅记录上下文(仅设置页可配, 防机器人自锁)'),
+  outboundMode: Schema.union(['adaptive', 'detail', 'active', 'passive', 'silent', 'nothink']).default('adaptive').description('出站模式: 适配主动(默认)=收到新消息后前5次带msg_id被动回复, 超出/无新消息自动转主动(连发不受限); 详细主动=同适配主动 + 额外推送工具调用/工具结果到QQ(看进度, 消息更多); 被动=携带msg_id回复(连发受QQ回复同一消息上限); 完全不出站=思考但不发(静默); 完全不思考=QQ入站不唤醒LLM, 仅记录上下文(仅设置页可配, 防机器人自锁)'),
   botplayEvents: Schema.array(botplayEventSchema).default(DEMO_BOTPLAY_EVENTS as never).description('botplay 互动事件(装配器编辑; /botplay 触发发卡)'),
 });

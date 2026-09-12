@@ -220,7 +220,7 @@ window.__ModuleLoader__.load({
               groupPrompt: typeof v.groupPrompt === 'string' ? v.groupPrompt : DEFAULT_GROUP_PROMPT,
               enableApprovals: v.enableApprovals === true,
               approvalTimeoutMs: typeof v.approvalTimeoutMs === 'number' ? v.approvalTimeoutMs : 120000,
-              outboundMode: (v.outboundMode === 'silent' || v.outboundMode === 'nothink' ? v.outboundMode : (v.outboundMode === 'passive' ? 'passive' : 'adaptive')),
+              outboundMode: (v.outboundMode === 'detail' || v.outboundMode === 'passive' || v.outboundMode === 'silent' || v.outboundMode === 'nothink' ? v.outboundMode : 'adaptive'),
               groupAdmin: { enabled: v.groupAdmin && v.groupAdmin.enabled === true, owners: Array.isArray(v.groupAdmin && v.groupAdmin.owners) ? v.groupAdmin.owners : [], manageGroup: v.groupAdmin && typeof v.groupAdmin.manageGroup === 'string' ? v.groupAdmin.manageGroup : '', watchJoinRequests: !!(v.groupAdmin && v.groupAdmin.watchJoinRequests), notifyInGroup: v.groupAdmin && v.groupAdmin.notifyInGroup !== false },
             }
             setCfg(base); setRev(d.revision); setMsg('')
@@ -269,7 +269,7 @@ window.__ModuleLoader__.load({
           groupPrompt: typeof gpOverride === 'string' ? gpOverride : (typeof cfg.groupPrompt === 'string' ? cfg.groupPrompt : ''),
           enableApprovals: cfg.enableApprovals === true,
           approvalTimeoutMs: typeof cfg.approvalTimeoutMs === 'number' ? cfg.approvalTimeoutMs : 120000,
-          outboundMode: cfg.outboundMode === 'silent' || cfg.outboundMode === 'nothink' ? cfg.outboundMode : (cfg.outboundMode === 'passive' ? 'passive' : 'adaptive'),
+          outboundMode: cfg.outboundMode === 'detail' || cfg.outboundMode === 'passive' || cfg.outboundMode === 'silent' || cfg.outboundMode === 'nothink' ? cfg.outboundMode : 'adaptive',
           groupAdmin: { enabled: cfg.groupAdmin && cfg.groupAdmin.enabled === true, owners: Array.isArray(cfg.groupAdmin && cfg.groupAdmin.owners) ? cfg.groupAdmin.owners : [], manageGroup: cfg.groupAdmin && typeof cfg.groupAdmin.manageGroup === 'string' ? cfg.groupAdmin.manageGroup : '', watchJoinRequests: !!(cfg.groupAdmin && cfg.groupAdmin.watchJoinRequests), notifyInGroup: cfg.groupAdmin && cfg.groupAdmin.notifyInGroup !== false },
         }
         fetch(UPDATE, {
@@ -285,7 +285,7 @@ window.__ModuleLoader__.load({
               groupPrompt: typeof v2.groupPrompt === 'string' ? v2.groupPrompt : (typeof cfg.groupPrompt === 'string' ? cfg.groupPrompt : DEFAULT_GROUP_PROMPT),
               enableApprovals: v2.enableApprovals === true,
               approvalTimeoutMs: typeof v2.approvalTimeoutMs === 'number' ? v2.approvalTimeoutMs : 120000,
-              outboundMode: (v2.outboundMode === 'silent' || v2.outboundMode === 'nothink' ? v2.outboundMode : (v2.outboundMode === 'passive' ? 'passive' : 'adaptive')),
+              outboundMode: (v2.outboundMode === 'detail' || v2.outboundMode === 'passive' || v2.outboundMode === 'silent' || v2.outboundMode === 'nothink' ? v2.outboundMode : 'adaptive'),
               groupAdmin: { enabled: v2.groupAdmin && v2.groupAdmin.enabled === true, owners: Array.isArray(v2.groupAdmin && v2.groupAdmin.owners) ? v2.groupAdmin.owners : [], manageGroup: v2.groupAdmin && typeof v2.groupAdmin.manageGroup === 'string' ? v2.groupAdmin.manageGroup : '', watchJoinRequests: !!(v2.groupAdmin && v2.groupAdmin.watchJoinRequests), notifyInGroup: v2.groupAdmin && v2.groupAdmin.notifyInGroup !== false },
             })
             setRev(d.revision); setMsg('已保存 ✓(live 生效)')
@@ -319,7 +319,7 @@ window.__ModuleLoader__.load({
           NumRow({ label: '群里没人 @ 她时,隔几秒才回一次(0=每条都回)', value: cfg.behavior.freeIntervalSec, onChange: function (v) { setBehavior({ freeIntervalSec: v }) } }),
           NumRow({ label: '有人 @ 她时,两次回复至少隔几秒(0=随叫随到)', value: cfg.behavior.mentionIntervalSec, onChange: function (v) { setBehavior({ mentionIntervalSec: v }) } }),
           NumRow({ label: '私聊里隔几秒回一次(0=不限制)', value: cfg.behavior.directIntervalSec, onChange: function (v) { setBehavior({ directIntervalSec: v }) } }),
-          h('div', { style: { fontSize: 12, color: '#666', margin: '10px 0 2px' } }, '出站方式(连发消息 QQ 端丢失时切主动):'),          h('div', { style: { display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' } },            ['adaptive', 'passive', 'silent', 'nothink'].map(function (m) {              var cur = (cfg.outboundMode || 'adaptive'); if (cur === 'active') cur = 'adaptive';              return h('label', { style: { display: 'inline-flex', gap: 5, alignItems: 'center', fontSize: 12, color: '#333', cursor: 'pointer' } },                h('input', { type: 'radio', name: 'qqs-outbound', checked: cur === m, onChange: function () { setCfg(function (c) { return Object.assign({}, c, { outboundMode: m }) }) } }),                m === 'adaptive' ? '适配主动(推荐默认)' : (m === 'passive' ? '被动(只回最后一句)' : (m === 'silent' ? '完全不出站(静默)' : '完全不思考(QQ入站不唤醒,仅设置页)')))            })),          h('div', { style: { fontSize: 12, color: '#888' } }, '适配主动=刚收到真人消息时前5条带引用回你, 第6条起自动转独立新消息(连发不被QQ吞); 一段时间没新消息的主动推送(定时等)也走独立消息。被动=始终回你那条(连发约4~5条后被QQ吞)。完全不出站=照常思考但不向QQ发任何回复(AI 可用工具切回)。完全不思考=QQ入站不唤醒AI, 消息只记录(仅本页可开; 唤醒请发 /outmode adaptive)。保存即热更新, 不用重启。'),          h('div', { style: { fontSize: 12, color: '#666', margin: '10px 0 2px' } }, '延迟聚合(另一套机制,和上面冷却不冲突): 她收到消息先等一小会儿, 把连发的话攒一起综合回, 免得只回第一句。'),
+          h('div', { style: { fontSize: 12, color: '#666', margin: '10px 0 2px' } }, '出站方式(连发消息 QQ 端丢失时切主动):'),          h('div', { style: { display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' } },            ['adaptive', 'detail', 'passive', 'silent', 'nothink'].map(function (m) {              var cur = (cfg.outboundMode || 'adaptive'); if (cur === 'active') cur = 'adaptive';              return h('label', { style: { display: 'inline-flex', gap: 5, alignItems: 'center', fontSize: 12, color: '#333', cursor: 'pointer' } },                h('input', { type: 'radio', name: 'qqs-outbound', checked: cur === m, onChange: function () { setCfg(function (c) { return Object.assign({}, c, { outboundMode: m }) }) } }),                m === 'adaptive' ? '适配主动(推荐默认)' : (m === 'detail' ? '详细主动(连工具调用一起推)' : (m === 'passive' ? '被动(只回最后一句)' : (m === 'silent' ? '完全不出站(静默)' : '完全不思考(QQ入站不唤醒,仅设置页)'))))            })),          h('div', { style: { fontSize: 12, color: '#888' } }, '适配主动=刚收到真人消息时前5条带引用回你, 第6条起自动转独立新消息(连发不被QQ吞); 一段时间没新消息的主动推送(定时等)也走独立消息。被动=始终回你那条(连发约4~5条后被QQ吞)。完全不出站=照常思考但不向QQ发任何回复(AI 可用工具切回)。完全不思考=QQ入站不唤醒AI, 消息只记录(仅本页可开; 唤醒请发 /outmode adaptive)。保存即热更新, 不用重启。'),          h('div', { style: { fontSize: 12, color: '#666', margin: '10px 0 2px' } }, '延迟聚合(另一套机制,和上面冷却不冲突): 她收到消息先等一小会儿, 把连发的话攒一起综合回, 免得只回第一句。'),
           BoolRow({ label: '开启延迟聚合(不勾=回到来一条回一条)', value: dbc.enabled !== false, onChange: function (v) { setBehavior({ debounce: { ...dbc, enabled: v } }) } }),
           NumRow({ label: '对方停口几秒后她才开口(默认3;0=不停顿)', value: dbc.silenceSec != null ? dbc.silenceSec : 3, onChange: function (v) { setBehavior({ debounce: { ...dbc, silenceSec: v } }) } }),
           NumRow({ label: '攒满几条立即开口,不等对方停(默认10)', value: dbc.maxMsgs != null ? dbc.maxMsgs : 10, onChange: function (v) { setBehavior({ debounce: { ...dbc, maxMsgs: v } }) } }),
@@ -1887,7 +1887,9 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
 
       // ── 面板状态(每个实例独立保存, 切回不丢) ──
       var state = { ns: '', accts: [], gid: '', groups: [], tab: 'chat', sendScope: 'group', sendTo: '', sendName: '', sendText: '', insertCtx: true, targetQ: '', c2cs: [], joins: null, mutes: null, members: null, muteSecs: '60', bindGid: '', bindName: '', msg: '', busy: '', wantPeer: null, lookedUp: false, detected: null, detectedHit: null, chatItems: [], chatMore: false, chatBusy: '', chatErr: '', chatOldest: 0, chatText: '', chatIns: true, outMode: '', outRev: undefined, bpEvents: [], bpSel: null, bpDraft: null, rosterSel: {}, rosterScope: 'all', rosterQ: '', hubSid: '', hubRev: undefined, hubBusy: '', hubMsg: '', gaEnabled: false, gaPoll: false, gaPollWake: true, gaHubNotify: true, gaNotifyGroup: true, gaInterval: 5, gaMinCount: 1, gaMsg: '', gaBusy: '', bcDraft: null, bcTasks: null, cardMd: '', cardBtns: '', cardGid: '', cardBusy: '', cardQ: '', tgGroups: [], tgCur: '' }
-      // 🗂 自定义目标分组(仿 QQ 分组, 2026-09-10 主人要求): localStorage 持久化
+      // 🗂 自定义目标分组(仿 QQ 分组): 2026-09-12 起**host 持久化**({dataRoot}/.qqbot/target-groups.json),
+      // localStorage 只当秒开缓存 —— 这样 **AI 与主人共用同一份分组**(agent 侧 broadcast_send 可直接写分组名群发),
+      // 顺带修掉"换个浏览器分组就没了"的老毛病。
       // 结构: [{ id, name, members: ['group:xxx' | 'c2c:yyy', ...] }]
       try {
         var _tg = localStorage.getItem('qqs-target-groups')
@@ -1895,6 +1897,27 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
       } catch (e) {}
       function saveTgGroups() {
         try { localStorage.setItem('qqs-target-groups', JSON.stringify(state.tgGroups || [])) } catch (e) {}
+        // 同步 host(与 AI 共用); 失败不影响本地缓存与当前操作
+        try {
+          fetch(api('group/target-groups'), {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ ns: state.ns || undefined, groups: state.tgGroups || [] }),
+          }).catch(function () {})
+        } catch (e) {}
+      }
+      function loadTgGroupsFromHost() {
+        fetch(api('group/target-groups' + (state.ns ? '?ns=' + encodeURIComponent(state.ns) : '')), { cache: 'no-store' })
+          .then(function (r) { return r.json() }).then(function (d) {
+            if (!d || !d.ok) return
+            var host = Array.isArray(d.groups) ? d.groups : []
+            if (host.length > 0) {
+              state.tgGroups = host
+              try { localStorage.setItem('qqs-target-groups', JSON.stringify(host)) } catch (e) {}
+            } else if ((state.tgGroups || []).length > 0) {
+              saveTgGroups() // 迁移: 本地有、host 还空 → 推上去(第一次打开新版时发生一次)
+            }
+            if (state.tab === 'roster' || state.tab === 'broadcast') paintBody()
+          }).catch(function () {})
       }
       // 📇 群组管理 M1: 勾选集合本地持久化(刷新/重开不丢, 供后续群发/批量操作使用)
       try { var _rs = localStorage.getItem('qqs-roster-sel'); if (_rs) { var _rso = JSON.parse(_rs); if (_rso && typeof _rso === 'object') state.rosterSel = _rso } } catch (e) {}
@@ -1947,7 +1970,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
       function loadOutMode() {
         if (state.tab !== 'out') return
         fetch(READ + (state.ns ? '?' + outNsQ() : '')).then(function (r) { return r.json() }).then(function (d) {
-          if (d && d.value) { state.outMode = (d.value.outboundMode === 'silent' || d.value.outboundMode === 'nothink' ? d.value.outboundMode : (d.value.outboundMode === 'passive' ? 'passive' : 'adaptive')); state.outRev = d.revision; paintBody() }
+          if (d && d.value) { state.outMode = (d.value.outboundMode === 'detail' || d.value.outboundMode === 'passive' || d.value.outboundMode === 'silent' || d.value.outboundMode === 'nothink' ? d.value.outboundMode : 'adaptive'); state.outRev = d.revision; paintBody() }
         }).catch(function () {})
       }
       // ⚙️ 出站方式: 保存(全量 patch 只带 outboundMode; settings.update 部分合并)
@@ -1961,7 +1984,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ ns: state.ns || undefined, patch: patch, expectedRevision: curRev }),
           }).then(function (r) { return r.json().catch(function () { return null }) }).then(function (d) {
-            if (d && d.value) { state.outMode = (d.value.outboundMode === 'silent' || d.value.outboundMode === 'nothink' ? d.value.outboundMode : (d.value.outboundMode === 'passive' ? 'passive' : 'adaptive')); state.outRev = d.revision; var h2 = panel ? panel.querySelector('#dk-out-hint') : null; if (h2) h2.textContent = '已保存 ✓ live 热更新已生效(不用重启)' }
+            if (d && d.value) { state.outMode = (d.value.outboundMode === 'detail' || d.value.outboundMode === 'passive' || d.value.outboundMode === 'silent' || d.value.outboundMode === 'nothink' ? d.value.outboundMode : 'adaptive'); state.outRev = d.revision; var h2 = panel ? panel.querySelector('#dk-out-hint') : null; if (h2) h2.textContent = '已保存 ✓ live 热更新已生效(不用重启)' }
             else {
               var conflicted = !!(d && d.error && String(d.error).indexOf('changed since it was read') >= 0)
               if (conflicted && !attempt) { refreshOutModeAndRetry(m) }
@@ -2371,6 +2394,30 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         var ta = panel && panel.querySelector('#dk-bc-text')
         if (ta) ta.focus()
       }
+      /**
+       * 撤回"勾选目标"最近一条广播消息(2026-09-12 主人要求): **不必去任务列表翻 task_id** ——
+       * 服务端自己找该目标最新的、已成功且有 message_id 的广播记录(2 分钟窗口内)。
+       * 主人原话: "直接在勾选里面加撤回按钮, 无条件发送撤回"。
+       */
+      function recallSelectedLast() {
+        var tg = rosterSelectedTargets()
+        if (!tg.length) { rosterHint('先勾选要撤回的目标'); return }
+        if (!window.confirm('撤回这些目标**最近一条广播消息**?\n\n' + tg.slice(0, 8).map(function (t) { return '· ' + (t.name || t.peerId) }).join('\n') + (tg.length > 8 ? '\n…' : '') + '\n\n(发出超过 2 分钟的会失败)')) return
+        rosterHint('撤回中…')
+        apiPost('group/recall-last', { ns: state.ns || undefined, targets: tg.map(function (t) { return { scope: t.scope, peerId: t.peerId } }) }).then(function (d) {
+          if (!d || !d.ok) { rosterHint('❌ ' + ((d && d.error) || '撤回失败')); return }
+          var rs = d.results || []
+          var okN = rs.filter(function (r) { return r.ok }).length
+          var fails = rs.filter(function (r) { return !r.ok })
+          rosterHint('✅ 已撤回 ' + okN + '/' + rs.length + ' 个' + (fails.length ? '；失败 ' + fails.length + ' 个: ' + fails.slice(0, 2).map(function (r) { return (r.err || '未知') }).join(' / ') : ''))
+        }).catch(function () { rosterHint('❌ 撤回异常') })
+      }
+      /** 选目标页的提示行(与 bcHint 同款, 元素 id 不同) */
+      function rosterHint(t) {
+        state.msg = t || ''
+        var el = panel && panel.querySelector('#dk-roster-hint')
+        if (el) el.textContent = t || ''
+      }
       function bcHint(t) {
         state.msg = t || ''
         var el = panel && panel.querySelector('.dk-msg#dk-bc-hint')
@@ -2412,6 +2459,9 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         if (!panel) return
         var sendB = panel.querySelector('#dk-roster-send')
         if (sendB) sendB.onclick = function () { openBroadcastDraft('') }
+        // ↩ 撤回勾选项最近消息(2026-09-12): 选目标页与广播页共用同一个按钮 id(tab 互斥渲染)
+        var recallB = panel.querySelector('#dk-roster-recall')
+        if (recallB) recallB.onclick = function () { recallSelectedLast() }
         // 广播子页: 跳去「📇 群组管理」勾选目标(2026-09-10)
         var gotoB = panel.querySelector('#dk-bc-goto')
         if (gotoB) gotoB.onclick = function () { state.tab = 'roster'; paintBody(); bindBodyEvents() }
@@ -2424,15 +2474,23 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           var text = ta ? ta.value.trim() : state.bcDraft.text
           if (!text) { bcHint('内容不能为空'); return }
           var targets = state.bcDraft.targets
+          bcHint('发送中…')
           apiPost('group/broadcast/create', { ns: state.ns || undefined, type: 'text', text: text, targets: targets }).then(function (d) {
-            if (!d || !d.ok || !d.task) { bcHint((d && d.error) || '创建失败'); return }
+            if (!d || !d.ok || !d.task) { bcHint('❌ ' + ((d && d.error) || '创建失败')); return }
             // 二次确认: 已弹「确认群发」按钮, 这里直接 confirm 入队
             return apiPost('group/broadcast/confirm', { ns: state.ns || undefined, task_id: d.task.task_id }).then(function (d2) {
               state.bcDraft = null
-              if (d2 && d2.ok) { bcHint('✅ 已确认群发 ' + targets.length + ' 个目标(逐目标发送中)'); loadBroadcastTasks(true) }
-              else bcHint((d2 && (d2.msg || d2.error)) || '确认失败')
+              if (d2 && d2.ok) {
+                // 2026-09-12 修: 确认后**切到「📢 广播」子页** —— 任务列表(含逐目标撤回)只在该页渲染,
+                // 以前留在「🎯 选目标」页: 界面毫无变化(主人以为没反应/是 bug), 也从来没见过撤回按钮。
+                state.tab = 'broadcast'
+                state.msg = '✅ 已确认群发 ' + targets.length + ' 个目标(逐目标发送中, 2 分钟内可逐目标撤回)'
+                paintBody(); bindBodyEvents()
+                loadBroadcastTasks(true)
+                startBroadcastAdvance()
+              } else { bcHint('❌ ' + ((d2 && (d2.msg || d2.error)) || '确认失败')) }
             })
-          }).catch(function () { bcHint('创建异常') })
+          }).catch(function () { bcHint('❌ 创建异常') })
         }
         var refreshB = panel.querySelector('#dk-bc-refresh')
         if (refreshB) refreshB.onclick = function () { loadBroadcastTasks(true) }
@@ -2441,15 +2499,19 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           var b = e.target
           var cn = b.getAttribute && b.getAttribute('data-bccancel')
           if (cn) { apiPost('group/broadcast/cancel', { ns: state.ns || undefined, task_id: cn }).then(function () { loadBroadcastTasks(true) }); return }
-          var rn = b.getAttribute && b.getAttribute('data-bcrecall')
-          if (rn) {
-            var tk = (state.bcTasks || []).find(function (x) { return x.task_id === rn })
-            if (!tk) return
-            var peer = window.prompt('撤回哪个目标的已发消息? 填目标 peerId(…后6位即可)\n' + tk.targets.map(function (t2) { return t2.peerId.slice(-6) + ' ' + (t2.name || '') }).join('\n'))
-            if (!peer) return
-            var hit = tk.targets.find(function (t2) { return t2.peerId.endsWith(peer) })
-            if (!hit) { bcHint('未匹配到该目标'); return }
-            apiPost('group/broadcast/recall', { ns: state.ns || undefined, task_id: rn, peerId: hit.peerId }).then(function (d) { bcHint(d && d.ok ? '✅ 已撤回' : ((d && d.err) || '撤回失败')) })
+          // 逐目标撤回(2026-09-12 重做): 任务卡片里每个"已发出"的目标自带「↩ 撤回」按钮, 点一下直接撤 ——
+          // 不再弹 window.prompt 让主人手填 peerId 后 6 位(旧交互隐蔽又别扭, 主人根本没找到过)。
+          var r1 = b.getAttribute && b.getAttribute('data-bcrecall1')
+          if (r1) {
+            var parts = String(r1).split('|')
+            var t1 = (state.bcTasks || []).find(function (x) { return x.task_id === parts[0] })
+            var who = t1 && t1.targets.find(function (t2) { return t2.peerId === parts[1] })
+            bcHint('撤回中…')
+            apiPost('group/broadcast/recall', { ns: state.ns || undefined, task_id: parts[0], peerId: parts[1] }).then(function (d) {
+              bcHint(d && d.ok ? ('✅ 已撤回 ' + ((who && who.name) || parts[1])) : ('❌ ' + ((d && d.err) || '撤回失败')))
+              loadBroadcastTasks(false)
+            })
+            return
           }
         }
       }
@@ -2753,19 +2815,38 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             + '<button class="dk-btn ok" id="dk-bc-confirm">✅ 确认群发(发 ' + bc.targets.length + ' 个目标)</button>'
             + '<span class="dk-msg" style="flex:1;text-align:right;font-size:11px;color:#c23131">⚠️ 高影响操作: 发送后 2 分钟内可逐目标撤回</span></div>'
         }
+        // 反馈行(2026-09-12 修): bcHint() 一直在找 `#dk-bc-hint`, 但本面板从未渲染过这个元素
+        // → 点「确认群发」后界面**零反馈**(消息其实已经发出去了, 主人以为没反应/是 bug)。
+        out += '<div class="dk-row"><span class="dk-msg" id="dk-bc-hint" style="color:#2f9e44;font-size:12px;margin:2px 0"></span></div>'
         if (state.bcTasks && state.bcTasks.length) {
           out += '<div class="dk-row"><b style="font-size:12px">📋 群发任务</b>'
             + '<button class="dk-btn" id="dk-bc-refresh" style="margin-left:auto">🔄 刷新进度</button></div>'
           state.bcTasks.forEach(function (tk) {
             var stc = { draft: '#888', queued: '#1971c2', sending: '#f08c00', partial_failed: '#e03131', done: '#2f9e44', cancelled: '#868e96' }[tk.state] || '#888'
             var okN = tk.targets.filter(function (t2) { return tk.results[t2.peerId] && tk.results[t2.peerId].ok }).length
-            out += '<div class="dk-item" style="border:1px solid #eee;border-radius:6px;margin:1px 0;padding:3px 6px;flex-wrap:wrap">'
+            // 2 分钟撤回窗口(以服务端为准): 从任务完成时刻起算的剩余秒数
+            var left = ''
+            if ((tk.state === 'done' || tk.state === 'partial_failed') && tk.done_at) {
+              var sec = Math.floor((tk.done_at + 120000 - Date.now()) / 1000)
+              left = sec > 0 ? ('可撤 ' + sec + 's') : '已过撤回窗口'
+            }
+            out += '<div class="dk-item" style="border:1px solid #eee;border-radius:6px;margin:2px 0;padding:4px 6px;display:block">'
+              + '<div style="display:flex;align-items:center;gap:6px">'
               + '<span style="font-size:11px;font-weight:700;color:' + stc + '">' + ({ draft: '草稿', queued: '排队中', sending: '发送中', partial_failed: '部分失败', done: '已完成', cancelled: '已中止' }[tk.state] || tk.state) + '</span>'
               + '<span style="flex:1;font-size:11px;color:#555;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"> ' + esc(String(tk.payload.content || '').slice(0, 30)) + '</span>'
-              + '<span style="font-size:11px;color:#666">' + okN + '/' + tk.targets.length + '</span>'
+              + '<span style="font-size:11px;color:#666">' + okN + '/' + tk.targets.length + (left ? ' · ' + left : '') + '</span>'
               + (tk.state === 'queued' || tk.state === 'sending' ? '<button class="dk-btn no" data-bccancel="' + esc(tk.task_id) + '" style="margin-left:6px">⏹ 中止</button>' : '')
-              + (tk.state === 'done' || tk.state === 'partial_failed' ? '<button class="dk-btn" data-bcrecall="' + esc(tk.task_id) + '" style="margin-left:6px" title="撤回该任务 2 分钟内已发的消息(逐目标)">↩ 撤回</button>' : '')
               + '</div>'
+            // 逐目标明细 + 该目标的「↩ 撤回」(2026-09-12): 谁发出去了、谁失败了、谁能撤, 一眼看清
+            tk.targets.forEach(function (t2) {
+              var r2 = tk.results && tk.results[t2.peerId]
+              var mark = !r2 ? '⏳ 待发' : (r2.ok ? '✅ 已发' : ('❌ ' + esc(String(r2.err || '失败'))))
+              out += '<div style="display:flex;align-items:center;gap:6px;font-size:11px;color:#555;padding-left:6px">'
+                + '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (t2.scope === 'group' ? '👥' : '👤') + ' ' + esc(t2.name || String(t2.peerId).slice(0, 12)) + ' <span style="color:#aaa">…' + esc(String(t2.peerId).slice(-4)) + '</span> ' + mark + '</span>'
+                + (r2 && r2.ok ? '<button class="dk-btn no" data-bcrecall1="' + esc(tk.task_id) + '|' + esc(t2.peerId) + '" style="font-size:11px">↩ 撤回</button>' : '')
+                + '</div>'
+            })
+            out += '</div>'
           })
         }
         out += '</div>'
@@ -2820,7 +2901,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             + '<button class="dk-btn ok" id="dk-tg-add"' + (state.tgCur ? '' : ' disabled') + ' title="把上面勾选的目标加入当前分组">➕ 勾选的加入本组</button>'
             + '<button class="dk-btn" id="dk-tg-remove"' + (state.tgCur ? '' : ' disabled') + ' title="把勾选的从当前分组移出">➖ 从本组移出</button>'
             + '<button class="dk-btn" id="dk-tg-pickall"' + (state.tgCur ? '' : ' disabled') + ' title="勾选当前分组的全部成员">☑ 选中本组</button>'
-            + '<span class="dk-msg" style="font-size:11px;color:#888">分组仅存本机浏览器, 用于快速批量勾选</span>'
+            + '<span class="dk-msg" style="font-size:11px;color:#888">分组已存到 host(与 AI 共用): 直接说"发给【分组名】"即可群发</span>'
             + '</div>'
           body += '<div class="dk-row">范围: '
             + '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px"><input type="radio" name="dk-rscope" value="all"' + (state.rosterScope === 'all' ? ' checked' : '') + '> 全部</label>'
@@ -2923,7 +3004,9 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             + '<button class="dk-btn" id="dk-roster-all">全选(当前范围)</button>'
             + '<button class="dk-btn" id="dk-roster-clear">清空</button>'
             + '<span class="dk-msg" style="flex:1;text-align:right;color:#2f9e44">已选 ' + rosterSelN() + ' 个</span>'
-            + '<button class="dk-btn ok" id="dk-roster-send">🚀 群发勾选项</button></div>'
+            + '<button class="dk-btn ok" id="dk-roster-send">🚀 群发勾选项</button>'
+            + '<button class="dk-btn no" id="dk-roster-recall" title="撤回这些目标最近一条广播消息(2 分钟内有效); 不用去任务列表翻 task_id">↩ 撤回勾选项最近消息</button></div>'
+          body += '<div class="dk-row"><span class="dk-msg" id="dk-roster-hint" style="color:#2f9e44;font-size:12px"></span></div>'
           body += '<div class="dk-list" id="dk-roster-list"></div>'
           // ── M3 群发面板(与「📤 群发 · 广播」子页共用, 2026-09-10 抽成 broadcastPanel) ──
           body += broadcastPanel()
@@ -2936,7 +3019,9 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           body += '<div class="dk-row" style="gap:6px;flex-wrap:wrap">'
             + '<button class="dk-btn" id="dk-bc-goto">📇 去勾选目标</button>'
             + '<button class="dk-btn ok" id="dk-roster-send"' + (btg.length ? '' : ' disabled') + ' title="把勾选的目标纳入群发">🚀 群发勾选项</button>'
+            + '<button class="dk-btn no" id="dk-roster-recall" title="撤回这些目标最近一条广播消息(2 分钟内有效)">↩ 撤回勾选项最近消息</button>'
             + '</div>'
+          body += '<div class="dk-row"><span class="dk-msg" id="dk-roster-hint" style="color:#2f9e44;font-size:12px"></span></div>'
           if (btg.length) {
             body += '<div class="dk-item" style="border:1px solid #eef7ee;border-radius:6px;margin:4px 0;padding:3px 6px;max-height:16vh;overflow:auto">'
             btg.forEach(function (t2) {
@@ -2950,9 +3035,10 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           if (om === 'nothink') body += '<div class="dk-msg" style="color:#c23131;margin:2px 0">⚠️ 当前为「完全不思考」(设置页开启): QQ 入站不唤醒 AI。发 /outmode adaptive 可唤醒。</div>'
           body += '<div class="dk-row" style="font-weight:700;font-size:13px;margin:4px 0 2px">⇄ 出站方式(保存即热更新,不用重启)</div>'
           body += '<div class="dk-row">'
-            + ['adaptive','passive','silent'].map(function (m2) { return '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;color:#333"><input type="radio" name="dk-outmode" value="' + m2 + '"' + (om === m2 ? ' checked' : '') + '> ' + (m2==='adaptive' ? '适配主动(推荐默认)' : (m2==='passive' ? '被动(只回最后一句)' : '完全不出站(静默)')) + '</label>' }).join('')
+            + ['adaptive','detail','passive','silent'].map(function (m2) { return '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;color:#333"><input type="radio" name="dk-outmode" value="' + m2 + '"' + (om === m2 ? ' checked' : '') + '> ' + (m2==='adaptive' ? '适配主动(推荐默认)' : (m2==='detail' ? '详细主动(连工具调用一起推)' : (m2==='passive' ? '被动(只回最后一句)' : '完全不出站(静默)'))) + '</label>' }).join('')
             + '</div>'
           body += '<div class="dk-msg" style="line-height:1.6">适配主动=和QQ有关的会话回复都发到QQ: 刚收到真人消息时前5条带引用回你(能看到回的是哪句), 第6条起自动转独立新消息, 连发不被QQ吞; 定时/后台等没有新真人消息的主动推送也走独立消息。'
+          body += '详细主动=聊天行为与适配主动完全一样, 但额外把 AI 的工具调用(🔧 工具调用)与工具结果也推到 QQ —— 能在 QQ 上看她正在干什么; 消息会明显变多, 看完记得切回适配主动。'
           body += '被动=始终以「回复你那条」发出, 连发约4~5条后会被QQ吞掉。完全不出站=本机静默, 不向QQ发任何回复(AI 可用工具随时切回)。本开关对纯web(没绑QQ)的会话不生效。</div>'
           body += '<span class="dk-msg" id="dk-out-hint" style="color:#2f9e44;margin:4px 0"></span>'
         } else if (state.tab === 'card') {
@@ -3081,6 +3167,8 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         if (state.tab === 'card') bindCardEvents()
         // 📤 广播子页: 绑定群发按钮 + 刷新任务列表(任务列表静默拉取, 不重绘 → 防死循环)
         if (state.tab === 'broadcast') { bindBroadcastEvents(); loadBroadcastTasks(false, true); startBroadcastAdvance() }
+        // 分组(host 持久化, 与 AI 共用): 进选目标/广播页时拉一次, 保证多浏览器与 AI 侧看到的是同一份
+        if (state.tab === 'roster' || state.tab === 'broadcast') loadTgGroupsFromHost()
         // 注: 📤 群发子标签栏的点击绑定由上面 bindBodyEvents() 统一处理(它含 [data-subtab])
         // 首次进入聊天 tab 自动拉最新一页
         if (state.tab === 'chat' && !state.chatItems.length && !state.chatBusy) loadChat(true)

@@ -20,6 +20,7 @@
  */
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { join } from 'node:path';
+import { dataRootOf } from '../gateway/data-root.js';
 import type { ImQQBotConfig } from '../config.js';
 import type { Logger } from '../types.js';
 import type { SessionManager } from '../session/index.js';
@@ -323,8 +324,9 @@ export async function handleGroupAddRobotEvent(
   return true;
 }
 
-/** 与 chat-ledger 同 dataDir(表情包目录)的取法: config.dataRoot/cwd + 表情包 */
+/** 与 chat-ledger 同 dataDir(表情包目录)的取法: **dataRootOf(config)** + 表情包
+ *  ⚠️ 2026-09-12 补漏: 原来写的是 `config.dataRoot || config.cwd` —— 未配 dataRoot 的实例会落到工作目录,
+ *  而且不会走新的默认数据根(`{cwd}/dshqqbot`), 与其它模块分裂成两份台账。 */
 export function joinDataDir(config: ImQQBotConfig): string {
-  const root = (config as { dataRoot?: string }).dataRoot || config.cwd || process.cwd();
-  return join(root, '表情包');
+  return join(dataRootOf(config), '表情包');
 }

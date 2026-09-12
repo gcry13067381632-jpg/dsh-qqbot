@@ -250,8 +250,10 @@ export async function recallTaskMessage(
   // 官方撤回窗口 2 分钟
   const age = Date.now() - (t.done_at ?? Date.now());
   if (age > 2 * 60 * 1000) return { ok: false, err: '超过 2 分钟撤回窗口' };
+  // 撤回路径按场景分(群/私聊), 从任务的 targets 里取该目标的 scope
+  const scope = (t.targets.find((x) => x.peerId === peerId)?.scope) ?? 'group';
   try {
-    const sr = await client.recallMessage(r.message_id);
+    const sr = await client.recallMessage(peerId, r.message_id, scope);
     return sr.ok ? { ok: true, message_id: r.message_id } : { ok: false, err: sr.err.human, message_id: r.message_id };
   } catch (e) {
     return { ok: false, err: String((e as Error)?.message ?? e), message_id: r.message_id };

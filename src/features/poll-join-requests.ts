@@ -99,7 +99,7 @@ export function startJoinRequestPolling(
   /** 读群注册表 → 待轮询的群 gid 列表 */
   function registryGids(): string[] {
     try {
-      const raw = readFileSync(groupRegistryPath(config.cwd), 'utf8');
+      const raw = readFileSync(groupRegistryPath(dataRootOf(config)), 'utf8');
       const obj = JSON.parse(raw) as Record<string, { name?: string }>;
       return obj ? Object.keys(obj) : [];
     } catch {
@@ -181,7 +181,7 @@ export function startJoinRequestPolling(
           notified: false,
         }));
         // 先落盘(即使本轮不唤醒, 下轮也认作"已见过", 不重复)
-        for (const it of items) pushPendingJoinRequest(config.cwd, it);
+        for (const it of items) pushPendingJoinRequest(dataRootOf(config), it);
         newlyFound.push({ gid, items });
       } catch (err) {
         logger.warn?.(`[join-poll] ${gid.slice(0, 8)}… 拉取失败: ${err instanceof Error ? err.message : String(err)}`);

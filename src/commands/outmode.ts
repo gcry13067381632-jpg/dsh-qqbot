@@ -26,6 +26,7 @@ import { getScopePeer } from '../shared/index.js';
 
 const LABEL: Record<string, string> = {
   adaptive: '适配主动(默认): 收到真人消息前5条带引用回你, 之后自动转独立消息',
+  detail: '详细主动(2026-09-11 新增): 和适配主动一样聊天, 但额外把 AI 的工具调用/工具结果也推到 QQ(能看进度, 消息会变多)',
   passive: '被动: 始终回复你那条(连发约4~5条后被QQ吞)',
   silent: '完全不出站: 照常思考但不向QQ发任何回复(web可对话)',
   nothink: '完全不思考: QQ入站不唤醒AI, 仅记录上下文(web对话仍可看到群聊)',
@@ -72,13 +73,13 @@ async function noteModeChange(manager: CommandDeps['manager'], cmdCtx: unknown, 
 export function outModeCommand({ manager, config }: CommandDeps): SlashCommand {
   return {
     name: 'outmode',
-    description: '查看/切换出站模式(用法: /outmode [adaptive|passive|silent|nothink])',
+    description: '查看/切换出站模式(用法: /outmode [adaptive|detail|passive|silent|nothink])',
     handler: async (cmdCtx) => {
       const args = String((cmdCtx.command?.raw ?? '').trim());
       const cur = currentOf(config);
       if (!args) {
         const lines = ['### ⇄ 出站模式', '', `**当前: ${cur}**`, '', '可用模式(直接发 `/outmode 模式名` 切换, 立即生效):'];
-        for (const key of ['adaptive', 'passive', 'silent', 'nothink']) {
+        for (const key of ['adaptive', 'detail', 'passive', 'silent', 'nothink']) {
           lines.push(`- **${key}** — ${LABEL[key]}`);
         }
         return lines.join('\n');

@@ -57,6 +57,12 @@ class OutboundRouter {
    *  ⚠️ 必须按 msgId 分组: QQ 的被动回复 5 条上限是**按 msg_id 计**的, 群友中途发言会让
    *  record.replyTarget 换成新 msgId、配额随之重置 —— 那时后面的块本来就送得到, 不该再补发。 */
   private readonly turnBlocks = new Map<string, { msgId: string; count: number; last: string }>();
+  /** 详细主动(detail, 2026-09-11 主人加): sessionKey → 聚合中的工具调用提示 */
+  private readonly toolNotices = new Map<string, { record: SessionRecord; lines: string[]; timer: ReturnType<typeof setTimeout> }>();
+  /** 详细主动: 工具调用提示的聚合窗口(ms) —— 一个回合连着调 10 个工具也只推一条, 防刷屏 */
+  private static readonly TOOL_NOTICE_WINDOW_MS = 1200;
+  /** 详细主动: 单条工具提示最多列几个工具(其余折叠成"等 N 个") */
+  private static readonly TOOL_NOTICE_MAX = 8;
 
   public constructor(
     private readonly manager: SessionManager,
@@ -187,7 +193,7 @@ class OutboundRouter {
         this.onMessage(session.header.id, record, event);
         break;
       case 'tool/call':
-        this.onToolCall(event);
+        this.onToolCall(record, event);
         break;
       case 'tool/result':
         this.onToolResult(record, event);
@@ -247,18 +253,56 @@ class OutboundRouter {
     this.buffers.delete(sessionId);
   }
 
-  /** 工具调用：仅记录，不发送（避免刷屏，等待结果） */
-  private onToolCall(event: ToolCallEvent): void {
-    this.toolCalls.set(event.callId, { name: event.name, args: event.arguments });
+  /** 详细主动(detail, 2026-09-11 主人加): 发送行为与 adaptive 完全一致, 额外推送工具调用/结果 */
+  private isDetail(): boolean {
+    return (this.config.outboundMode || 'adaptive') === 'detail';
   }
 
-  /** 工具结果：错误始终发送，成功结果按开关 */
+  /** 工具结果是否推送: 显式开关(showToolResults) 或 详细主动 */
+  private shouldShowToolResults(): boolean {
+    return this.config.showToolResults === true || this.isDetail();
+  }
+
+  /** 详细主动: 记一条工具调用到聚合窗口(窗口结束统一推一条, 防一个回合刷几十条) */
+  private queueToolCallNotice(record: SessionRecord, event: ToolCallEvent): void {
+    const key = record.sessionKey;
+    const line = `🔧 \`${event.name}\`${summarizeArgs(event.arguments)}`;
+    const cur = this.toolNotices.get(key);
+    if (cur !== undefined) {
+      cur.lines.push(line);
+      cur.record = record; // 以最新 record 为准(中途可能换了回复目标)
+      return;
+    }
+    const timer = setTimeout(() => { this.flushToolNotices(key); }, OutboundRouter.TOOL_NOTICE_WINDOW_MS);
+    try { timer.unref?.(); } catch { /* 非 Node 定时器忽略 */ }
+    this.toolNotices.set(key, { record, lines: [line], timer });
+  }
+
+  /** 详细主动: 把聚合中的工具调用提示发出去(多个工具合成一条消息) */
+  private flushToolNotices(key: string): void {
+    const cur = this.toolNotices.get(key);
+    if (cur === undefined) return;
+    this.toolNotices.delete(key);
+    clearTimeout(cur.timer);
+    const max = OutboundRouter.TOOL_NOTICE_MAX;
+    const shown = cur.lines.slice(0, max);
+    const more = cur.lines.length > max ? `\n…等 ${cur.lines.length} 个工具` : '';
+    void this.send(cur.record, `**🔧 工具调用**\n${shown.join('\n')}${more}`, 'sendToolCallNotice');
+  }
+
+  /** 工具调用：默认仅记录(避免刷屏, 等结果)；详细主动(detail)下额外推一条轻量提示 */
+  private onToolCall(record: SessionRecord, event: ToolCallEvent): void {
+    this.toolCalls.set(event.callId, { name: event.name, args: event.arguments });
+    if (this.isDetail()) this.queueToolCallNotice(record, event);
+  }
+
+  /** 工具结果：错误始终发送；成功结果按开关，详细主动(detail)下强制发送 */
   private onToolResult(record: SessionRecord, event: ToolResultEvent): void {
     const call = this.toolCalls.get(event.callId);
     this.toolCalls.delete(event.callId);
     if (call === undefined) return;
 
-    if (event.error === undefined && !this.config.showToolResults) return;
+    if (event.error === undefined && !this.shouldShowToolResults()) return;
 
     const text = formatToolResult(
       call.name,
@@ -274,6 +318,8 @@ class OutboundRouter {
 
   /** 轮次结束：清理 buffer，异常结束时告知用户 */
   private onTurnEnd(sessionId: string, _record: SessionRecord, event: TurnEndEvent): void {
+    // 详细主动: 回合结束前先把聚合中的工具调用提示发出去(别让最后一批工具沉在队列里)
+    this.flushToolNotices(_record.sessionKey);
     const buffer = this.buffers.get(sessionId);
     // 先让残留 buffer flush 完(记账在 flush 里发生), 再判断 passive 收尾补发
     const finish = (): void => this.maybeResendLastBlock(_record.sessionKey, _record);
@@ -314,6 +360,14 @@ class OutboundRouter {
       this.logger.error(`im-qqbot: ${tag} failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+}
+
+/** 工具参数摘要(详细主动推送用): 压成一行并截断 */
+function summarizeArgs(rawArgs: string): string {
+  const s = String(rawArgs ?? '').trim();
+  if (s === '' || s === '{}') return '';
+  const one = s.replace(/\s+/g, ' ');
+  return `(${one.length > 60 ? `${one.slice(0, 60)}…` : one})`;
 }
 
 /**

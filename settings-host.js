@@ -551,7 +551,8 @@ export function apply(ctx) {
         hasFile,
         instances: bots.map((b) => {
           const cwd = b.cfg?.cwd || '';
-          const droot = b.cfg?.dataRoot || cwd;
+          // 数据根与 dist 侧 dataRootOf 对齐: 未配 dataRoot → `{cwd}/dshqqbot`(2026-09-12 新默认)
+          const droot = b.cfg?.dataRoot || (cwd ? join(cwd, 'dshqqbot') : '');
           return {
             id: b.id,
             ns: b.id, // settings 命名空间 = 实例 id(主 im-qqbot; 非主实例 render 已写 settingsNs=id)
@@ -969,8 +970,9 @@ export function apply(ctx) {
     if (!b) return null;
     const appId = b.cfg?.appId || '';
     const appSecret = b.cfg?.appSecret || '';
-    // 数据根: dataRoot(新) > cwd(旧); nsBot 的 cwd 字段按数据根返回(全为数据目录用途)
-    const cwd = (b.cfg?.dataRoot || b.cfg?.cwd || '');
+    // 数据根: dataRoot(新) > `{cwd}/dshqqbot`(**2026-09-12 新默认**, 与 dist 侧 dataRootOf 对齐);
+    // nsBot 的 cwd 字段按数据根返回(全为数据目录用途) —— 未配 dataRoot 的实例不再落到工作目录。
+    const cwd = (b.cfg?.dataRoot || (b.cfg?.cwd ? join(b.cfg.cwd, 'dshqqbot') : ''));
     if (!appId || !appSecret) return null;
     return { id, appId, appSecret, cwd, ns: id };
   }
@@ -992,6 +994,18 @@ export function apply(ctx) {
   }
   function writeGroupsJson(cwd, g) {
     try { mkdirSync(join(cwd, '.qqbot'), { recursive: true }); writeFileSync(join(cwd, '.qqbot', 'groups.json'), JSON.stringify(g, null, 1), 'utf8'); } catch { /* ignore */ }
+  }
+  // 🗂 目标分组(2026-09-12 从浏览器 localStorage 搬到 host): 主人与 AI **共用同一份分组** ——
+  //    dock「📇 群组管理 → 🗂 分组」编辑它, agent 侧 broadcast_send 直接按分组名群发。
+  //    结构: [{ id, name, members: ['group:openid' | 'c2c:openid', ...] }] → {cwd}/.qqbot/target-groups.json
+  function readTargetGroupsJson(cwd) {
+    try {
+      const o = JSON.parse(readFileSync(join(cwd, '.qqbot', 'target-groups.json'), 'utf8') || '{}');
+      return Array.isArray(o && o.groups) ? o.groups : [];
+    } catch { return []; }
+  }
+  function writeTargetGroupsJson(cwd, groups) {
+    try { mkdirSync(join(cwd, '.qqbot'), { recursive: true }); writeFileSync(join(cwd, '.qqbot', 'target-groups.json'), JSON.stringify({ groups }, null, 1), 'utf8'); } catch { /* ignore */ }
   }
   function readPendingJson(cwd) {
     try { return JSON.parse(readFileSync(join(cwd, '.qqbot', 'join-pending.json'), 'utf8') || '{}'); } catch { return {}; }
@@ -1513,6 +1527,27 @@ export function apply(ctx) {
     } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
   });
 
+  // 🗂 目标分组读写(2026-09-12): GET=读(供 client 加载/迁移), POST=整体写回(供 client 保存)。
+  // 同 path 两个 method 必须合并成一次 route 注册(webServer 按 path 唯一, 分开注册会让整插件 effect 失败→全接口 404)。
+  route(ctx, ['GET', 'POST'], '/api/qqbot-settings/group/target-groups', async (req, res) => {
+    try {
+      if (req.method === 'GET') {
+        const u = new URL(req.url ?? '/', 'http://x');
+        const bot = nsBot(NSQ(u));
+        if (!bot) return writeJson(res, 400, { error: '找不到该账号实例' });
+        return writeJson(res, 200, { ok: true, groups: readTargetGroupsJson(bot.cwd) });
+      }
+      const body = await readJsonBody(req);
+      if (!body || typeof body !== 'object') return writeJson(res, 400, { error: 'bad body' });
+      const bot = nsBot(String(body.ns || ''));
+      if (!bot) return writeJson(res, 400, { error: '找不到该账号实例' });
+      const groups = Array.isArray(body.groups) ? body.groups : [];
+      writeTargetGroupsJson(bot.cwd, groups);
+      audit(bot.cwd, { ev: 'group.target-groups.save', ns: bot.id, n: groups.length });
+      writeJson(res, 200, { ok: true, groups });
+    } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
+  });
+
   // 群发任务列表(读时推进一个目标) {ns?}
   route(ctx, 'GET', '/api/qqbot-settings/group/broadcast/list', async (req, res) => {
     try {
@@ -1564,6 +1599,35 @@ export function apply(ctx) {
       const r = await bm.recallTaskMessage(bot.cwd, taskId, peerId, gc.client);
       audit(bot.cwd, { ev: 'group.broadcast.recall', ns: bot.id, task_id: taskId, peerId, ok: r.ok });
       writeJson(res, 200, r);
+    } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
+  });
+
+
+  // 按"勾选目标"撤回最近一条广播消息(2026-09-12 主人要求): **不必知道 task_id** ——
+  // 服务端自己在该目标的广播记录里找"最新的、已成功且带 message_id"的那条, 2 分钟窗口内撤回。
+  // 存在意义: 主人只勾选了目标就该能撤, 不该被迫去任务列表里翻 task_id(那条路又长又容易看不见按钮)。
+  route(ctx, 'POST', '/api/qqbot-settings/group/recall-last', async (req, res) => {
+    const body = await readJsonBody(req);
+    if (!body || typeof body !== 'object') return writeJson(res, 400, { error: 'bad body' });
+    const targets = Array.isArray(body.targets) ? body.targets : [];
+    if (targets.length === 0) return writeJson(res, 400, { error: 'targets 至少一个' });
+    try {
+      const bot = nsBot(String(body.ns || ''));
+      const gc = await groupClientOf(String(body.ns || ''));
+      if (!bot || !gc) return writeJson(res, 400, { error: '找不到该账号实例' });
+      const bm = await broadcastMod();
+      const tasks = bm.listTasks(bot.cwd).slice().sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+      const out = [];
+      for (const t of targets) {
+        const peerId = String((t && t.peerId) || '');
+        if (!peerId) { out.push({ peerId: '', ok: false, err: '缺少 peerId' }); continue; }
+        const hit = tasks.find((x) => x.results && x.results[peerId] && x.results[peerId].ok && x.results[peerId].message_id);
+        if (!hit) { out.push({ peerId, ok: false, err: '该目标没有可撤回的广播消息(不是广播发的或没有 message_id)' }); continue; }
+        const r = await bm.recallTaskMessage(bot.cwd, hit.task_id, peerId, gc.client);
+        out.push({ peerId, ok: r.ok, err: r.err, message_id: r.message_id, task_id: hit.task_id });
+        audit(bot.cwd, { ev: 'group.broadcast.recall-last', ns: bot.id, peerId, task_id: hit.task_id, ok: r.ok });
+      }
+      writeJson(res, 200, { ok: true, results: out });
     } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
   });
 
@@ -1694,7 +1758,7 @@ export function apply(ctx) {
         }
         continue;
       }
-      // 整行就是一个本机绝对路径(主人贴 D:\…\a.jpg / a.mp3 文本) → 按扩展名转可看/可播
+      // 整行就是一个本机绝对路径(主人贴 <cwd>\a.jpg / a.mp3 文本) → 按扩展名转可看/可播
       const lp = raw.match(/^([A-Za-z]:[\\/].+)$/);
       if (lp) {
         const lk = chatLocalExtKind(lp[1]);
@@ -2471,9 +2535,14 @@ const WHY_MAP = { busy: '目标会话回合活跃,已等待至回合结束仍超
   });
 
   // ── 🚀 群发任务「后台自动推进」(2026-09-10 修: 原设计靠 client 每次 list 驱动, 页面不动就永久卡 queued) ──
-  // 每 5s 扫全部实例, 有 queued/sending 任务就推进一步(串行 → 天然限频); 单实例失败不影响其他实例。
+  // 每隔 BC_TICK_MS 扫全部实例, 有 queued/sending 任务就推进一步(串行 → 天然限频); 单实例失败不影响其他实例。
+  // 节流依据(**官方文档已核对**, 群发走的是"主动消息"):
+  //   · 群聊: Bot 维度(发送方) 企业认证 60/qpm、未认证 30/qpm；单关系(同一个群) 20/qpm；每群每天最多接收 1000 条；接口 100 QPS
+  //   · 单聊: Bot 维度 认证 10/qps、未认证 5/qps 且 30/qpm；单关系 20/qpm
+  //   1500ms/条 ≈ 40 条/分钟 —— 跑满认证额度的 2/3, 给"被动回复/定时推送/其它主动消息"留余量。
+  //   (原为 5000ms ≈ 12 条/分钟, 仅用掉 1/5 额度, 主人实测嫌慢)
   try {
-    const BC_TICK_MS = 5000;
+    const BC_TICK_MS = 1500;
     let bcTickRunning = false; // 定时器自身防重入: 上一轮未跑完不叠加(2026-09-10)
     const bcTick = async () => {
       if (bcTickRunning) return;

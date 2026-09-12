@@ -169,8 +169,8 @@ async function installLiveSettings(ctx: Context, live: ImQQBotConfig, logger: Lo
       if (next.groupAdmin) live.groupAdmin = next.groupAdmin;
       if (typeof next.enableApprovals === 'boolean') live.enableApprovals = next.enableApprovals;
       if (typeof next.approvalTimeoutMs === 'number') live.approvalTimeoutMs = next.approvalTimeoutMs;
-      // 出站模式: adaptive=适配主动(默认; active 旧值归一 adaptive); passive=全被动; silent=不出站; nothink=不思考(仅设置页)
-      if (next.outboundMode === 'adaptive' || next.outboundMode === 'passive' || next.outboundMode === 'silent' || next.outboundMode === 'nothink') live.outboundMode = next.outboundMode;
+      // 出站模式: adaptive=适配主动(默认; active 旧值归一 adaptive); detail=详细主动(adaptive + 工具调用/结果推送); passive=全被动; silent=不出站; nothink=不思考(仅设置页)
+      if (next.outboundMode === 'adaptive' || next.outboundMode === 'detail' || next.outboundMode === 'passive' || next.outboundMode === 'silent' || next.outboundMode === 'nothink') live.outboundMode = next.outboundMode;
       else if (next.outboundMode === 'active') live.outboundMode = 'adaptive';
       // botplay 事件: 真相源已迁到 {dataRoot}/botplay-events.json(2026-09-10 M4.3);
       // ⚠️ 仅当 settings 提供了**非空**数组时才覆盖 live, 否则空数组会把文件装载的事件清掉

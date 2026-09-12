@@ -8,18 +8,24 @@
  * ⚠️ 安全边界(主人定): nothink(完全不思考)只允许「设置页」配置;
  *    命令/工具一律拒绝写入 nothink —— 防止机器人把自己切进不思考后无人能唤醒。
  *    (逃生通道= /outmode 斜杠命令走 SDK 直通不经 LLM, 可随时把 nothink 切回 adaptive。)
+ *
+ * 档位(2026-09-11 新增 detail):
+ *   adaptive=适配主动(默认, 收到真人消息前5条带引用, 之后自动转独立消息);
+ *   detail=详细主动(2026-09-11 主人定): 发送行为与 adaptive 完全一致, **额外**把 agent 的
+ *     工具调用与工具结果推给 QQ(dock ⚙️ 出站页 / /outmode detail 均可切), 用来在 QQ 上看进度;
+ *   passive=全被动 / silent=完全不出站 / nothink=完全不思考(仅设置页可配, 防自锁)。
  */
-export type OutboundMode = 'adaptive' | 'active' | 'passive' | 'silent' | 'nothink';
-export type SwitchableOutboundMode = 'adaptive' | 'passive' | 'silent';
+export type OutboundMode = 'adaptive' | 'active' | 'passive' | 'detail' | 'silent' | 'nothink';
+export type SwitchableOutboundMode = 'adaptive' | 'passive' | 'detail' | 'silent';
 
 /** 归一: active(旧值)→adaptive; 非法值→adaptive */
 export function normalizeOutboundMode(m: unknown): OutboundMode {
-  return m === 'passive' || m === 'silent' || m === 'nothink' ? m : 'adaptive';
+  return m === 'passive' || m === 'detail' || m === 'silent' || m === 'nothink' ? m : 'adaptive';
 }
 
 /** 命令/工具可写的档位(不含 nothink) */
 export function isSwitchable(m: unknown): m is SwitchableOutboundMode {
-  return m === 'adaptive' || m === 'passive' || m === 'silent';
+  return m === 'adaptive' || m === 'passive' || m === 'detail' || m === 'silent';
 }
 
 type Writer = (mode: OutboundMode) => Promise<{ ok: boolean; msg: string; mode: OutboundMode }>;
