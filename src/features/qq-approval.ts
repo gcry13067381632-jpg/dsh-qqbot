@@ -378,7 +378,7 @@ type ApprovalDispatch = (req: ApprovalRequestLike, next: () => Promise<ApprovalO
  */
 export function makeApprovalListener(handler?: ApprovalDispatch): (req: unknown, next: () => Promise<string>) => Promise<string> {
   return ((req: unknown, next: () => Promise<string>) => {
-    console.log('[qq-approval] ctx listener fired'); diagApprov('listener fired');
+    diagApprov('listener fired');
     if (handler) return handler(req as never, next as never);
     const only = approvalDispatches.values().next().value;
     if (!only) return next();

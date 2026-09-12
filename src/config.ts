@@ -238,6 +238,9 @@ export interface EditableConfig {
     visionCli?: string;
   };
   injectRules: InjectRuleConfig[];
+  /** 图片消息是否自动追加「看图」内置提示(默认 true)。关掉=不再注入「请把 URL 传给识图工具」那条
+   *  —— 模型自己就能读图时可以关它。 */
+  imageHint?: boolean;
   /** 群聊常驻守则(默认含表情包礼仪; QQ 通道级注入, 跨 preset 不碰 persona) */
   groupPrompt?: string;
   /** 定时唤醒任务(M3) */
@@ -502,6 +505,7 @@ export const EditableConfigSchema: Schema<EditableConfig> = Schema.object({
     visionCli: Schema.string().default('').description('视觉引擎命令模板(留空自动探测)'),
   }).description('表情包图库'),
   injectRules: Schema.array(injectRuleItemSchema).default([]).description('条件注入规则'),
+  imageHint: Schema.boolean().default(true).description('图片消息自动追加「看图」内置提示(默认开; 关掉=不再注入那条「把 URL 传给识图工具」)'),
   groupPrompt: Schema.string().default(DEFAULT_GROUP_PROMPT).description('群聊常驻守则(默认含表情包礼仪;可清空关闭)'),
   schedule: scheduleSchema,
   enableApprovals: Schema.boolean().default(false).description('QQ 远程审批: dsh 权限申请发到 QQ, 用 /approve CODE 放行(保存后对新请求生效)'),
@@ -553,6 +557,9 @@ export interface ImQQBotConfig {
   sticker: StickerConfig;
   /** 条件注入规则 */
   injectRules: InjectRuleConfig[];
+  /** 图片消息是否自动追加「看图」内置提示(默认 true)。关掉=不再注入「请把 URL 传给识图工具」那条
+   *  —— 模型自己就能读图时可以关它。 */
+  imageHint?: boolean;
   /** 定时唤醒任务(M3) */
   schedule: ScheduleConfig;
   /** QQ 群管理(入群审批/禁言等; 需机器人=群管理员) */
@@ -628,6 +635,7 @@ export const ConfigSchema: Schema<ImQQBotConfig> = Schema.object({
     visionCli: '',
   }).description('表情包图库'),
   injectRules: Schema.array(injectRuleItemSchema).default([]).description('条件注入规则:消息含图片/链接/自定义文本时自动插入系统提示'),
+  imageHint: Schema.boolean().default(true).description('图片消息自动追加「看图」内置提示(默认开; 关掉=不再注入那条「把 URL 传给识图工具」)'),
   schedule: scheduleSchema,
   groupAdmin: groupAdminSchema,
   showToolResults: Schema.boolean().default(false).description('是否展示工具调用成功结果（工具错误始终展示）'),

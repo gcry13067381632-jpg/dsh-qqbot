@@ -20,6 +20,7 @@ import { getScheduleStore } from './features/schedule-store.js';
 import { switchOutboundMode } from './features/outbound-mode-switch.js';
 import { loadExtensionTools } from './features/extension-store.js';
 import { verifyHuman, groupRegistryPath } from './api/group-admin.js';
+import { readGroupMembers } from './features/chat-ledger.js';
 import * as broadcastQueue from './features/broadcast.js';
 import { wakeSessionAgent, safeAppendUserMessage } from './features/group-hub.js';
 import { managersOf, findManagerByPeer, findManagerBySessionId } from './features/session-registry.js';
@@ -1654,7 +1655,9 @@ export async function apply(ctx: Context): Promise<void> {
   const muteStateTool = defineTool({
     name: 'group_mute_state',
     description: '群管理(读): 查看当前群禁言状态(全员模式 + 正在禁言中的成员及到期时间)。仅主人要求时调用。',
-    parameters: {},
+    parameters: {
+      gid: { type: 'string', description: '目标群 openid(可选; 不填=当前会话群/manageGroup)' },
+    },
     output: {
       schema: {
         type: 'object', additionalProperties: false,
@@ -1662,11 +1665,12 @@ export async function apply(ctx: Context): Promise<void> {
       },
       render: (_a, v: { ok: boolean; msg: string }) => [{ type: 'text' as const, text: v.ok ? v.msg : `失败: ${v.msg}` }],
     },
-    async execute(_args, exec) {
+    async execute(args, exec) {
       const ga = groupAdminOf(exec);
       if (!ga) return { ok: false, msg: '群管理未开启或非群会话' };
-      if (!ga.gid) return { ok: false, msg: '当前不是群会话' };
-      const r = await ga.client.getMuteState(ga.gid);
+      const gid = String(args.gid ?? '').trim() || ga.gid || '';
+      if (!gid) return { ok: false, msg: '当前不是群会话且未指定 gid, 无法确定目标群' };
+      const r = await ga.client.getMuteState(gid);
       if (!r.ok) return { ok: false, msg: r.err.human };
       const mode = r.data.global_rule?.mode ?? 'none';
       const members = r.data.members ?? [];
@@ -1677,9 +1681,12 @@ export async function apply(ctx: Context): Promise<void> {
 
   const muteMemberTool = defineTool({
     name: 'group_mute_member',
-    description: '群管理(写,危险): 禁言/解除群成员。action=mute 禁言(seconds 秒, 默认600); unmute=立即解除。只能禁普通成员(群主/管理员禁不了)。仅主人明确要求时调用。',
+    description: '群管理(写,危险): 禁言/解除群成员(**可批量, 单次最多 20 人**)。action=mute 禁言(seconds 秒, 默认600); unmute=解除。只能禁普通成员(群主/管理员禁不了)。' +
+      '\n想按昵称禁言先用 id_lookup 拿 openid; 仅主人明确要求时调用。' +
+      '\n示例: {member_openids:["<openid>"], action:"mute", seconds:600}',
     parameters: {
-      member_openid: { type: 'string', required: true, description: '目标成员 member_openid' },
+      gid: { type: 'string', description: '目标群 openid(可选; 不填=当前会话群/manageGroup)' },
+      member_openids: { type: 'array', items: { type: 'string' }, required: true, description: '目标成员 openid 数组(只禁 1 个也传数组; ≤20 个; 可先用 id_lookup 按昵称查)' },
       action: { type: 'string', required: true, enum: ['mute', 'unmute'], description: 'mute 禁言 / unmute 解除' },
       seconds: { type: 'number', required: true, description: '禁言秒数(mute 时; 不需要可填 600)' },
     },
@@ -1693,19 +1700,129 @@ export async function apply(ctx: Context): Promise<void> {
     async execute(args, exec) {
       const ga = groupAdminOf(exec);
       if (!ga) return { ok: false, msg: '群管理未开启或非群会话' };
-      if (!ga.gid) return { ok: false, msg: '当前不是群会话' };
+      const gid = String(args.gid ?? '').trim() || ga.gid || '';
+      if (!gid) return { ok: false, msg: '当前不是群会话且未指定 gid, 无法确定目标群' };
       const secs = Math.max(1, Math.min(30 * 86400, Math.round(Number(args.seconds ?? 600))));
       const pad = (n: number): string => String(n).padStart(2, '0');
       const expire = args.action === 'mute' ? new Date(Date.now() + secs * 1000) : null;
       const rfc = expire
         ? `${expire.getFullYear()}-${pad(expire.getMonth() + 1)}-${pad(expire.getDate())}T${pad(expire.getHours())}:${pad(expire.getMinutes())}:${pad(expire.getSeconds())}+08:00`
         : null;
-      const r = await ga.client.setMemberMute(ga.gid, args.member_openid, rfc);
-      if (!r.ok) return { ok: false, msg: r.err.human };
-      return { ok: true, msg: args.action === 'mute' ? `✅ 已禁言, ${Math.round(secs / 60)} 分钟后自动解除` : '已解除禁言' };
+      const all = (Array.isArray(args.member_openids) ? args.member_openids : [])
+        .map((v) => String(v).trim()).filter(Boolean)
+        .map((v) => (v.startsWith('<@') && v.endsWith('>') ? v.slice(2, -1) : v)) // 容错: 直接贴 <@openid> 也认
+        .filter((v, i, arr) => arr.indexOf(v) === i);
+      if (all.length === 0) return { ok: false, msg: 'member_openids 至少给一个 openid' };
+      const ids = all.slice(0, 20); // 官方单次 ≤20 人
+      let okCount = 0; const errs: string[] = [];
+      for (const id of ids) {
+        const rr = await ga.client.setMemberMute(gid, id, rfc);
+        if (rr.ok) okCount++; else errs.push(`…${id.slice(-4)}: ${rr.err.human}`);
+        if (ids.length > 1) await new Promise((res) => setTimeout(res, 120)); // 略停, 别撞频控
+      }
+      if (okCount === 0) return { ok: false, msg: errs[0] ?? '禁言失败' };
+      const over = all.length > 20 ? ` (超出 20 人的 ${all.length - 20} 个已忽略, 请分两次)` : '';
+      const failNote = errs.length ? ` · 失败 ${errs.length} 人(${errs.slice(0, 3).join('; ')})` : '';
+      return {
+        ok: true,
+        msg: args.action === 'mute'
+          ? `✅ 已禁言 ${okCount}/${ids.length} 人, ${Math.round(secs / 60)} 分钟后自动解除${failNote}${over}`
+          : `✅ 已解除禁言 ${okCount}/${ids.length} 人${failNote}${over}`,
+      };
     },
   });
 
+  /**
+   * 昵称/群名 → openid(2026-09-12 主人要求) —— AI 想**主动 @ 一个没 @ 过她的人**、或按名字禁言时,
+   * 必须先拿到 openid 才能写出 `<@openid>`。官方「群成员列表」未开放(调用得 11253),
+   * 所以数据源是: ①本地群成员台账 `{dataRoot}/表情包/group-members.jsonl`(在群里发过言的人 + 入群申请写入的人)
+   * ②群注册表 groups.json(群名 → 群 openid)。
+   * ⚠️ 从没发过言、没申请过入群的人查不到 —— 官方不给名单导致的硬限制, 不是 bug。
+   */
+  const idLookupTool = defineTool({
+    name: 'id_lookup',
+    description: '按**昵称/群名**查 openid(主动 @ 人、禁言、跨群发消息前用它拿 id)。**支持一次查多个名字**。' +
+      '\n数据源: 群注册表(群名) + 本地群成员台账(在群里发过言/申请过入群的人)。' +
+      '\n⚠️ 从没发过言、没申请过入群的人查不到(官方群成员列表接口未开放)。' +
+      '\n示例: {names:["小云","阿水"]} · {names:["小云"], gid:"<群openid>"} · {names:["测试群"], kind:"group"}',
+    parameters: {
+      names: { type: 'array', items: { type: 'string' }, required: true, description: '一个或多个昵称/群名片段(最多 10 个; 单个也传数组; 空格分隔=多词全命中)' },
+      gid: { type: 'string', description: '限定某个群的成员(可选; 不填=查全部已知群)' },
+      kind: { type: 'string', enum: ['member', 'group', 'all'], description: 'member=只查人(默认) / group=只查群 / all=都查' },
+      limit: { type: 'number', description: '**每个**名字最多返回几条(1~10, 默认 3)' },
+    },
+    output: {
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: { ok: { type: 'boolean', required: true }, msg: { type: 'string', required: true } },
+      },
+      render: (_a, v: { ok: boolean; msg: string }) => [{ type: 'text' as const, text: v.ok ? v.msg : `失败: ${v.msg}` }],
+    },
+    async execute(args) {
+      const raw = Array.isArray(args.names) ? args.names : (args.names ?? (args as { name?: unknown }).name);
+      const kws = (Array.isArray(raw) ? raw : [raw])
+        .map((v) => String(v ?? '').trim().toLowerCase()).filter(Boolean).slice(0, 10);
+      if (kws.length === 0) return { ok: false, msg: 'names 至少给一个昵称' };
+      const wantGid = String(args.gid ?? '').trim();
+      const kind = String(args.kind ?? 'member');
+      const limit = Math.max(1, Math.min(10, Math.round(Number(args.limit ?? 3))));
+      const roots = new Set<string>();
+      for (const m of managersOf()) roots.add(m.dataRoot);
+      // 群注册表(gid → 群名/最近活跃): 多个 dataRoot 聚合, lastAt 新者胜
+      const groups = new Map<string, { name: string; lastAt: number }>();
+      for (const root of roots) {
+        try {
+          const reg = JSON.parse(readFileSync(groupRegistryPath(root), 'utf8')) as Record<string, { name?: string; lastAt?: number }>;
+          for (const [gid, v] of Object.entries(reg ?? {})) {
+            const name = String(v?.name ?? '');
+            const lastAt = Number(v?.lastAt ?? 0);
+            const cur = groups.get(gid);
+            if (!cur || lastAt > cur.lastAt) groups.set(gid, { name: name || cur?.name || '', lastAt });
+          }
+        } catch { /* 该 root 没有注册表 */ }
+      }
+      // 台账只读一次(按词重复读纯浪费), 按 openid 合并群列表
+      const people = new Map<string, { name: string; gids: Set<string>; lastSeen: number; count: number }>();
+      if (kind !== 'group') {
+        for (const root of roots) {
+          try {
+            for (const m of readGroupMembers(join(root, '表情包'), wantGid || undefined)) {
+              const cur = people.get(m.mid);
+              if (!cur) { people.set(m.mid, { name: m.name ?? '', gids: new Set([m.gid]), lastSeen: m.lastSeen, count: m.count }); continue; }
+              cur.gids.add(m.gid);
+              if (m.lastSeen > cur.lastSeen) { cur.lastSeen = m.lastSeen; if (m.name) cur.name = m.name; }
+              cur.count += m.count;
+            }
+          } catch { /* 无台账则跳过 */ }
+        }
+      }
+      const gName = (gid: string): string => groups.get(gid)?.name || `群…${gid.slice(-4)}`;
+      const out: string[] = [];
+      for (const kw of kws) {
+        let hit = 0;
+        if (kind !== 'group') {
+          const matched = [...people.entries()]
+            .filter(([, v]) => v.name.toLowerCase().includes(kw))
+            .sort((a, b) => b[1].lastSeen - a[1].lastSeen)
+            .slice(0, limit);
+          for (const [mid, v] of matched) {
+            out.push(`${v.name} ${mid}  在: ${[...v.gids].map(gName).join(', ')}`);
+            hit++;
+          }
+        }
+        if (kind !== 'member') {
+          for (const [gid, v] of groups) {
+            if (hit >= limit) break;
+            if (!v.name.toLowerCase().includes(kw)) continue;
+            out.push(`群 ${v.name} ${gid}`);
+            hit++;
+          }
+        }
+        if (hit === 0) out.push(`${kw} → 没查到(台账只记发过言 / 申请过入群的人)`);
+      }
+      return { ok: true, msg: out.join('\n') };
+    },
+  });
   // tools_reload: 热刷新 QQ 通道工具(2026-09-08, 主人建议)——AI 自己写完扩展工具后,
   // 调本工具即可让新扩展注册进当前会话(等价于 /tools-reload 斜杠), 不再依赖主人手发。
   const toolsReloadTool = defineTool({
@@ -1744,6 +1861,7 @@ export async function apply(ctx: Context): Promise<void> {
     { name: 'group_join_auto', tool: autoApproveJoinTool },
     { name: 'group_mute_state', tool: muteStateTool },
     { name: 'group_mute_member', tool: muteMemberTool },
+    { name: 'id_lookup', tool: idLookupTool },
     { name: 'session_list', tool: sessionListTool },
     { name: 'session_wake', tool: sessionWakeTool },
     { name: 'broadcast_send', tool: broadcastSendTool },

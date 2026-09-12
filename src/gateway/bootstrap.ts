@@ -388,7 +388,7 @@ export async function bootstrapGateway(
     on(event: string, handler: (...args: unknown[]) => unknown, config?: { prepend?: boolean }): void;
   };
   approvalCtx.on('approval/request', makeApprovalListener(myApprovalHandler as never) as never, { prepend: true });
-  console.log('[qq-approval] ACP-mode listener registered (root-ctx + prepend)');
+
   logger.info(`[im-qqbot] QQ 远程审批接线就绪(${config.enableApprovals ? '已启用' : '默认关闭, Web 设置可热开'})`);
 
   // ── QQ 远程提问(按钮卡片版): ask_user_question → QQ 卡片按钮 ──

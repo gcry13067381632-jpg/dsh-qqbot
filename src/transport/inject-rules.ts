@@ -80,11 +80,12 @@ export function applyInjectRules(
   msg: RuleMsg,
   rules: InjectRuleConfig[] | undefined,
   logger?: Logger,
+  imageHintAuto = true,
 ): string {
   const text = (msg.content ?? '') || '';
   const enabled = (rules ?? []).filter(r => r.enabled);
   const hasUserImageRule = enabled.some(r => r.conditions.hasImage);
-  const active = hasUserImageRule ? enabled : [...enabled, LEGACY_IMAGE_RULE];
+  const active = hasUserImageRule || !imageHintAuto ? enabled : [...enabled, LEGACY_IMAGE_RULE];
 
   let budget = BUDGET_CHARS;
   let out = body;

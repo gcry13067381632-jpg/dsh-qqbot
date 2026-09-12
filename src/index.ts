@@ -32,7 +32,7 @@ export async function apply(ctx: Context, config: ImQQBotConfig): Promise<void> 
   const agents = (ctx as unknown as Record<string, unknown>).agents as DshAgentRegistry;
   const logger: Logger = ((ctx as unknown as Record<string, unknown>).logger as Logger) ?? console;
 
-  console.log('[im-qqbot] apply() called');
+
 
   // 多账号实例身份: settingsNs 承担"实例 id"(账号页保存时写入, 默认 im-qqbot=主账号)。
   const ns = (config.settingsNs ?? '').trim() || 'im-qqbot';
@@ -147,6 +147,7 @@ async function installLiveSettings(ctx: Context, live: ImQQBotConfig, logger: Lo
       visionCli: live.sticker.visionCli,
     },
     injectRules: live.injectRules,
+    imageHint: live.imageHint,
     groupPrompt: live.groupPrompt,
     schedule: live.schedule,
     groupAdmin: live.groupAdmin,
@@ -164,6 +165,7 @@ async function installLiveSettings(ctx: Context, live: ImQQBotConfig, logger: Lo
       if (next.sticker) live.sticker = { ...live.sticker, ...next.sticker };
       if (typeof next.dataRoot === 'string') live.dataRoot = next.dataRoot; // 数据根(重启后 bootstrap 迁移/落盘用它)
       if (Array.isArray(next.injectRules)) live.injectRules = next.injectRules;
+      if (typeof next.imageHint === 'boolean') live.imageHint = next.imageHint;
       if (typeof next.groupPrompt === 'string') live.groupPrompt = next.groupPrompt;
       if (next.schedule) live.schedule = next.schedule;
       if (next.groupAdmin) live.groupAdmin = next.groupAdmin;

@@ -214,6 +214,7 @@ window.__ModuleLoader__.load({
               behavior: v.behavior || {},
               sticker: v.sticker || {},
               injectRules: Array.isArray(v.injectRules) ? v.injectRules : [],
+              imageHint: typeof v.imageHint === 'boolean' ? v.imageHint : undefined,
               schedule: v.schedule && Array.isArray(v.schedule.targets) ? v.schedule : { targets: [] },
               // groupPrompt 必须读回来, 否则每次保存都会把它清空成 ''
               // undefined(从未设置)→ 显示默认守则; ''(用户明确清空)→ 保持空(无守则)
@@ -281,6 +282,7 @@ window.__ModuleLoader__.load({
             setCfg({
               behavior: v2.behavior || {}, sticker: v2.sticker || {},
               injectRules: Array.isArray(v2.injectRules) ? v2.injectRules : [],
+              imageHint: typeof v2.imageHint === 'boolean' ? v2.imageHint : undefined,
               schedule: v2.schedule && Array.isArray(v2.schedule.targets) ? v2.schedule : { targets: [] },
               groupPrompt: typeof v2.groupPrompt === 'string' ? v2.groupPrompt : (typeof cfg.groupPrompt === 'string' ? cfg.groupPrompt : DEFAULT_GROUP_PROMPT),
               enableApprovals: v2.enableApprovals === true,
@@ -347,6 +349,8 @@ window.__ModuleLoader__.load({
           return h(RuleEditor, { key: r.id, rule: r, onChange: function (nr) { updRule(i, nr) }, onRemove: rmRule })
         }),
         h('button', { className: 'qqs-btn', onClick: addRule }, '+ 添加一条提醒'),
+        h('div', { style: boxStyle },
+          BoolRow({ label: '图片消息自动提示 AI 看图(内置兜底; 不勾=不再注入「请把URL传给识图工具」那条)', value: cfg.imageHint !== false, onChange: function (v) { setCfg(function (c) { return { ...c, imageHint: v } }) } })),
 
         h('div', { style: sectionTitle }, '④ 定时唤醒'),
         h('p', { style: { fontSize: 12, color: '#888' } }, '已合并到「定时任务」页(顶部 tab)一起编辑——到点主动开口的群/人分组,与她答应你的定时提醒,都在那边管理。'),
@@ -959,6 +963,7 @@ window.__ModuleLoader__.load({
             visionCli: (v.sticker && typeof v.sticker.visionCli === 'string') ? v.sticker.visionCli : '',
           },
           injectRules: Array.isArray(v.injectRules) ? v.injectRules : [],
+          imageHint: typeof v.imageHint === 'boolean' ? v.imageHint : undefined,
           schedule: { targets: targets() },
           groupPrompt: typeof v.groupPrompt === 'string' ? v.groupPrompt : DEFAULT_GROUP_PROMPT,
         }

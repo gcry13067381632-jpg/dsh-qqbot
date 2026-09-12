@@ -29,7 +29,7 @@ import { getHistoryStore, historyGroupKey } from '../features/history-store.js';
 import { loadExtensionCommands } from '../features/extension-store.js';
 import { stickerActivityRecorder } from '../features/sticker-gate.js';
 import { chatLedgerRecorder } from '../features/chat-ledger.js';
-import { debounceLayer } from './debounce.js';
+import { debounceLayer, injectSynthetic } from './debounce.js';
 import { faceTagResolver } from '../features/face-tags.js';
 
 export async function setupMiddlewares(
@@ -204,6 +204,21 @@ export async function setupMiddlewares(
     if (ctx.state) ctx.state.command = parsed;
     try {
       const result = await cmd.handler({ ...ctx, command: parsed });
+      // 扩展命令可返回 { wake: { content, senderName? } } → 请把一条合成消息交给聚合层唤醒 AI
+      // (2026-09-12: /资源 未命中用; 与真人消息同窗口聚合, 人多不会各开一回合)
+      try {
+        const wk = (result as { wake?: { content?: string; senderName?: string } } | null)?.wake;
+        const wText = typeof wk?.content === 'string' ? wk.content.trim() : '';
+        if (wText) {
+          const m0 = (ctx.message ?? {}) as Record<string, unknown>;
+          const k0 = String(m0.kind ?? '');
+          const pid = k0 === 'group' ? String(m0.groupOpenid ?? m0.senderId ?? '') : String(m0.senderId ?? '');
+          if ((k0 === 'group' || k0 === 'c2c') && pid) {
+            const ok = injectSynthetic(k0 as 'group' | 'c2c', pid, wText, { senderName: wk?.senderName }, manager);
+            ctx.log?.info?.(`[qqbot-cmd] ${name} wake → ${ok ? '已交聚合层' : '无可用聚合实例'}`);
+          }
+        }
+      } catch { /* wake 失败不影响命令本身 */ }
       await sendCmdResult(ctx, result);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

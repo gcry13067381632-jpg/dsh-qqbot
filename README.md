@@ -61,8 +61,10 @@
 
 ### 给AI的话
 - QQ 会话内可直接调用的标准工具：发图/撤图/查库/打标/查未整理/定时（`send_media`/`recall_message`/`list_stickers`/`sticker_tag`/`sticker_untagged`/`schedule_timer`/`schedule_cancel`…），会话按账号精确路由
-- **群管理工具**（`group_join_requests`/`group_approve_join`/`group_join_auto`/`group_mute_state`/`group_mute_member`…）：入群审批与禁言，需机器人为该群管理员；对话内管当前群，web/非群会话用配置的 `manageGroup`。**入群审批默认听主人的，不自动批**——先 `group_join_requests` 查看，把申请人+验证信息汇报给主人，等主人明确说"通过/拒绝"再 `group_approve_join`；**主人明确要求**"按关键词自动批"时才用 `group_join_auto`（命中关键词放行 / 未命中拒绝，`dry_run` 可预览）
+- **群管理工具**（`group_join_requests`/`group_approve_join`/`group_join_auto`/`group_mute_state`/`group_mute_member`/`id_lookup`…）：入群审批与禁言，需机器人为该群管理员；**禁言可批量**（`member_openids` 数组，单次最多 20 人；`gid` 可指向别的群）；**按昵称查 openid 用 `id_lookup`**（想主动 @ 没 @ 过你的人时用它；⚠️ 从没发过言、没申请过入群的人查不到，官方群成员列表接口未开放）；对话内管当前群，web/非群会话用配置的 `manageGroup`。**入群审批默认听主人的，不自动批**——先 `group_join_requests` 查看，把申请人+验证信息汇报给主人，等主人明确说"通过/拒绝"再 `group_approve_join`；**主人明确要求**"按关键词自动批"时才用 `group_join_auto`（命中关键词放行 / 未命中拒绝，`dry_run` 可预览）
+- **图片消息的内置「看图」提示可关**（`imageHint`，默认开）：关掉后不再注入「把 URL 传给识图工具」那条提示 —— 模型自己能读图时，在设置面板 ③ 区块取消勾选即可。
 - **纯文本也能发图撤消息**：让 AI 在回复里写 `[MEDIA:image|图片路径或网址]` 就自动变成真图发出去（`voice`/`video`/`file` 同理）；写 `[RECALL]` 撤回自己刚发的那条
+- **扩展命令能悄悄唤醒 AI**：命令返回 `{ wake: { content } }` 即可 —— 插件会把这条消息塞进**和真人消息同一个聚合窗口**（多人同时触发自动合并成一回合，不浪费 token），适合「用户没找到想要的东西 → 自动喊 AI 去找」这类场景。
 - **跨会话通信**：`session_list` 列出全部会话（含潜在群）；`session_wake(session_id 或 scope+peer_id, text, send_qq?, media?)` 向指定会话/群发消息并唤醒对方 LLM，可同时走 QQBot 通道发给人看，`media` 支持跨群发图
 - **省 token 设计（v1.3.0）**：群历史行默认 `[昵称] 内容`（只有被 @ 的那条带 openid），`session_list` 默认"群名+尾号"（`full=true` 才给完整），`group_join_requests`/`list_stickers` 等列表默认 3~5 条并可翻页 —— 长聊天的上下文开销明显更小
 - **入群申请的两种形态**：

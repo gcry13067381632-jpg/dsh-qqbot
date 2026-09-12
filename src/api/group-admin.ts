@@ -275,13 +275,26 @@ export class GroupAdminClient {
    */
   async setMemberMute(
     gid: string,
-    memberOpenid: string,
+    memberOpenid: string | string[],
     muteExpireAt: string | null,
   ): Promise<ApiResult<Record<string, never>>> {
-    const members = muteExpireAt
-      ? [{ op: 'add', member_openid: memberOpenid, mute_expire_at: muteExpireAt }]
-      : [{ op: 'del', member_openid: memberOpenid, mute_expire_at: '' }];
-    return this.call('POST', `/v2/groups/${encodeURIComponent(gid)}/restrict_chat_setting`, { members });
+    // 2026-09-12: 支持**批量**(官方单次 ≤20 人) —— 一次 request 带多条 members, 避免 N 次调用
+    const ids = (Array.isArray(memberOpenid) ? memberOpenid : [memberOpenid])
+      .map((v) => String(v).trim()).filter(Boolean).slice(0, 20);
+    const members = ids.map((id) => (muteExpireAt
+      ? { op: 'add', member_openid: id, mute_expire_at: muteExpireAt }
+      : { op: 'del', member_openid: id, mute_expire_at: '' }));
+    const url = `/v2/groups/${encodeURIComponent(gid)}/restrict_chat_setting`;
+    // ⚠️ 2026-09-12 实测: **禁言(add)** 一次放多个成员会报 50015013(只传 1 个正常), 而**解除(del) 支持批量** ——
+    // 官方文档写的是数组, 线上只吃单个 → add **逐条发**(≤20 次, 远低于 100 QPS), del 一次发完(见下)。
+    if (ids.length === 0) return this.call('POST', url, { members: [] });
+    if (!muteExpireAt) return this.call('POST', url, { members }); // del(解除): 支持一次多个, 直接发
+    let last: ApiResult<Record<string, never>> = { ok: true, data: {} };
+    for (let k = 0; k < ids.length; k++) {
+      last = await this.call('POST', url, { members: members.slice(k, k + 1) });
+      if (!last.ok) return last;
+    }
+    return last;
   }
 
   /**

@@ -116,7 +116,7 @@ export async function handleInbound(
   // 条件注入规则(配置化): 消息含图/链接/自定义条件时追加 [系统提示]。
   // 含内置读图兜底(未配置 hasImage 规则时自动生效, 行为与旧写死版一致)。
   // ⚠️ 本地手改功能（曾被重编译冲掉），改完务必保持 src 与部署 dist 同步。
-  agentBody = applyInjectRules(agentBody, msg, config.injectRules, logger);
+  agentBody = applyInjectRules(agentBody, msg, config.injectRules, logger, config.imageHint !== false);
 
   // 群聊时间戳(原"群守则"拼接位): 守则已迁 systemPrompt.section(session-manager 装配期注册,
   // 每请求进 system, 不再每轮塞 user 历史); 此处改为注入当前系统时间, 让 AI 每轮知道日期/星期/时刻。
@@ -399,7 +399,7 @@ function buildAgentBody(
     // 2026-09-12 token 瘦身(主人定): 历史行默认**只给昵称**; 只有"当时 @ 过 bot 的那条"带 openid ——
     // 32 位 openid 每行占 20+ token, limit=20 时每轮白烧 ~640; 要 id 时用 session_list / 台账反查。
     const mentioned = (h as { mentioned?: boolean }).mentioned === true;
-    return mentioned ? `[${name} (${h.senderId})] ${h.content}` : `[${name}] ${h.content}`;
+    return mentioned && h.senderId ? `[${name} (${h.senderId})] ${h.content}` : `[${name}] ${h.content}`;
   });
 
   return [

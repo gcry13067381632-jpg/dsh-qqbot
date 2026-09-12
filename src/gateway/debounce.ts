@@ -80,6 +80,31 @@ function num(v: unknown, d: number): number {
  * @ 消息无视冷却随时派发。
  * cooldownAt: 与 middleware-setup 群冷却中间件共享的 lastDispatchAt(groupOpenid -> 上次普通派发 ms)。
  */
+/** 往聚合窗口塞合成消息的入口(2026-09-12: 扩展命令未命中 → 唤醒 AI)。
+ *  关键: 与真人消息**同一个窗口**聚合 —— 人多时不会各开一回合, 省 token。 */
+type InjectFn = (
+  scope: 'group' | 'c2c',
+  peerId: string,
+  text: string,
+  opts?: { senderId?: string; senderName?: string; wasMentioned?: boolean },
+  owner?: unknown,
+) => boolean;
+const INJECTORS: InjectFn[] = [];
+
+export function injectSynthetic(
+  scope: 'group' | 'c2c',
+  peerId: string,
+  text: string,
+  opts?: { senderId?: string; senderName?: string; wasMentioned?: boolean },
+  owner?: unknown,
+): boolean {
+  for (const fn of INJECTORS) {
+    try {
+      if (fn(scope, peerId, text, opts, owner)) return true;
+    } catch { /* 单个实例失败不影响其它 */ }
+  }
+  return false;
+}
 export function debounceLayer(
   config: ImQQBotConfig,
   manager: SessionManager,
@@ -216,7 +241,8 @@ export function debounceLayer(
         }));
         for (const e of entries) {
           const id = String(e.msg.messageId ?? '');
-          const hit = merged.find(m => m.messageId === id);
+          // ⚠️ 空 messageId(合成消息, 如 /资源 求助)不参与去重 —— 否则同一窗口里的第二条会被当"重复"吞掉
+          const hit = id ? merged.find(m => m.messageId === id) : undefined;
           if (hit) {
             if (e.wasMentioned) hit.wasMentioned = true;
             // ⚠️ 2026-09-10 去重(主人实测: "图片链接重复两次, 那不是又回原来的长上下文咯?"):
@@ -226,7 +252,11 @@ export function debounceLayer(
             //   补上后: current 走 cur.msg(原始 content, 附件交给 Layer4 描述), history 仍用折叠文本。
             if (!hit.msg) hit.msg = e.msg;
           } else {
-            merged.push({ messageId: id, ts: e.ts, msg: e.msg, wasMentioned: e.wasMentioned });
+            merged.push({
+              messageId: id, ts: e.ts, msg: e.msg, wasMentioned: e.wasMentioned,
+              // 从 msg 提上来: 合成消息(如 /资源 求助)的 senderName 只在 msg 里, 不带上历史行会渲染成 []
+              senderId: String(e.msg.senderId ?? ''), senderName: String(e.msg.senderName ?? ''),
+            });
           }
         }
         merged.sort((a, b) => a.ts - b.ts);
@@ -239,7 +269,7 @@ export function debounceLayer(
         // 补 " (@you)" 标注 —— 与 current 的 (@you) 同款格式, 还原"这条@了bot"的事实,
         // 由 AI 按自身守则决定是否开口(插件不注入回复指令, 保持通用)。
         const hist: HistoryEntry[] = merged
-          .filter(m => m.messageId !== cur.messageId)
+          .filter(m => m !== cur) // 用引用比较: 空 messageId 的合成消息彼此相等, 按 id 比会把它们全滤掉
           .map(m => {
             const baseContent = m.content ?? String(m.msg?.content ?? '');
             return {
@@ -299,6 +329,42 @@ export function debounceLayer(
     }
   }
 
+  // 注册"合成消息入窗"能力(2026-09-12): 与真人消息同一窗口, 自动参与聚合/冷却/回合忙 defer
+  INJECTORS.push((scope, peerId, text, opts, owner) => {
+    // ⚠️ 多实例同进程共享本模块(INJECTORS 是模块级) → **只接自己那实例的请求**,
+    //    否则会把 A 实例的群消息塞进 B 实例的窗口 → 会话会建到 B 的**工作区**(2026-09-12 实测踩到)。
+    if (owner !== undefined && owner !== manager) return false;
+    const c = cfg();
+    const silenceMs = Math.max(0, num(c.silenceSec, DEFAULTS.silenceSec)) * 1000;
+    const key = `${scope}:${peerId}`;
+    const fake: Record<string, unknown> = {
+      kind: scope,
+      senderId: opts?.senderId || '', // 留空: 历史行渲染成 [资源助手] xxx, 不带难看的 (system)
+      senderName: opts?.senderName || '资源助手',
+      content: text,
+      messageId: '',
+      timestamp: new Date().toISOString(),
+      groupOpenid: scope === 'group' ? peerId : undefined,
+      msgType: 0,
+    };
+    if (c.enabled && silenceMs > 0) {
+      // 聚合启用 → 塞进同一窗口(标 wasMentioned 以绕过"无@冷却"推迟, 保证这批能派发)
+      let w = windows.get(key);
+      if (!w) { w = { entries: [], timer: null }; windows.set(key, w); }
+      const ts = Date.now();
+      w.entries.push({ msg: fake, wasMentioned: opts?.wasMentioned !== false, ts });
+      clearTimer(w);
+      w.timer = setTimeout(() => void flush(key, w as DebounceWindow), silenceMs);
+      w.timer.unref?.();
+      dbg(`inject ${key} n=${w.entries.length} text=${JSON.stringify(text.slice(0, 30))}`);
+      logger.info(`[debounce] 合成消息入窗 ${key}(窗口${w.entries.length}条): ${text.slice(0, 40)}`);
+      return true;
+    }
+    // 聚合未启用 → 退化: 立即唤醒一轮(不再聚合)
+    void handleInbound(fake as never, manager, config, logger, { mention: { wasMentioned: true } } as never);
+    logger.info(`[debounce] 合成消息(聚合未启用) → handleInbound 立即唤醒: ${text.slice(0, 40)}`);
+    return true;
+  });
   return async (ctx: MiddlewareContext, next: () => Promise<void>): Promise<void> => {
     // 完全不思考(nothink, 2026-09-07 主人定): QQ 入站不唤醒 LLM, 但消息要照常进入上下文。
     // 这里直接交 handleInbound —— 它的 nothink 分支会把组装好的 user/message append 进会话
