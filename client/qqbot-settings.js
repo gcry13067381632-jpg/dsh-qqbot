@@ -1910,11 +1910,29 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           .then(function (r) { return r.json() }).then(function (d) {
             if (!d || !d.ok) return
             var host = Array.isArray(d.groups) ? d.groups : []
-            if (host.length > 0) {
+            var local = Array.isArray(state.tgGroups) ? state.tgGroups : []
+            if (host.length === 0) {
+              if (local.length > 0) saveTgGroups() // 迁移: 本地有、host 还空 → 推上去(第一次打开新版时发生一次)
+            } else if (local.length === 0) {
               state.tgGroups = host
               try { localStorage.setItem('qqs-target-groups', JSON.stringify(host)) } catch (e) {}
-            } else if ((state.tgGroups || []).length > 0) {
-              saveTgGroups() // 迁移: 本地有、host 还空 → 推上去(第一次打开新版时发生一次)
+            } else {
+              // 两边都非空 → **按 id 合并并集**: host 打底(以它为准), 本地**独有的组保留**, 同 id 取成员多的一份。
+              // 旧实现是"host 有数据就整体覆盖本地" → 会把本地刚建好、还没同步成功的分组凭空冲掉(2026-09-12 修)。
+              var byId = {}, order = []
+              var put = function (g, localWinsIfMore) {
+                if (!g || !g.id) return
+                var old = byId[g.id]
+                if (!old) { byId[g.id] = g; order.push(g.id); return }
+                var a = (old.members || []).length, b = (g.members || []).length
+                if (localWinsIfMore ? b > a : b >= a) byId[g.id] = g
+              }
+              host.forEach(function (g) { put(g, false) })
+              local.forEach(function (g) { put(g, true) })
+              var merged = order.map(function (id) { return byId[id] })
+              state.tgGroups = merged
+              try { localStorage.setItem('qqs-target-groups', JSON.stringify(merged)) } catch (e) {}
+              if (JSON.stringify(merged) !== JSON.stringify(host)) saveTgGroups() // 合并结果 ≠ host → 推回, 让 AI 与主人看到同一份
             }
             if (state.tab === 'roster' || state.tab === 'broadcast') paintBody()
           }).catch(function () {})

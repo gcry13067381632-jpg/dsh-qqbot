@@ -396,7 +396,10 @@ function buildAgentBody(
 
   const historyLines = history.map(h => {
     const name = h.senderName ?? shortSenderId(h.senderId);
-    return `[${name} (${h.senderId})] ${h.content}`;
+    // 2026-09-12 token 瘦身(主人定): 历史行默认**只给昵称**; 只有"当时 @ 过 bot 的那条"带 openid ——
+    // 32 位 openid 每行占 20+ token, limit=20 时每轮白烧 ~640; 要 id 时用 session_list / 台账反查。
+    const mentioned = (h as { mentioned?: boolean }).mentioned === true;
+    return mentioned ? `[${name} (${h.senderId})] ${h.content}` : `[${name}] ${h.content}`;
   });
 
   return [

@@ -91,12 +91,15 @@ export function mediaHistoryBuffer(options: MediaHistoryOptions): Middleware {
     }
     const raw = ctx.message as unknown as FoldableMsg;
     raw.wasMentioned = (ctx.state as { mention?: { wasMentioned?: boolean } })?.mention?.wasMentioned === true;
-    const entry: HistoryEntry = {
+    // 2026-09-12: 顺带记一个"这条 @ 过 bot"的标志 —— 打包进上下文时**只有这种行才带 openid**
+    // (主人要求: 其余历史行一律只给昵称, 每行省 20+ token)。SDK 的 HistoryEntry 无此字段, 用交叉类型塞进去。
+    const entry: HistoryEntry & { mentioned?: boolean } = {
       senderId: ctx.message.senderId,
       senderName: ctx.message.senderName,
       content: foldMedia(raw),
       timestamp: Date.parse(ctx.message.timestamp) || Date.now(),
       messageId: ctx.message.messageId,
+      ...(raw.wasMentioned === true ? { mentioned: true } : {}),
     };
     try {
       await store.append(key, entry, limit);

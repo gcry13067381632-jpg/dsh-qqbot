@@ -299,11 +299,11 @@ export async function apply(ctx: Context): Promise<void> {
 
   const listStickersTool = defineTool({
     name: 'list_stickers',
-    description: '(QQ聊天加分项,气氛对就大胆用!)查本地表情包库,返回图片本地路径+标签+详细描述。想用图回应的时刻——对方发图(接梗/回图)、爆笑/自嘲/庆祝/被夸/共鸣/话题热闹——**先**调它按情绪关键词搜库(query可空=最近收藏), 从返回里挑最贴切的一张, 用 send_media(kind=image, source=该路径) 发出去(0~1张, 一次最多一张)。每张的"描述"写着画面和适用场合帮你挑准; 只有实在查不到贴切的, 才退而回纯文字。别老憋着——QQ 聊天带张好图比干巴巴文字生动多了。',
+    description: '(聊天加分项,气氛对就大胆用!)按情绪关键词搜本地表情包库, 挑最贴切的一张用 send_media(kind=image, source=路径) 发出去(一次最多一张); 实在查不到贴切的才回纯文字。',
     parameters: {
-      query: { type: 'string', description: '语义关键词(可空=最近收藏; 会匹配标签和描述)' },
+      query: { type: 'string', description: '语义关键词(可空=最近收藏; 匹配标签与描述)' },
       tag: { type: 'string', description: '标签过滤(可空)' },
-      limit: { type: 'integer', description: '返回条数上限 1~20,默认5' },
+      limit: { type: 'integer', description: '返回条数 1~20(默认 3)' },
     },
     output: {
       schema: {
@@ -342,7 +342,8 @@ export async function apply(ctx: Context): Promise<void> {
       try {
         const store = stickerStoreOf(exec as never);
         const limitRaw = (args as { limit?: number }).limit;
-        const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(20, Math.floor(limitRaw ?? 5))) : 5;
+        // 默认 3 条(2026-09-12 token 瘦身: 每条含描述+路径, 5 条≈白烧几十 token, 3 条足够挑图)
+        const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(20, Math.floor(limitRaw ?? 3))) : 3;
         const hits = store.search({
           q: (args as { query?: string }).query ?? '',
           tag: (args as { tag?: string }).tag ?? '',
@@ -388,7 +389,7 @@ export async function apply(ctx: Context): Promise<void> {
 
   const tagStickerTool = defineTool({
     name: 'sticker_tag',
-    description: '(主动维护,别等用户开口!)看到"值得留"的图就调它收藏+打标: 群友发来有梗/好看/以后想用到的图(不管你这轮要不要发), 当场用 sticker_tag(传群消息里那张图的URL 或本地路径)收藏入库并给中文短标签+一句描述——图库越好用, 以后 list_stickers 越搜得到。已在库的图可改标签/描述; 缺标签或缺介绍的图(见 sticker_untagged)也用它补。tags=逗号分隔中文短标签(内容/情绪/用途, 如 爆笑,元气,打招呼); desc=一句"画面+情绪+适合场合"。想省视觉额度可传 vision=false(仅对已在库的图打标)。打标的意义: 你的表情包弹药库靠它养成, 不整理=好图烂在库里永远搜不到。',
+    description: '(主动维护)看到值得留的图就收藏+打标(群友发的有梗/好图, 不管这轮发不发): tags=逗号分隔中文短标签(如 爆笑,元气), desc=一句"画面+情绪+适用场合"; 缺标签的图(见 sticker_untagged)也用它补。想省视觉额度可传 vision=false(只对已在库的图打标)。',
     parameters: {
       sticker: { type: 'string', required: true, description: '图片URL 或 本地绝对路径(也可传 list_stickers 返回的路径)' },
       tags: { type: 'string', description: '逗号分隔中文标签,如 开心,元气,打招呼' },
@@ -766,7 +767,9 @@ export async function apply(ctx: Context): Promise<void> {
   // 切换走 outbound-mode-switch 注册表 → live 热生效 + settings 持久化 → dock/设置一致。
   const outboundModeTool = defineTool({
     name: 'outbound_mode',
-    description: '出站模式开关(自己决定): 切换本 bot 向 QQ 发消息的方式, 保存即热更新(不用重启, dock与设置同步)。四档任选: adaptive=适配主动(默认推荐): 真人消息前5条带引用回你、连发自动转独立消息不被QQ吞; detail=详细主动(2026-09-11 主人加): 聊天行为与 adaptive 完全一样, 但额外把工具调用/工具结果也推到 QQ —— 主人在 QQ 上就能看见你正在调什么工具(主人明确要求"看进度"时用, 消息会明显变多, 用完记得切回 adaptive); passive=被动: 始终回复最后一条(连发约4~5条后被QQ吞); silent=完全不出站: 照常思考但这条回复不发出(潜水观察用; web上仍可对话)。注意: 不提供 nothink(完全不思考)——那档只能由主人在设置页配置。根据当下场景选: 正常聊天/被@回应→adaptive; 主人要求看工具进度→detail; 想保持引用感→passive; 判断不该在群里说话(冷场/打扰)→silent。',
+    description:
+      '出站模式开关(自己决定, 热更新不用重启): adaptive=适配主动(默认: 真人消息前5条带引用、连发自动转独立消息不被QQ吞); detail=详细主动(聊天同 adaptive, 额外把工具调用/工具结果也推到QQ —— 主人要看进度时用, 消息会变多, 用完切回); passive=被动(始终回最后一条, 连发约4~5条后被QQ吞); silent=完全不出站(照常思考但不发, 潜水观察)。nothink 那档只能主人在设置页配。' +
+      '\n怎么选: 正常聊天/被@→adaptive · 主人要看工具进度→detail · 想保持引用感→passive · 判断不该在群里说话→silent',
     parameters: {
       mode: { type: 'string', required: true, enum: ['adaptive', 'detail', 'passive', 'silent'], description: '目标模式: adaptive(默认推荐) / detail(详细主动: 连工具调用一起推) / passive / silent' },
       reason: { type: 'string', required: true, description: '为什么切到这档(简短理由)' },
@@ -851,9 +854,12 @@ export async function apply(ctx: Context): Promise<void> {
 
   const listJoinRequestsTool = defineTool({
     name: 'group_join_requests',
-    description: '群管理(读): 查看待审批的入群申请列表(申请人/验证消息/来源/风险提示)。默认查当前会话所在群/manageGroup; 也可传 gid 查指定群。仅主人要求时调用。需在设置开启"QQ群管理"且机器人为群管理员。⚠️群组管理器(收到【群管·入群申请】注入)的正确姿势: ①先用 session_list 找到【申请所在群】的会话; ②用 session_wake(session_id=该会话, mode=append, send_qq=true) 把申请转达过去; ③让【那个群的 bot 会话】用本工具核对名单、并用 group_approve_join 执行放行/拒绝 —— 每个群的审批交给该群自己的会话办(群成员表/权限/上下文都在那边); 只有在对方会话不可用时, 才由本会话显式带 gid 跨群代批。',
+    description: '群管理(读): 看待审批入群申请(**默认只给本页 5 条**, 用 page 翻页; 同一人重复申请只留最新)。传 gid 可查指定群, 不填=当前群/manageGroup。仅主人要求时调用; 需开启"QQ群管理"且机器人为群管理员。跨群审批请显式带 gid。' +
+      '\n示例: {gid:"<群openid>"} · {gid:"<群openid>", page:2} · {limit:20 看全}',
     parameters: {
-      gid: { type: 'string', description: '目标群 openid(可选)。不填=当前会话群或 manageGroup; 填了则查指定群的待审批列表' },
+      gid: { type: 'string', description: '目标群 openid(可选)。不填=当前会话群或 manageGroup' },
+      page: { type: 'integer', description: '第几页(默认 1)' },
+      limit: { type: 'integer', description: '本页条数 1~20(默认 5; 要一次看全可传 20)' },
     },
     output: {
       schema: {
@@ -875,16 +881,34 @@ export async function apply(ctx: Context): Promise<void> {
         const gi = await ga.client.getGroupInfo(gid);
         if (gi.ok && gi.data?.group_name) gname = gi.data.group_name;
       } catch { /* 群名失败不影响 */ }
-      const list = r.data.list;
-      if (list.length === 0) return { ok: true, msg: `当前没有待审批的入群申请 ✓(群 ${gname ? `「${gname}」` : ''}${gid})` };
-      const lines = list.map((j, i) => `${i + 1}. ${j.username ?? '?'} (${j.member_openid}) 来源:${j.apply_source ?? '?'} 验证:${verifyHuman(j.verify_info) || '-'}${j.risk_tips ? ` ⚠️${j.risk_tips}` : ''}`);
-      return { ok: true, msg: `入群申请 ${list.length} 条(群 ${gname ? `「${gname}」` : ''}${gid}):\n${lines.join('\n')}` };
+      const raw = r.data.list;
+      if (raw.length === 0) return { ok: true, msg: `当前没有待审批的入群申请 ✓(群 ${gname ? `「${gname}」` : ''}${gid})` };
+      // 去重(2026-09-12 主人要求): 同一人反复申请只留**最新**一条 —— 官方列表按时间倒序, 故首次出现即最新
+      const seen = new Set<string>();
+      const list = raw.filter((j) => {
+        const key = String(j.member_openid ?? '');
+        if (key === '' || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      // 分页(2026-09-12 token 瘦身): 默认只回 5 条, 其余用 page 翻
+      const lim = Math.max(1, Math.min(20, Math.round(Number(args.limit)) || 5));
+      const totalPages = Math.max(1, Math.ceil(list.length / lim));
+      const page = Math.min(Math.max(1, Math.round(Number(args.page)) || 1), totalPages);
+      const start = (page - 1) * lim;
+      const slice = list.slice(start, start + lim);
+      const head = `入群申请 共 ${raw.length} 条(去重后 ${list.length} 条 · 第 ${page}/${totalPages} 页 · 每页 ${lim} 条) 群 ${gname ? `「${gname}」` : ''}${gid}:`;
+      const lines = slice.map((j, i) => `${start + i + 1}. ${j.username ?? '?'} (${j.member_openid}) 来源:${j.apply_source ?? '?'} 验证:${verifyHuman(j.verify_info) || '-'}${j.risk_tips ? ` ⚠️${j.risk_tips}` : ''}`);
+      const more = list.length > start + slice.length ? `\n（还有 ${list.length - start - slice.length} 条 → 再调本工具传 page=${page + 1}）` : '';
+      return { ok: true, msg: `${head}\n${lines.join('\n')}${more}` };
     },
   });
 
   const approveJoinTool = defineTool({
     name: 'group_approve_join',
-    description: '群管理(写,危险): 审批入群申请。approve=放行 / decline=拒绝(可带理由)。支持批量: member_openids 数组一次批多人(优先); 也兼容单数 member_openid。仅主人明确要求时调用; 调用前建议先 group_join_requests 核对申请人。⚠️跨群审批务必显式传 gid(不传=当前会话所在群, 会批错群)。由群组管理器(hub)代批时的顺序: 优先用 session_wake 唤醒【申请所在群的会话】, 让那边的 bot 调本工具执行审批; 该会话不可用(无会话/append 失败)时才在本会话带 gid 直批。',
+    description:
+      '群管理(写,危险): 审批入群申请(approve 放行 / decline 拒绝可带理由), 支持批量 member_openids。仅主人明确要求时调用; 调用前先用 group_join_requests 核对申请人。⚠️跨群审批务必显式传 gid(不传=当前会话所在群, 会批错群)。' +
+      '\n示例: {gid:"<群openid>", member_openids:["<id1>","<id2>"], op:"approve", reason:"-"} · 拒绝: op:"decline", reason:"答非所问"',
     parameters: {
       gid: { type: 'string', description: '目标群 openid(可选)。不填=当前会话群或 manageGroup; 填了则审批指定群的申请' },
       member_openids: { type: 'array', description: '批量审批: 申请人 member_openid 数组(来自 group_join_requests), 一次批多人' },
@@ -937,10 +961,23 @@ export async function apply(ctx: Context): Promise<void> {
     },
   });
 
-  const sessionListTool = defineTool({
-    name: 'session_list',
-    description: '会话(读): 列出本 bot 全部活跃会话(sessionId/范围/peer/最近活跃/预设), 用于跨会话寻址(找 session_wake 的目标 id)。',
-    parameters: {},
+  /**
+   * 入群申请「自动审批」(2026-09-12 主人要求): 给一组关键词 —— **验证消息命中的程序直接放行, 不命中的直接拒绝**。
+   * ⚠️ 基于**官方待审列表**(`join_request_list`), **不是**本地 pending 流水 —— 后者含已处理/重复事件, 照着批会报错。
+   * ⚠️ 拒绝不可逆: 默认直接执行(主人风格), 想先看结果传 `dry_run=true`。
+   * 拒绝理由一律中性(默认"答非所问"), **绝不写暗号/答案/内部判据**。
+   */
+  const autoApproveJoinTool = defineTool({
+    name: 'group_join_auto',
+    description: '群管理(写,危险,**仅主人明确要求时调用**): 按关键词批量审批入群申请 —— 验证消息**命中任一关键词的放行**, 其余直接拒绝。基于官方待审列表(不含本地历史流水)。拒绝不可逆; 想先看结果传 dry_run=true。' +
+      '\n示例: {gid:"<群openid>", keywords:["早饭"], rejectReason:"答非所问"} · 只放行不拒: {..., rejectUnmatched:false} · 预览: {..., dry_run:true}',
+    parameters: {
+      gid: { type: 'string', description: '目标群 openid(可选; 不填=当前会话群/manageGroup)' },
+      keywords: { type: 'array', items: { type: 'string' }, required: true, description: '放行关键词(任一命中即放行; 不区分大小写)' },
+      rejectUnmatched: { type: 'boolean', description: 'true(默认)=未命中的一律拒绝; false=只放行命中的, 其余不动' },
+      rejectReason: { type: 'string', description: '拒绝理由(默认"答非所问"; 不要写暗号/答案)' },
+      dry_run: { type: 'boolean', description: 'true=只返回"将放行/拒绝哪些人", 不执行' },
+    },
     output: {
       schema: {
         type: 'object', additionalProperties: false,
@@ -948,7 +985,88 @@ export async function apply(ctx: Context): Promise<void> {
       },
       render: (_a, v: { ok: boolean; msg: string }) => [{ type: 'text' as const, text: v.ok ? v.msg : `失败: ${v.msg}` }],
     },
-    async execute(_args, exec) {
+    async execute(args, exec) {
+      const ga = groupAdminOf(exec);
+      if (!ga) return { ok: false, msg: '群管理未开启(设置→QQ群管理)或非群会话' };
+      const gid = String(args.gid || ga.gid || '');
+      if (!gid) return { ok: false, msg: '当前不是群会话且未指定 gid, 无法确定目标群' };
+      const kws = (Array.isArray(args.keywords) ? args.keywords : [])
+        .map((k) => String(k).trim().toLowerCase())
+        .filter(Boolean);
+      if (kws.length === 0) return { ok: false, msg: 'keywords 至少给一个(放行关键词)' };
+      const r = await ga.client.listJoinRequests(gid);
+      if (!r.ok) return { ok: false, msg: r.err.human };
+      const raw = r.data.list;
+      if (raw.length === 0) return { ok: true, msg: '当前没有待审批的入群申请 ✓(无需自动审批)' };
+      // 同一人重复申请只留最新(官方列表按时间倒序 → 首次出现即最新)
+      const seen = new Set<string>();
+      const list = raw.filter((j) => {
+        const k = String(j.member_openid ?? '');
+        if (k === '' || seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      });
+      const hitList: typeof list = [];
+      const missList: typeof list = [];
+      for (const j of list) {
+        const text = verifyHuman(j.verify_info).toLowerCase();
+        (kws.some((k) => text.includes(k)) ? hitList : missList).push(j);
+      }
+      const rejectUnmatched = args.rejectUnmatched !== false;
+      const nameOf = (j: (typeof list)[number]): string => `${j.username ?? '?'}(…${String(j.member_openid).slice(-4)})`;
+      if (args.dry_run === true) {
+        return {
+          ok: true,
+          msg: `【dry-run, 未执行】待审 ${list.length} 条(去重后):\n` +
+            `将放行 ${hitList.length} 人: ${hitList.slice(0, 5).map(nameOf).join('、') || '(无)'}\n` +
+            `将拒绝 ${rejectUnmatched ? missList.length : 0} 人: ${rejectUnmatched ? (missList.slice(0, 5).map(nameOf).join('、') || '(无)') : '(已关闭)'}`,
+        };
+      }
+      let okA = 0; let failA = 0; let okD = 0; let failD = 0;
+      const errs: string[] = [];
+      for (const j of hitList) {
+        const rr = await ga.client.approveJoinRequest(gid, String(j.member_openid), 'approve', {
+          join_request_id: String(j.join_request_id ?? ''),
+        });
+        if (rr.ok) okA++; else { failA++; errs.push(`${nameOf(j)} 放行失败: ${rr.err.human}`); }
+      }
+      if (rejectUnmatched) {
+        const reason = String(args.rejectReason ?? '').trim() || '答非所问';
+        for (const j of missList) {
+          const rr = await ga.client.approveJoinRequest(gid, String(j.member_openid), 'decline', {
+            join_request_id: String(j.join_request_id ?? ''),
+            reject_reason: reason,
+          });
+          if (rr.ok) okD++; else { failD++; errs.push(`${nameOf(j)} 拒绝失败: ${rr.err.human}`); }
+        }
+      }
+      return {
+        ok: true,
+        msg: [
+          `✅ 自动审批完成: 放行 ${okA}/${hitList.length}${rejectUnmatched ? ` · 拒绝 ${okD}/${missList.length}` : ''}(待审共 ${list.length} 条)`,
+          hitList.length ? `放行: ${hitList.slice(0, 5).map(nameOf).join('、')}${hitList.length > 5 ? ` …等 ${hitList.length} 人` : ''}` : '',
+          rejectUnmatched && missList.length ? `拒绝: ${missList.slice(0, 5).map(nameOf).join('、')}${missList.length > 5 ? ` …等 ${missList.length} 人` : ''}` : '',
+          errs.length ? `⚠️ 失败 ${failA + failD} 条: ${errs.slice(0, 3).join('; ')}` : '',
+        ].filter(Boolean).join('\n'),
+      };
+    },
+  });
+
+  const sessionListTool = defineTool({
+    name: 'session_list',
+    description: '会话(读): 列出全部活跃会话(范围/peer/群名/活跃时间), 用于跨会话寻址。**默认 peer/sender 只给尾号**(省 token); 需要完整 openid 时传 full=true。',
+    parameters: {
+      full: { type: 'boolean', description: 'true=给完整 openid; 默认 false(只给尾号, 寻址用群名/备注即可)' },
+    },
+    output: {
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: { ok: { type: 'boolean', required: true }, msg: { type: 'string', required: true } },
+      },
+      render: (_a, v: { ok: boolean; msg: string }) => [{ type: 'text' as const, text: v.ok ? v.msg : `失败: ${v.msg}` }],
+    },
+    async execute(args, exec) {
+      const full = args?.full === true;
       const lines: string[] = [];
       // 遍历全部已注册实例(module 级注册表, 重启后仍可枚举; 不依赖 channelBridges)
       const managers = managersOf();
@@ -973,9 +1091,11 @@ export async function apply(ctx: Context): Promise<void> {
         for (const s of list) {
           n++;
           const label = s.scope === 'group' && reg[s.peerId]?.name ? ` "${reg[s.peerId]!.name}"` : '';
-          // ⚠️ peer/sender 一律给**完整** openid(2026-09-12 主人要求): 以前截成 …F01DC41545,
-          // 跨群寻址还得去翻日志才拼得出来, 等于不可用。
-          lines.push(`${n}. [${s.scope}]${ns !== 'im-qqbot' ? `(${ns})` : ''} peer=${s.peerId}${label} sender=${s.senderId} id=${s.sessionId}${s.agentPreset ? ` (${s.agentPreset})` : ''} 活跃=${new Date(s.lastActivity).toLocaleTimeString()}`);
+          // 2026-09-12 token 瘦身(主人定): **默认只给 peer/sender 尾号** —— 完整 32 位 openid 每行 20+ token,
+          // 而寻址用"群名/备注"就够(broadcast_send / target_group 都支持按名解析); 要完整 id 传 full=true。
+          const peerShown = full ? s.peerId : '…' + String(s.peerId).slice(-4);
+          const senderShown = full ? s.senderId : '…' + String(s.senderId).slice(-4);
+          lines.push(`${n}. [${s.scope}]${ns !== 'im-qqbot' ? `(${ns})` : ''} peer=${peerShown}${label} sender=${senderShown} id=${s.sessionId}${s.agentPreset ? ` (${s.agentPreset})` : ''} 活跃=${new Date(s.lastActivity).toLocaleTimeString()}`);
         }
         // 潜在会话: 群注册表里的群可能还没 getOrCreate(无活跃记录), 但 sessionId 可确定性算出
         try {
@@ -1089,13 +1209,16 @@ export async function apply(ctx: Context): Promise<void> {
   /** 群发任务 → 人话摘要(逐目标状态 + message_id + 失败原因 + 撤回提示) */
   function fmtBroadcastTask(t: broadcastQueue.BroadcastTask | undefined, fallbackId?: string): string {
     if (!t) return `任务不存在(可能已被清理); task_id=${fallbackId ?? '(未给)'}`;
-    const rows = t.targets.map((tg) => {
+    // 2026-09-12 token 瘦身: 逐目标明细最多列 5 个(超出只报数量), 免得一次群发 20 个目标把结果灌爆上下文
+    const shownTargets = t.targets.slice(0, 5);
+    const rows = shownTargets.map((tg) => {
       const r = t.results[tg.peerId];
       const who = tg.name ? `${tg.name}(${tg.peerId})` : tg.peerId;
       if (!r) return `· ${who} ⏳ 待发`;
       if (r.ok) return `· ${who} ✅ message_id=${r.message_id ?? '(无)'}`;
       return `· ${who} ❌ ${r.err ?? '失败'}(已重试 ${t.retries[tg.peerId] ?? 0} 次)`;
     });
+    if (t.targets.length > shownTargets.length) rows.push(`…还有 ${t.targets.length - shownTargets.length} 个目标(省略)`);
     const okN = t.targets.filter((tg) => t.results[tg.peerId]?.ok).length;
     const done = t.state === 'done' || t.state === 'partial_failed' || t.state === 'cancelled';
     const head = done
@@ -1185,8 +1308,9 @@ export async function apply(ctx: Context): Promise<void> {
         return {
           ok: true,
           msg: `【dry-run, 未发送】将发到 ${resolved.targets.length} 个目标:\n` +
-            resolved.targets.map((t) => `· ${t.name ?? '(无备注)'} — ${t.peerId}`).join('\n') +
-            `\n\n内容(${type}, ${text.length} 字):\n${text.slice(0, 300)}${text.length > 300 ? '…' : ''}`,
+            resolved.targets.slice(0, 5).map((t) => `· ${t.name ?? '(无备注)'}`).join('\n') +
+            (resolved.targets.length > 5 ? `\n…还有 ${resolved.targets.length - 5} 个(省略)` : '') +
+            `\n\n内容(${type}, ${text.length} 字):\n${text.slice(0, 200)}${text.length > 200 ? '…' : ''}`,
         };
       }
 
@@ -1306,7 +1430,7 @@ export async function apply(ctx: Context): Promise<void> {
         const delta = action === 'add' ? cur.size - before : before - cur.size;
         return {
           ok: true,
-          msg: `✅ 分组「${name}」${action === 'add' ? '加入' : '移出'} ${delta} 个目标, 现共 ${cur.size} 个${delta < resolved.targets.length ? '(重复的已跳过; 未命中的按上面提示处理)' : ''}\n${resolved.targets.map((t) => '· ' + (t.name || t.peerId)).join('\n')}`,
+          msg: `✅ 分组「${name}」${action === 'add' ? '加入' : '移出'} ${delta} 个目标, 现共 ${cur.size} 个${delta < resolved.targets.length ? '(重复的已跳过)' : ''}\n${resolved.targets.slice(0, 5).map((t) => '· ' + (t.name || t.peerId)).join('\n')}${resolved.targets.length > 5 ? `\n…还有 ${resolved.targets.length - 5} 个(省略)` : ''}`,
         };
       }
       return { ok: false, msg: `未知 action: ${action}` };
@@ -1617,6 +1741,7 @@ export async function apply(ctx: Context): Promise<void> {
     { name: 'outbound_mode', tool: outboundModeTool },
     { name: 'group_join_requests', tool: listJoinRequestsTool },
     { name: 'group_approve_join', tool: approveJoinTool },
+    { name: 'group_join_auto', tool: autoApproveJoinTool },
     { name: 'group_mute_state', tool: muteStateTool },
     { name: 'group_mute_member', tool: muteMemberTool },
     { name: 'session_list', tool: sessionListTool },

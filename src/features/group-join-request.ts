@@ -99,7 +99,23 @@ function savePending(path: string, store: PendingStore): void {
   }
 }
 
-/** 追加一条 pending(按 join_request_id 去重, 最新在前) */
+/**
+ * pending 保留时长(2026-09-12 主人定: **只留 1 天**)。
+ * 这份流水只用于"同一条申请被重推/重启丢事件"的**去重与防漏**, 不是给人看的档案;
+ * 不设上限会无限堆积(实测堆到 87 条 / 22 个人反复申请), 既占空间也让 AI 误以为还有活儿。
+ */
+const PENDING_TTL_MS = 24 * 60 * 60 * 1000;
+
+/** 丢掉超期条目(读/写时都过一遍, 双保险) */
+function prunePending(list: PendingJoinRequest[]): PendingJoinRequest[] {
+  const min = Date.now() - PENDING_TTL_MS;
+  return list.filter((x) => {
+    const t = Date.parse(String(x.seen_at ?? '')) || 0;
+    return t >= min;
+  });
+}
+
+/** 追加一条 pending(按 join_request_id 去重, 最新在前; 写入时顺带清掉超期条目) */
 export function pushPendingJoinRequest(
   cwd: string | undefined,
   ev: PendingJoinRequest,
@@ -107,7 +123,7 @@ export function pushPendingJoinRequest(
   const path = pendingPath(cwd);
   const store = loadPending(path);
   const gid = ev.group_openid;
-  const list = store[gid] ?? [];
+  const list = prunePending(store[gid] ?? []);
   const idx = list.findIndex((x) => x.join_request_id === ev.join_request_id);
   if (idx >= 0) list.splice(idx, 1);
   list.unshift(ev);
@@ -115,14 +131,14 @@ export function pushPendingJoinRequest(
   savePending(path, store);
 }
 
-/** 读某群 pending(UI/工具用; gid 空 = 全部) */
+/** 读某群 pending(UI/工具用; gid 空 = 全部); 只返回 1 天内的 */
 export function readPendingJoinRequests(
   cwd: string | undefined,
   gid?: string,
 ): PendingJoinRequest[] {
   const store = loadPending(pendingPath(cwd));
-  if (gid) return store[gid] ?? [];
-  return Object.values(store).flat();
+  if (gid) return prunePending(store[gid] ?? []);
+  return prunePending(Object.values(store).flat());
 }
 
 /**

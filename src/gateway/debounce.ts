@@ -88,9 +88,12 @@ export function debounceLayer(
 ): Middleware {
   const windows = new Map<string, DebounceWindow>();
 
-  /** 调序调试日志(临时, 定位官方帧序用; 排查完删除): {dataRoot}/.qqbot/debounce-dbg.log */
+  /** 调序调试日志(排查官方帧序用): 默认**关闭** —— 需要时设环境变量 `DSH_QQBOT_DEBOUNCE_DBG=1` 才写
+   *  → {dataRoot}/.qqbot/debounce-dbg.log。(2026-09-12: 该文件曾涨到 3.8MB, 改用开关按需开) */
+  const dbgOn = !!process.env.DSH_QQBOT_DEBOUNCE_DBG && process.env.DSH_QQBOT_DEBOUNCE_DBG !== '0';
   const dbgFile = join(dataRootOf(config), '.qqbot', 'debounce-dbg.log');
   function dbg(line: string): void {
+    if (!dbgOn) return;
     try {
       appendFileSync(dbgFile, `${new Date().toISOString()} ${line}\n`, 'utf8');
     } catch { /* ignore */ }

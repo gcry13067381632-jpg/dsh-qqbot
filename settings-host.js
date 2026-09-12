@@ -1854,7 +1854,9 @@ export function apply(ctx) {
       // 媒体元数据行: 暂存, 等归属给下面那条带昵称的消息
       // (Layer 4 现输出 `- Image:/- Video:/- Voice:/- File:` 单数前缀, 此处一并覆盖)
       if (/^-\s*(Attachment URLs|Files?|Images?|ASR|Voices?|Videos?)\s*[:：]/i.test(s)) { pendingMeta.push(s); continue; }
-      const m = s.match(/^\[([^\]\n]*?)\s*\([A-Za-z0-9_-]{6,}\)\](.*)$/);
+      // 2026-09-12 适配(token 瘦身后历史行变成 "[昵称]"): id 段设为**可选**, 老格式 "[昵称 (openid)]" 仍认;
+      // 同时排除含冒号的方括号(如 "[图片: url]"), 免得把附件标记当成发送者。
+      const m = s.match(/^\[([^\]\n:]*?)(?:\s*\([A-Za-z0-9_-]{6,}\))?\](.*)$/);
       if (m) { flush(); cur = { sender: m[1].trim(), lines: [m[2].trim(), ...pendingMeta].filter(Boolean) }; pendingMeta = []; }
       else { if (cur) cur.lines.push(...pendingMeta, s); else { flush(); cur = { sender: '', lines: [...pendingMeta, s] }; } pendingMeta = []; }
     }
@@ -1868,7 +1870,8 @@ export function apply(ctx) {
     let b = String(body || '');
     b = b.replace(/\[Current message\]\s*/g, '');
     b = b.replace(/\[Quoted message begins\]\s*[\s\S]*?\[Quoted message ends\]\s*/g, '[引用]');
-    const tagM = b.match(/\[([^\]\n]*?)\s*\([A-Za-z0-9_-]{6,}\)\]/);
+    // 2026-09-12 适配: 同上 —— "[昵称]" 与 "[昵称 (openid)]" 都认; 排除含冒号的方括号(附件标记)
+    const tagM = b.match(/\[([^\]\n:]*?)(?:\s*\([A-Za-z0-9_-]{6,}\))?\]/);
     if (tagM) { if (tagM[1].trim()) sender = tagM[1].trim(); b = b.replace(tagM[0], ''); }
     const sysIdx = b.indexOf('[系统提示]');
     if (sysIdx >= 0) b = b.slice(0, sysIdx).replace(/\s*$/, '');
