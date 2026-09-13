@@ -16,6 +16,81 @@ import { join, extname, resolve } from 'node:path';
 import * as dns from 'node:dns';
 import type { Logger } from '../types.js';
 
+/**
+ * 从 QQ 图片/文件 URL 里抠出**稳定的 fileid**(2026-09-13 主人定, 解决"老是重复收藏"):
+ * QQ 多媒体 URL 形如
+ *   https://multimedia.nt.qq.com.cn/download?appid=1407&fileid=EhS…&rkey=…&spec=0
+ * —— **fileid 同一张图恒定不变**, 而 rkey 每次都换(所以直接比 URL 永远查不到"收藏过没")。
+ * 传完整 URL 或纯 fileid 都可以。
+ */
+export function extractQqFileId(input: string): string {
+  const s = String(input || '').trim();
+  if (!s) return '';
+  const m = /[?&]fileid=([^&\s]+)/.exec(s);
+  if (m && m[1]) return decodeURIComponent(m[1]);
+  return /^Eh[A-Za-z0-9_-]{8,}$/.test(s) ? s : '';
+}
+
+/**
+ * 感知哈希 dHash(2026-09-13 主人定"又快又准"的图片去重):
+ *   图片 → 缩成 9×8 灰度 → 逐行比较相邻像素明暗 → 64 位指纹(16 位 hex)。
+ * 看的是**画面结构**而不是字节 → QQ 重压缩/改尺寸/转格式过的同一张图也能认出来。
+ * 复用**宿主已装的 sharp**(零新增依赖); sharp 不可用 → 返回 undefined(调用方退化为逐字节 sha1 判重)。
+ *
+ * ⚠️ 2026-09-13 修(主人报启动刷屏 GLib-GObject-CRITICAL "value 32 ... property 'space' of type
+ *    VipsInterpretation"): 根因是调了 sharp 的 `.grayscale()` —— 它会让 libvips 去设
+ *    image.space=b-w, 某些 libvips/shar​p 版本组合下这个赋值触发 GLib critical 警告(不影响结果, 但刷屏)。
+ *    改为 `.raw()` 直接拿 RGB 原始像素, **自己按亮度公式算灰度**(Y=0.299R+0.587G+0.114B),
+ *    既绕开那次色彩空间赋值, 也少一步内部转换。同时设 VIPS_WARNING=0 兜底抑制 libvips 的非致命告警。
+ */
+export async function computeDHash(buf: Buffer): Promise<string | undefined> {
+  // 应急开关(2026-09-13 主人踩过 sharp 拖挂宿主): 设 DSH_QQBOT_NODHASH=1 即可彻底停用 dHash 计算,
+  // 去重自动退化为逐字节 sha1(库里已有 dhash 的老记录不受影响)。启动前设一次即可, 不改任何配置。
+  if (process.env.DSH_QQBOT_NODHASH === '1') return undefined;
+  try {
+    if (!process.env.VIPS_WARNING) process.env.VIPS_WARNING = '0';   // 抑制 libvips 非致命告警刷屏
+    const mod = (await import('sharp' as string)) as unknown as { default?: unknown };
+    const sharp = (mod.default ?? mod) as unknown as (b: Buffer) => {
+      resize: (w: number, h: number, o?: unknown) => {
+        raw: () => { toBuffer: (o?: unknown) => Promise<{ data: Buffer; info: { channels: number } }> };
+      };
+    };
+    const out = await sharp(buf).resize(9, 8, { fit: 'fill' }).raw()
+      .toBuffer({ resolveWithObject: true });
+    const data = out?.data;
+    const ch = out?.info?.channels ?? 3;
+    if (!data || data.length < 9 * 8) return undefined;
+    // 自己算灰度(不调 grayscale(), 避开那条 GLib 警告)
+    const gray = (i: number): number => {
+      const o = i * ch;
+      if (ch >= 3) return 0.299 * (data[o] ?? 0) + 0.587 * (data[o + 1] ?? 0) + 0.114 * (data[o + 2] ?? 0);
+      return data[o] ?? 0;
+    };
+    let bits = '';
+    for (let y = 0; y < 8; y++) {
+      for (let x = 0; x < 8; x++) {
+        bits += gray(y * 9 + x) > gray(y * 9 + x + 1) ? '1' : '0';
+      }
+    }
+    let hex = '';
+    for (let i = 0; i < 64; i += 4) hex += parseInt(bits.slice(i, i + 4), 2).toString(16);
+    return hex;
+  } catch {
+    return undefined;
+  }
+}
+
+/** 两个 dHash 的汉明距离(0~64); 任一为空或长度不等 → 999(视为完全不同) */
+export function dhashDistance(a?: string, b?: string): number {
+  if (!a || !b || a.length !== b.length) return 999;
+  let d = 0;
+  for (let i = 0; i < a.length; i++) {
+    let x = (parseInt(a[i] ?? '0', 16) || 0) ^ (parseInt(b[i] ?? '0', 16) || 0);
+    while (x) { d += x & 1; x >>= 1; }
+  }
+  return d;
+}
+
 export type StickerLayer = 'candidate' | 'library' | 'negative' | 'trash';
 
 /** 搜索词拆分: 空格/中英文逗号/顿号/分号分隔, 去空去重 */
@@ -58,6 +133,12 @@ export interface StickerMeta {
   prevLayer?: StickerLayer;
   /** 来源图片 URL(群图 CDN 链接) —— agent 可用群消息里的 URL 反查本地文件 */
   sourceUrl?: string;
+  /**
+   * 感知哈希(dHash, 64 位 → 16 位 hex)。2026-09-13 主人定"要又快又准"的去重:
+   * sha1 只认**逐字节相同**, QQ 重压缩/改尺寸/转格式过的同一张图就认不出;
+   * dHash 看的是**画面明暗结构** → 汉明距离 ≤5 位即视为同一张图 ✓
+   */
+  dhash?: string;
 }
 
 export interface CaptureInput {
@@ -285,6 +366,8 @@ export class StickerStore {
       desc: input.desc,
       needsDescribe: !input.desc,
       sourceUrl: input.sourceUrl,
+      // 感知哈希(2026-09-13): 入库即算, 供"重压缩/改尺寸也算同一张"的去重; sharp 不可用则为 undefined
+      dhash: await computeDHash(buf),
     };
 
     try {
@@ -454,7 +537,7 @@ export class StickerStore {
   }
 
   /** 把本地已有图片文件导入收藏(算hash去重, 复制进候选区); 返回 {status:'new'|'dup'|'error', id?} */
-  importLocalFile(srcPath: string, input?: CaptureInput): { status: 'new' | 'dup' | 'error'; id?: string; error?: string } {
+  async importLocalFile(srcPath: string, input?: CaptureInput): Promise<{ status: 'new' | 'dup' | 'error'; id?: string; error?: string }> {
     try {
       if (!existsSync(srcPath)) return { status: 'error', error: `文件不存在: ${srcPath}` };
       const buf = readFileSync(srcPath);
@@ -463,8 +546,13 @@ export class StickerStore {
       const id = hash.slice(0, 12);
       const existing = this.items.get(id);
       const now = Date.now();
+      // 已存在 → 只更新"最近见到"; 若老记录还没有 dhash(功能上线前入的库)顺手补算
       if (existing) {
         existing.lastSeenAt = now;
+        if (!existing.dhash) {
+          const dh0 = await computeDHash(buf);
+          if (dh0) existing.dhash = dh0;
+        }
         this.save();
         return { status: 'dup', id };
       }
@@ -487,6 +575,8 @@ export class StickerStore {
         desc: input?.desc,
         needsDescribe: !input?.desc,
         sourceUrl: input?.sourceUrl,
+        // 感知哈希(2026-09-13): 入库即算, 供"重压缩/改尺寸也算同一张"的去重
+        dhash: await computeDHash(buf),
       };
       const dest = this.filePathOf(meta);
       mkdirSync(join(this.dataDir, LAYER_DIRS.candidate), { recursive: true });
@@ -608,6 +698,58 @@ export class StickerStore {
       if (it.sourceUrl && it.sourceUrl.startsWith(norm)) return it;
     }
     return undefined;
+  }
+
+  /**
+   * 按 QQ 图片 fileid 反查条目(2026-09-13 主人: 解决"老是重复收藏")。
+   * 关键: QQ 图片 URL **每次都换 rkey**(临时参数), 直接比 URL 永远查不到 → AI 每次又收藏一遍;
+   * 而 URL 里的 `fileid=` **同一张图恒定不变** → 用它当去重键。
+   */
+  findByFileId(fileId: string): StickerMeta | undefined {
+    const fid = extractQqFileId(fileId);
+    if (!fid) return undefined;
+    for (const it of this.items.values()) {
+      if (it.sourceUrl && extractQqFileId(it.sourceUrl) === fid) return it;
+    }
+    return undefined;
+  }
+
+  /**
+   * 按**感知哈希**查近似重复(2026-09-13 主人定, 又快又准):
+   * 遍历已存 dhash 的条目取最小汉明距离, ≤ maxDist(默认 5)即视为同一张图。
+   * ⚠️ 老记录若没有 dhash 会跳过(它们入库时还没这功能); 新入库的都会带。
+   */
+  findByDHash(dhash: string, maxDist = 5, layer?: StickerLayer): StickerMeta | undefined {
+    if (!dhash) return undefined;
+    let best: StickerMeta | undefined;
+    let bestD = maxDist + 1;
+    for (const it of this.items.values()) {
+      if (!it.dhash) continue;
+      if (layer && it.layer !== layer) continue;
+      const d = dhashDistance(it.dhash, dhash);
+      if (d < bestD) { bestD = d; best = it; }
+    }
+    return best;
+  }
+
+  /**
+   * 后台惰性回填 dHash(2026-09-13): 从旧版本升级上来的库缺这个字段 → 去重会漏判。
+   * 每次只补一小批(默认 20 张, 每张约 15ms), 不阻塞主流程; 返回本批补了几条(0 = 已补完)。
+   */
+  async backfillDHash(batch = 20): Promise<number> {
+    let n = 0;
+    for (const it of this.items.values()) {
+      if (n >= batch) break;
+      if (it.dhash) continue;
+      const p = this.filePathOf(it);
+      if (!p || !existsSync(p)) continue;
+      try {
+        const dh = await computeDHash(readFileSync(p));
+        if (dh) { it.dhash = dh; n += 1; }
+      } catch { /* 单张失败跳过 */ }
+    }
+    if (n > 0) this.save();
+    return n;
   }
 
   /** 全量查询(管理面板用): 可按层/关键词/未打标过滤, 默认不含回收站 */

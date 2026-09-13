@@ -243,6 +243,18 @@ export interface EditableConfig {
   imageHint?: boolean;
   /** 引用消息总开关(默认 true): 开=入站消息带短消息号(台账索引) + 引用消息附原文 + 注入引用指令, 出站支持 [rf:短号] 标签 */
   messageReference?: boolean;
+  /** 本地小模型(省 token; 2026-09-13 主人定): 开=本地先筛(价值评分/语义搜索), 模型缺失/加载失败则静默关闭 */
+  localModel?: {
+    enabled?: boolean;
+    /** 模型目录(留空=默认 {DSH_HOME|~/.dsh}/models/bge-small-zh) */
+    modelDir?: string;
+    /** 价值评分模式(账号默认): off=不评分 / log=只记录(默认) / block=低分不唤醒 */
+    valueGate?: 'off' | 'log' | 'block';
+    /** 价值评分门槛(0~1): 近邻相似度低于此值视为不值得回应 */
+    valueMinScore?: number;
+    /** 单会话覆盖(2026-09-13): key = "group:<群openid>" / "c2c:<私聊openid>"; 未覆盖则继承账号默认 */
+    overrides?: Record<string, { enabled?: boolean; valueGate?: 'off' | 'log' | 'block'; valueMinScore?: number }>;
+  };
   /** 群聊常驻守则(默认含表情包礼仪; QQ 通道级注入, 跨 preset 不碰 persona) */
   groupPrompt?: string;
   /** 定时唤醒任务(M3) */
@@ -286,9 +298,22 @@ export const FIXED_CHANNEL_CONTEXT = [
 export const REFERENCE_CONTEXT = [
   '【引用消息】本群已开启引用能力(可在设置关闭): 每条入站消息都带一个"消息号"(形如 #0913a, 很短)。',
   '想让自己的回复"引用"某条消息: 在回复正文里写 [rf:消息号](两端加英文方括号), 如 [rf:0913a] —— 这条回复就会以"引用"形式发出, 对方能看到你引用了他那条消息。消息号就是入站消息标签里 # 后面那一小串。',
+  // 注(2026-09-13 主人定): 样例库的用法**不写进守则**(常驻注入会每轮占 token) ——
+  // 面板「让ai写」按钮本身就是**注入一条消息**, 路径/格式/做法全写在那条消息里, 零常驻开销。
 ].join('\n');
 
 // ── 共享字段子 schema(主 ConfigSchema 与 EditableConfigSchema 复用) ──
+
+/** 本地小模型(2026-09-13 主人定): 零 token 的本地语义能力(价值评分 / 表情包语义搜索), 模型缺失时静默降级 */
+const localModelSchema = Schema.object({
+  enabled: Schema.boolean().default(true).description('本地小模型(省 token): 开=本地先筛(价值评分/表情包语义搜索); 模型缺失或加载失败自动关闭'),
+  modelDir: Schema.string().default('').description('模型目录(留空=默认 {DSH_HOME|~/.dsh}/models/bge-small-zh)'),
+  valueGate: Schema.union(['off', 'log', 'block']).default('log').description('价值评分模式(账号默认): off=不评分 / log=只记录分数 / block=低分不唤醒AI(消息仍进上下文)'),
+  valueMinScore: Schema.number().min(0).max(1).default(0.5).description('价值评分门槛(0~1, 越高越安静): 近邻相似度低于此值视为不值得回应'),
+  // 单会话覆盖(2026-09-13 主人要求: "单会话设置"就得能按会话单独设):
+  // key = "group:<群openid>" 或 "c2c:<私聊openid>"; 未覆盖的键自动继承账号级默认。
+  overrides: Schema.any().default({}).description('单会话覆盖(dock「单会话设置」保存到这里)'),
+}).default({ enabled: true, modelDir: '', valueGate: 'log', valueMinScore: 0.5, overrides: {} });
 
 const debounceSchema = Schema.object({
   enabled: Schema.boolean().default(true).description('延迟聚合总开关(防"连发N句只回第一句": 消息先攒窗口, 人停口或攒够条数才一次综合回)'),
@@ -518,6 +543,7 @@ export const EditableConfigSchema: Schema<EditableConfig> = Schema.object({
   injectRules: Schema.array(injectRuleItemSchema).default([]).description('条件注入规则'),
   imageHint: Schema.boolean().default(true).description('图片消息自动追加「看图」内置提示(默认开; 关掉=不再注入那条「把 URL 传给识图工具」)'),
   messageReference: Schema.boolean().default(true).description('引用消息(默认开): 入站消息带短消息号 + 引用消息附原文 + 注入引用指令; 出站支持 [rf:短号] 标签引用对方消息'),
+  localModel: localModelSchema,
   groupPrompt: Schema.string().default(DEFAULT_GROUP_PROMPT).description('群聊常驻守则(默认含表情包礼仪;可清空关闭)'),
   schedule: scheduleSchema,
   enableApprovals: Schema.boolean().default(false).description('QQ 远程审批: dsh 权限申请发到 QQ, 用 /approve CODE 放行(保存后对新请求生效)'),
@@ -574,6 +600,18 @@ export interface ImQQBotConfig {
   imageHint?: boolean;
   /** 引用消息总开关(默认 true): 开=入站消息带短消息号(台账索引) + 引用消息附原文 + 注入引用指令, 出站支持 [rf:短号] 标签 */
   messageReference?: boolean;
+  /** 本地小模型(省 token): 开=本地先筛(价值评分/语义搜索), 模型缺失自动关闭 */
+  localModel?: {
+    enabled?: boolean;
+    /** 模型目录(留空=默认 {DSH_HOME|~/.dsh}/models/bge-small-zh) */
+    modelDir?: string;
+    /** 价值评分模式(账号默认): off=不评分 / log=只记录 / block=低分不唤醒 */
+    valueGate?: 'off' | 'log' | 'block';
+    /** 价值评分门槛(0~1) */
+    valueMinScore?: number;
+    /** 单会话覆盖: key = "group:<群openid>" / "c2c:<私聊openid>" */
+    overrides?: Record<string, { enabled?: boolean; valueGate?: 'off' | 'log' | 'block'; valueMinScore?: number }>;
+  };
   /** 定时唤醒任务(M3) */
   schedule: ScheduleConfig;
   /** QQ 群管理(入群审批/禁言等; 需机器人=群管理员) */
@@ -625,7 +663,7 @@ export const ConfigSchema: Schema<ImQQBotConfig> = Schema.object({
   }).description('访问控制'),
   behavior: behaviorSchema,
   sticker: Schema.object({
-    collectEnabled: Schema.boolean().default(true).description('自动收藏群图片(只存本地)'),
+    collectEnabled: Schema.boolean().default(true).description('自动下载群图到候选区(只存本地; ⚠️ 这是"采集"不等于"收藏" —— 收藏指打标/挑进正式库)'),
     dataDir: Schema.string().default('').description('图库数据根目录(默认 {agent cwd}/表情包)'),
     gates: stickerGatesSchema,
     autoTagEnabled: Schema.boolean().default(false).description('新图后台自动识图打标(耗视觉额度,默认关;开需可用视觉CLI)'),
@@ -651,6 +689,7 @@ export const ConfigSchema: Schema<ImQQBotConfig> = Schema.object({
   injectRules: Schema.array(injectRuleItemSchema).default([]).description('条件注入规则:消息含图片/链接/自定义文本时自动插入系统提示'),
   imageHint: Schema.boolean().default(true).description('图片消息自动追加「看图」内置提示(默认开; 关掉=不再注入那条「把 URL 传给识图工具」)'),
   messageReference: Schema.boolean().default(true).description('引用消息(默认开): 入站消息带短消息号 + 引用消息附原文 + 注入引用指令; 出站支持 [rf:短号] 标签引用对方消息'),
+  localModel: localModelSchema,
   schedule: scheduleSchema,
   groupAdmin: groupAdminSchema,
   showToolResults: Schema.boolean().default(false).description('是否展示工具调用成功结果（工具错误始终展示）'),

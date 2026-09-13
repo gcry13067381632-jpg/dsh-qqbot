@@ -1993,6 +1993,277 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         return ac ? (ac.dataDir || '') : ''
       }
       function outNsQ() { return state.ns ? 'ns=' + encodeURIComponent(state.ns) : '' }
+      // ⚙ 单会话设置 · 本地小模型(2026-09-13 主人定)
+      // 📊 评分列表 HTML(单独抽出: 供"局部刷新"只替换内容, 不整块重绘)
+      function scoreListHtml(vs) {
+        if (vs === undefined || vs === null) return '<div class="dk-empty" style="padding:8px 0">读取中…</div>'
+        if (!vs.items || !vs.items.length) return '<div class="dk-empty" style="padding:8px 0">还没有记录 —— 群里有人说句话之后, 这里会列出每条消息的分数</div>'
+        var out = '<div style="max-height:230px;overflow:auto;border:1px solid #eee;border-radius:6px">'
+        vs.items.slice().reverse().forEach(function (it) {
+          var tt = new Date(it.ts || 0)
+          var hh = ('0' + tt.getHours()).slice(-2) + ':' + ('0' + tt.getMinutes()).slice(-2) + ':' + ('0' + tt.getSeconds()).slice(-2)
+          var col = it.worth ? '#2f9e44' : '#c23131'
+          out += '<div style="padding:4px 8px;border-bottom:1px solid #f5f5f5;font-size:12px">'
+            + '<span style="color:#999">' + hh + '</span> '
+            + '<b style="color:' + col + '">' + (typeof it.score === 'number' ? it.score.toFixed(2) : (it.img ? '📷' : '-')) + '</b>'
+            + (it.img ? ' <span style="color:#999" title="图片消息: ' + (it.lib ? '已在库 → 借它的标签当文字评分' : '无文字, 不可评分(默认不拦)') + '">' + (it.lib ? '[库内]' : '[无文字]') + '</span>' : '')
+            + (it.mention ? ' <span style="color:#1c7ed6" title="被@, 必回">[@]</span>' : '')
+            + (it.conf !== undefined && it.conf < 0.5 ? ' <span style="color:#999" title="低置信: 最近邻居相似度只有 ' + it.conf + ', 地图上没这类样本 —— 仅作补样本提示, 不再影响拦截">[?]</span>' : '')
+            + (it.agg ? ' <span style="color:#e8590c" title="聚合了 ' + it.agg + ' 条消息, 取其中最高分">[合' + it.agg + ']</span>' : '')
+            + ' <span style="color:#555">' + esc(String(it.sender || '?')) + ':</span> '
+            + esc(String(it.text || '').slice(0, 56))
+            + '<div style="color:#bbb;font-size:11px;margin-left:14px">近邻: ' + esc((it.top || []).join(' · ')) + '</div>'
+            + '</div>'
+        })
+        out += '</div>'
+        out += '<div class="dk-msg" style="font-size:11px;color:#888">共 ' + (vs.total || 0) + ' 条 · 明细文件: {数据根}/.qqbot/value-scores.jsonl</div>'
+        return out
+      }
+      // 局部刷新评分列表(不调 paintBody → 不闪、不打断滚动、不丢输入框焦点)
+      function refreshScoreList() {
+        if (state.tab !== 'session') return
+        fetch('/api/qqbot-settings/value-scores' + scoreQuery())
+          .then(function (r) { return r.json() })
+          .then(function (d) {
+            var next = d && d.ok ? d : { items: [], total: 0 }
+            // ⚠️ 2026-09-13 修(主人反馈"一直被重绘"): 原来每 10 秒**无条件**替换 innerHTML →
+            //    内容没变也会闪一下。现在比较签名(最后3条+总数), 一样就完全不碰 DOM。
+            var sig = (next.total || 0) + '|' + JSON.stringify((next.items || []).slice(-3))
+            if (sig === state.vsSig) { state.valueScores = next; return }
+            state.vsSig = sig
+            state.valueScores = next
+            var box = panel ? panel.querySelector('#dk-vs-box') : null
+            if (box) box.innerHTML = scoreListHtml(state.valueScores)
+          })
+          .catch(function () { /* 静默: 拉取失败保持原样 */ })
+      }
+      // 当前会话命中的 QQ 目标(2026-09-13 主人要求: 评分/操作要跟随"当前会话", 与群管理页一致)
+      function curHitGid() {
+        var hit = state.detectedHit
+        return (hit && hit.scope === 'group' && hit.peerId) ? hit.peerId : ''
+      }
+      function curHitLabel() {
+        var hit = state.detectedHit
+        if (!hit || !hit.peerId) return '（当前会话不是 QQ 会话）'
+        return (hit.scope === 'group' ? '群「' + (hit.name || '…') + '」' : '私聊「' + (hit.name || '…') + '」')
+      }
+      function scoreQuery() {
+        var q = []
+        if (state.ns) q.push(outNsQ())
+        var g = curHitGid()
+        if (g) q.push('gid=' + encodeURIComponent(g))
+        q.push('limit=20')
+        return '?' + q.join('&')
+      }
+      // ✍️ 样例库编辑: 读现有内容(展开时才拉)
+      function loadValueSamplesEditor() {
+        fetch('/api/qqbot-settings/value-samples' + (state.ns ? '?' + outNsQ() : ''))
+          .then(function (r) { return r.json() })
+          .then(function (d) {
+            var stat = panel ? panel.querySelector('#dk-vs-stat') : null
+            var ta = panel ? panel.querySelector('#dk-vs-text') : null
+            if (d && d.ok) {
+              if (stat) stat.textContent = '共 ' + d.total + ' 条(她会接 ' + d.pos + ' / 不会理 ' + d.neg + ')' + (d.isDefault ? ' · 暂用内置默认, 保存后自建' : '')
+              if (ta) ta.value = d.text || ''
+            } else if (stat) stat.textContent = (d && d.error) || '读取失败'
+          })
+          .catch(function () { /* 静默 */ })
+      }
+      function saveValueSamplesEditor() {
+        var ta = panel ? panel.querySelector('#dk-vs-text') : null
+        var hint = panel ? panel.querySelector('#dk-vs-hint') : null
+        if (!ta) return
+        if (hint) hint.textContent = '保存中…'
+        fetch('/api/qqbot-settings/value-samples', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ ns: state.ns, text: ta.value }),
+        }).then(function (r) { return r.json() }).then(function (d) {
+          if (d && d.ok) {
+            if (hint) hint.textContent = '已保存 ✓ ' + d.saved + ' 条(她会接 ' + d.pos + ' / 不会理 ' + d.neg + ') · 下一条群消息生效'
+            loadValueSamplesEditor()
+          } else if (hint) hint.textContent = '保存失败: ' + ((d && d.error) || '未知')
+        }).catch(function (e) { if (hint) hint.textContent = '异常: ' + e.message })
+      }
+      function loadLocalModel() {
+        if (state.tab !== 'session') return
+        // ⚠️ 2026-09-13 修(主人反馈面板一直闪): 原来 paintBody 的绑定区里也调了 loadLocalModel(),
+        //    而它完成后又调 paintBody() → 无限循环重绘。现在绑定区只做绑定, 这里再加一道防重入锁。
+        if (state.lmBusy) return
+        state.lmBusy = true
+        var nsq = state.ns ? '?' + outNsQ() : ''
+        state.valueScores = null
+        fetch('/api/qqbot-settings/local-model/status' + nsq).then(function (r) { return r.json() }).then(function (d) {
+          state.localModel = d && d.ok ? d : null
+          paintBody()
+        }).catch(function () { state.localModel = null; paintBody() })
+        // ⚠️ 2026-09-13 加固(主人反馈"永远显示只记录"): **直读 settings 配置**拿真实 valueGate/enabled/门槛,
+        //    不再依赖 status 接口有没有带这些字段(host 未重启时旧接口不返回 → 会一直显示默认"只记录")。
+        fetch(READ + (state.ns ? '?' + outNsQ() : '')).then(function (r) { return r.json() }).then(function (d) {
+          state.lmCfg = (d && d.value && d.value.localModel) || null
+          paintBody()
+        }).catch(function () { state.lmCfg = null; paintBody() })
+        fetch('/api/qqbot-settings/value-scores' + scoreQuery())
+          .then(function (r) { return r.json() })
+          .then(function (d) { state.valueScores = d && d.ok ? d : { items: [], total: 0 }; paintBody() })
+          .catch(function () { state.valueScores = { items: [], total: 0 }; paintBody() })
+          .then(function () { state.lmBusy = false })
+        // 每 10 秒局部刷新一次评分列表(只换 #dk-vs-box 内容, 不整块重绘 → 不闪)
+        if (state.lmTimer) clearInterval(state.lmTimer)
+        state.lmTimer = setInterval(refreshScoreList, 10000)
+        if (state.vsOpen) loadValueSamplesEditor()   // 重绘后把编辑区内容补回来(展开状态已存 state)
+      }
+      // 保存(全量 patch 合并: settings update 是全量语义, 不能只发单字段)
+      /** 当前会话的覆盖键: "group:<gid>" / "c2c:<openid>"; 未命中(非 QQ 会话) → '' */
+      function curOvKey() {
+        var hit = state.detectedHit
+        return (hit && hit.peerId) ? (hit.scope + ':' + hit.peerId) : ''
+      }
+      function saveLocalModel() {
+        var hint = panel ? panel.querySelector('#dk-lm-hint') : null
+        var onEl = panel ? panel.querySelector('#dk-lm-on') : null
+        var dirEl = panel ? panel.querySelector('#dk-lm-dir') : null
+        var gateEl = panel ? panel.querySelector('input[name="dk-lm-gate"]:checked') : null
+        var minEl = panel ? panel.querySelector('#dk-lm-min') : null
+        var ovKey = curOvKey()
+        // ⚠️ 2026-09-13 会话级(主人要求): 评分模式/门槛/启用 存进 **当前会话** 的覆盖项;
+        //    模型目录是账号级(模型只有一份), 仍写账号默认。
+        if (!ovKey) {
+          if (hint) hint.textContent = '✗ 当前会话不是 QQ 会话 —— 单会话设置需先切到与 bot 的群/私聊(顶栏「当前会话」要命中)'
+          return
+        }
+        var ovNext = {
+          enabled: onEl ? !!onEl.checked : true,
+          valueGate: gateEl ? gateEl.value : 'log',
+          valueMinScore: minEl ? (parseFloat(minEl.value) || 0.5) : 0.5,
+        }
+        if (hint) hint.textContent = '保存中…'
+        fetch(READ + (state.ns ? '?' + outNsQ() : '')).then(function (r) { return r.json() }).then(function (d) {
+          var cur = (d && d.value) || {}
+          var lm = Object.assign({}, cur.localModel || {})
+          if (dirEl) lm.modelDir = String(dirEl.value || '').trim()      // 账号级
+          lm.overrides = Object.assign({}, (lm.overrides || {}))
+          lm.overrides[ovKey] = ovNext                                    // 会话级
+          var patch = Object.assign({}, cur, { localModel: lm })
+          return fetch(UPDATE, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ ns: state.ns || undefined, patch: patch, expectedRevision: d && d.revision }),
+          }).then(function (r2) { return r2.json() })
+        }).then(function (res) {
+          if (res && !res.error) {
+            if (hint) hint.textContent = '已保存 ✓(仅对本会话生效, live)'
+            // 立刻把新值写进本地缓存并渲染(不等接口回读)
+            var lm2 = Object.assign({}, state.lmCfg || {})
+            lm2.overrides = Object.assign({}, (lm2.overrides || {}))
+            lm2.overrides[ovKey] = ovNext
+            if (dirEl) lm2.modelDir = String(dirEl.value || '').trim()
+            state.lmCfg = lm2
+            paintBody()
+            setTimeout(function () { loadLocalModel() }, 2000)
+          } else if (hint) hint.textContent = '保存失败: ' + ((res && res.error) || '未知响应')
+        }).catch(function (e) { if (hint) hint.textContent = '保存异常: ' + e.message })
+      }
+      function bindLocalModel() {
+        if (state.tab !== 'session' || !panel) return
+        var hint = function (t) { var el = panel.querySelector('#dk-lm-hint'); if (el) el.textContent = t }
+        var onEl = panel.querySelector('#dk-lm-on')
+        if (onEl) onEl.onchange = function () { saveLocalModel() }
+        // 评分模式 + 门槛: 改动即自动保存
+        // ⚠️ 2026-09-13 修(主人反馈"低分不唤醒怎么保存不了"): 原来只有"启用"开关绑了 onchange,
+        //    点三个评分模式单选按钮不会保存 → 看着像"选不了"; 现在 radio 与门槛都自动保存。
+        panel.querySelectorAll('input[name="dk-lm-gate"]').forEach(function (r) {
+          r.onchange = function () { saveLocalModel() }
+        })
+        var minInput = panel.querySelector('#dk-lm-min')
+        if (minInput) minInput.onchange = function () { saveLocalModel() }
+        // ↩ 恢复继承: 删掉本会话的覆盖项(2026-09-13 会话级)
+        var resetBtn = panel.querySelector('#dk-lm-reset')
+        if (resetBtn) resetBtn.onclick = function () {
+          var h = panel.querySelector('#dk-lm-hint')
+          var ovKey = curOvKey()
+          if (!ovKey) return
+          if (h) h.textContent = '恢复继承中…'
+          fetch(READ + (state.ns ? '?' + outNsQ() : '')).then(function (r) { return r.json() }).then(function (d) {
+            var cur = (d && d.value) || {}
+            var lm = Object.assign({}, cur.localModel || {})
+            var ovs = Object.assign({}, (lm.overrides || {}))
+            delete ovs[ovKey]
+            lm.overrides = ovs
+            var patch = Object.assign({}, cur, { localModel: lm })
+            return fetch(UPDATE, {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ ns: state.ns || undefined, patch: patch, expectedRevision: d && d.revision }),
+            }).then(function (r2) { return r2.json() })
+          }).then(function (res) {
+            if (res && !res.error) {
+              if (h) h.textContent = '已恢复继承账号默认 ✓'
+              if (state.lmCfg && state.lmCfg.overrides) {
+                var o2 = Object.assign({}, state.lmCfg.overrides)
+                delete o2[ovKey]
+                state.lmCfg = Object.assign({}, state.lmCfg, { overrides: o2 })
+              }
+              paintBody()
+              setTimeout(function () { loadLocalModel() }, 2000)
+            } else if (h) h.textContent = '恢复失败: ' + ((res && res.error) || '未知')
+          }).catch(function (e) { if (h) h.textContent = '异常: ' + e.message })
+        }
+        var saveBtn = panel.querySelector('#dk-lm-save')
+        if (saveBtn) saveBtn.onclick = function () { saveLocalModel() }
+        var chkBtn = panel.querySelector('#dk-lm-check')
+        if (chkBtn) chkBtn.onclick = function () { state.localModel = null; paintBody(); loadLocalModel() }
+        var vsBtn = panel.querySelector('#dk-vs-reload')
+        if (vsBtn) vsBtn.onclick = function () { refreshScoreList() }
+        // ✍️ 样例库编辑区
+        var vsToggle = panel.querySelector('#dk-vs-edit-toggle')
+        if (vsToggle) vsToggle.onclick = function () {
+          var box = panel.querySelector('#dk-vs-editor')
+          if (!box) return
+          state.vsOpen = !state.vsOpen            // 存进 state: 重绘后不缩回
+          box.style.display = state.vsOpen ? 'block' : 'none'
+          vsToggle.textContent = state.vsOpen ? '收起' : '展开编辑'
+          if (state.vsOpen) loadValueSamplesEditor()
+        }
+        var vsSaveBtn = panel.querySelector('#dk-vs-save')
+        if (vsSaveBtn) vsSaveBtn.onclick = function () { saveValueSamplesEditor() }
+        // 🤖 让ai写(2026-09-13 主人要的): 模拟一条用户消息唤醒她 → 她自己读聊天记录写样例
+        // 目标 = 面板「当前会话」命中的群/私聊(与群管理页一致); 未命中 QQ 会话则明确提示
+        var aiWriteBtn = panel.querySelector('#dk-vs-aiwrite')
+        if (aiWriteBtn) aiWriteBtn.onclick = function () {
+          var h = panel.querySelector('#dk-vs-hint')
+          var hit = state.detectedHit
+          if (!hit || !hit.peerId) {
+            if (h) h.textContent = '✗ 当前会话不是 QQ 会话(顶栏「当前会话」未命中群/私聊) —— 请先切到与 bot 的群/私聊会话'
+            return
+          }
+          if (h) h.textContent = '发给 AI 中…(' + (hit.scope === 'group' ? '群' : '私聊') + '「' + (hit.name || '') + '」)'
+          fetch('/api/qqbot-settings/value-samples/let-ai-write', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ ns: hit.ns || state.ns, scope: hit.scope, peerId: hit.peerId }),
+          }).then(function (r) { return r.json() }).then(function (d) {
+            if (h) h.textContent = d && d.ok ? ('✓ ' + d.msg) : ('失败: ' + ((d && d.error) || (d && d.msg) || '未知'))
+          }).catch(function (e) { if (h) h.textContent = '异常: ' + e.message })
+        }
+        // ⚙ 单会话设置: 次级标签切换(🧠 本地小模型 / 📄 空白样板)
+        panel.querySelectorAll('[data-sttab]').forEach(function (sb) {
+          sb.onclick = function () {
+            var v = sb.getAttribute('data-sttab')
+            state.stTab = v
+            paintBody()
+            if (v === 'lm') loadLocalModel()
+          }
+        })
+        var dlBtn = panel.querySelector('#dk-lm-dl')
+        if (dlBtn) dlBtn.onclick = function () {
+          dlBtn.disabled = true
+          hint('下载中…(约 23MB, 1~2 分钟, 面板别关)')
+          fetch('/api/qqbot-settings/local-model/download', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ ns: state.ns }),
+          }).then(function (r) { return r.json() }).then(function (d) {
+            if (d && d.ok) { hint('下载完成 ✓'); state.localModel = null; paintBody(); loadLocalModel() }
+            else { hint('下载失败: ' + ((d && d.error) || JSON.stringify(d))); dlBtn.disabled = false }
+          }).catch(function (e) { hint('下载异常: ' + e.message); dlBtn.disabled = false })
+        }
+      }
       // ⚙️ 出站方式: 读当前账号(ns)配置
       function loadOutMode() {
         if (state.tab !== 'out') return
@@ -2823,6 +3094,16 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             }).join('')
           + '</div>'
       }
+      // ⚙ 单会话设置 · 次级标签栏(2026-09-13 主人要求: 本地小模型独立成子标签, 另留一个空标签当样板)
+      function sessionSubTabs() {
+        var st = state.stTab || 'lm'
+        return '<div class="dk-row" style="gap:4px;margin:4px 0 6px;flex-wrap:wrap;border-bottom:1px dashed #e2d9ff;padding-bottom:6px">'
+          + [['lm', '🧠 本地小模型'], ['blank', '📄 空白样板']]
+            .map(function (s) {
+              return '<button class="dk-btn' + (st === s[0] ? ' on' : '') + '" data-sttab="' + s[0] + '">' + s[1] + '</button>'
+            }).join('')
+          + '</div>'
+      }
       // 🚀 M3 群发面板(确认草稿 + 任务列表); 「📇群组管理」与「📤群发·广播」共用(2026-09-10 抽函数)
       function broadcastPanel() {
         if (!state.bcDraft && !(state.bcTasks && state.bcTasks.length)) return ''
@@ -2901,6 +3182,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           + '<button data-t="mute" class="' + (state.tab === 'mute' ? 'on' : '') + '">🔇 禁言</button>'
           + '<button data-t="out" class="' + (state.tab === 'out' ? 'on' : '') + '">⚙️ 出站</button>'
           + '<button data-t="send" class="' + (['send','broadcast','bp','card'].indexOf(state.tab) >= 0 ? 'on' : '') + '">📤 群发</button>'
+          + '<button data-t="session" class="' + (state.tab === 'session' ? 'on' : '') + '">⚙ 单会话设置</button>'
           + '</div>'
         var body = tabs
         var status = state.msg ? '<div class="dk-msg" style="color:#2f9e44;margin:4px 0">' + esc(state.msg) + '</div>' : ''
@@ -3068,6 +3350,100 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           body += '详细主动=聊天行为与适配主动完全一样, 但额外把 AI 的工具调用(🔧 工具调用)与工具结果也推到 QQ —— 能在 QQ 上看她正在干什么; 消息会明显变多, 看完记得切回适配主动。'
           body += '被动=始终以「回复你那条」发出, 连发约4~5条后会被QQ吞掉。完全不出站=本机静默, 不向QQ发任何回复(AI 可用工具随时切回)。本开关对纯web(没绑QQ)的会话不生效。</div>'
           body += '<span class="dk-msg" id="dk-out-hint" style="color:#2f9e44;margin:4px 0"></span>'
+        } else if (state.tab === 'session') {
+          // ⚙ 单会话设置(2026-09-13 主人定): 放"每个会话单独生效"的设置。
+          // 次级标签: 🧠 本地小模型 / 📄 空白样板(留作以后加新设置的模板)。
+          body += sessionSubTabs()
+          var st = state.stTab || 'lm'
+          if (st === 'blank') {
+            body += '<div style="border:1px dashed #cfc7ee;border-radius:8px;padding:20px 14px;margin:8px 0;text-align:center;line-height:2">'
+              + '<div style="font-size:15px;font-weight:700">📄 空白样板</div>'
+              + '<div style="font-size:12px;color:#888">这块先空着 —— 以后要加"每个会话单独生效"的设置, 照这个子标签加就行。<br>'
+              + '(做法: 加一个子标签值 + 一段渲染分支 + 需要的 host API, 就能长出一个新的子页)</div>'
+              + '</div>'
+          } else {
+          var lm = state.localModel
+          body += '<div class="dk-msg" style="line-height:1.6">让机器人在本机跑一个 23MB 的中文小模型(<b>零 token</b>): 价值评分(她该不该开口) + 表情包语义搜索 —— <b>模型缺失时自动关闭, 不影响任何现有功能</b>。</div>'
+          if (!lm) {
+            body += '<div class="dk-empty">读取中…(若长时间不动, 点「🔄 重新检测」)</div>'
+          } else {
+            var lmMb = lm.bytes ? (Math.round((lm.bytes / 1048576) * 10) / 10) : 0
+            var lmState = lm.available ? ('✅ 已就绪' + (lmMb ? ' · ' + lmMb + ' MB' : '')) : ('⚠️ 未安装(缺 ' + (lm.missing || []).length + ' 个文件)')
+            // ⚠️ 2026-09-13 会话级: 评分模式/门槛/启用 **优先取当前会话的覆盖项**(overrides[group:xxx]),
+            //    没有则继承账号级默认; 界面用"继承/已单独设置"标出来。
+            var lmCfg = state.lmCfg || {}
+            var ovKeyV = curOvKey()
+            var ov = (ovKeyV && lmCfg.overrides && lmCfg.overrides[ovKeyV]) || {}
+            var hasOv = !!(typeof ov.enabled === 'boolean' || ov.valueGate || typeof ov.valueMinScore === 'number')
+            var pickGate = function (v) { return (v === 'off' || v === 'log' || v === 'block') ? v : '' }
+            var gateV = pickGate(ov.valueGate) || pickGate(lmCfg.valueGate) || pickGate(lm.valueGate) || 'log'
+            var minV = (typeof ov.valueMinScore === 'number') ? ov.valueMinScore
+              : ((typeof lmCfg.valueMinScore === 'number') ? lmCfg.valueMinScore
+                : (typeof lm.valueMinScore === 'number' ? lm.valueMinScore : 0.5))
+            var onV = (typeof ov.enabled === 'boolean') ? ov.enabled
+              : ((typeof lmCfg.enabled === 'boolean') ? lmCfg.enabled : (lm.enabled !== false))
+            body += '<div class="dk-row" style="font-weight:700;font-size:13px;margin:10px 0 2px">🧠 本地小模型 · bge-small-zh-v1.5</div>'
+            // 本会话标识 + 继承状态(让"单会话"名副其实: 一眼看出这套值是谁的)
+            body += '<div class="dk-row" style="gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 4px">'
+              + '<span class="dk-msg" style="font-size:12px;color:#7c6bd6">本会话: ' + esc(curHitLabel()) + '</span>'
+              + '<span class="dk-msg" style="font-size:11px;color:' + (hasOv ? '#2f9e44' : '#999') + '">'
+              + (hasOv ? '✔ 已单独设置' : '（暂用账号默认）') + '</span>'
+              + (hasOv ? '<button class="dk-btn" id="dk-lm-reset" style="font-size:11px;padding:1px 6px" title="删除本会话的单独设置, 恢复继承账号默认">↩ 恢复继承</button>' : '')
+              + '</div>'
+            body += '<div class="dk-row" style="gap:8px;flex-wrap:wrap;align-items:center">'
+              + '<label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;cursor:pointer"><input type="checkbox" id="dk-lm-on"' + (onV ? ' checked' : '') + '> 启用(省 token)</label>'
+              + '<span class="dk-msg" style="font-size:12px;color:' + (lm.available ? '#2f9e44' : '#c23131') + '">' + esc(lmState) + '</span>'
+              + '</div>'
+            body += '<div class="dk-row" style="gap:6px;margin:4px 0;flex-wrap:wrap">'
+              + '<input class="qqs-inp" id="dk-lm-dir" style="flex:1;min-width:200px" placeholder="模型目录(留空=默认 ~/.dsh/models/bge-small-zh)" value="' + esc(lm.modelDir || '') + '">'
+              + '<button class="dk-btn" id="dk-lm-save">💾 保存</button>'
+              + '<button class="dk-btn" id="dk-lm-check">🔄 重新检测</button>'
+              + (lm.available ? '' : '<button class="dk-btn ok" id="dk-lm-dl">⬇️ 下载模型</button>')
+              + '</div>'
+            // 评分模式 + 门槛(2026-09-13): off=不评分 / log=只记录(默认观察期) / block=低分不唤醒
+            body += '<div class="dk-row" style="gap:8px;flex-wrap:wrap;align-items:center;margin:6px 0 2px">'
+              + '<span style="font-size:12px;color:#666">评分模式:</span>'
+              + [['off', '不评分'], ['log', '只记录(先观察)'], ['block', '低分不唤醒']].map(function (m2) {
+                return '<label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;cursor:pointer"><input type="radio" name="dk-lm-gate" value="' + m2[0] + '"' + (gateV === m2[0] ? ' checked' : '') + '> ' + m2[1] + '</label>'
+              }).join('')
+              + '<span style="font-size:12px;color:#666">门槛:</span>'
+              + '<input class="qqs-inp" id="dk-lm-min" type="number" step="0.01" min="0" max="1" style="width:78px" value="' + minV + '">'
+              + '</div>'
+            body += '<span class="dk-msg" id="dk-lm-hint" style="color:#2f9e44;margin:2px 0"></span>'
+            // 📊 最近评分(观察期): 让主人直接看到"她是怎么被叫醒的"
+            // 2026-09-13 二次修: 列表抽成 scoreListHtml + 独立 div, 由 refreshScoreList 做**局部刷新**
+            // (只换这个 div 的内容, 不整块 paintBody) → 既不闪, 又能自动更新。
+            body += '<div class="dk-row" style="font-weight:700;font-size:13px;margin:10px 0 2px;gap:8px;align-items:center;flex-wrap:wrap">'
+              + '<span>📊 最近评分(观察期)</span>'
+              + '<span class="dk-msg" style="font-size:11px;color:#7c6bd6" id="dk-vs-scope">' + esc(curHitLabel()) + '</span>'
+              + '<button class="dk-btn" id="dk-vs-reload" style="font-size:12px;padding:1px 8px">🔄 刷新</button>'
+              + '<span class="dk-msg" style="font-size:11px;color:#999">每 10 秒自动更新</span>'
+              + '</div>'
+            body += '<div id="dk-vs-box">' + scoreListHtml(state.valueScores) + '</div>'
+            // ✍️ 样例库编辑(2026-09-13 主人问"哪里写样本"): 直接改 jsonl, 保存后下一条消息生效
+            body += '<div class="dk-row" style="font-weight:700;font-size:13px;margin:12px 0 2px;gap:8px;align-items:center;flex-wrap:wrap">'
+              + '<span>✍️ 样例库(决定她的开口标准)</span>'
+              + '<button class="dk-btn" id="dk-vs-edit-toggle" style="font-size:12px;padding:1px 8px">' + (state.vsOpen ? '收起' : '展开编辑') + '</button>'
+              + '<button class="dk-btn ok" id="dk-vs-aiwrite" style="font-size:12px;padding:1px 8px" title="模拟一条用户消息唤醒她, 让她自己读聊天记录写样例(样例库位置+写法一起发过去)">🤖 让ai写(有聊天记录最好)</button>'
+              + '<span class="dk-msg" style="font-size:11px;color:#999" id="dk-vs-stat"></span>'
+              + '</div>'
+            body += '<div id="dk-vs-editor" style="display:' + (state.vsOpen ? 'block' : 'none') + '">'
+              + '<textarea class="qqs-area" id="dk-vs-text" style="width:100%;min-height:170px;font-family:monospace;font-size:11px" placeholder=\'一行一条 JSON: {"m":"群消息文本","y":1}   (y=1 她会想接话 / y=0 她不会理)\'></textarea>'
+              + '<div class="dk-row" style="gap:6px;margin-top:4px;align-items:center;flex-wrap:wrap">'
+              + '<button class="dk-btn ok" id="dk-vs-save">💾 保存样例库</button>'
+              + '<span class="dk-msg" id="dk-vs-hint" style="color:#2f9e44"></span>'
+              + '</div>'
+              + '<div class="dk-msg" style="font-size:11px;color:#888;line-height:1.6">一行一条 JSON。保存后<b>下一条群消息</b>就按新样例判断(自动重载, 约 0.3 秒)。'
+              + '想让她自己学 —— 群里说一句「<b>从最近的聊天记录总结一批样本</b>」, 她会读真实聊天记录提炼后写进来 ✧</div>'
+              + '</div>'
+            body += '<div class="dk-msg" style="font-size:12px;color:#888;line-height:1.6">'
+              + (lm.available
+                ? '模型加载是懒加载: 第一次用到(有群消息需要评分)才载入, 约 0.3 秒, 之后常驻内存(~150MB)。'
+                : '点「⬇️ 下载模型」自动拉取(约 23MB, hf-mirror 优先/官方兜底, 1~2 分钟); 也可以自己下载后放进上面目录: '
+                  + '<code>onnx/model_quantized.onnx</code> · <code>tokenizer.json</code> · <code>tokenizer_config.json</code> · <code>config.json</code>')
+              + '</div>'
+          }
+          }
         } else if (state.tab === 'card') {
           // 📝 自定义 markdown 卡片(2026-09-10): 源码 + 实时预览 + 按钮配置 → 发送到选中群/私聊
           body += sendSubTabs()
@@ -3192,6 +3568,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         // 📝 卡片: 必须在 paintBody 内绑定(2026-09-10 修复: 原在 tab 点击处先 bind 后 paintBody,
         // 绑的是即将被替换的旧 DOM → 发送/存为事件无反应、预览不渲染)
         if (state.tab === 'card') bindCardEvents()
+        if (state.tab === 'session') bindLocalModel()   // ⚠️ 只绑定: 加载由切 tab 时触发(防重绘循环)
         // 📤 广播子页: 绑定群发按钮 + 刷新任务列表(任务列表静默拉取, 不重绘 → 防死循环)
         if (state.tab === 'broadcast') { bindBroadcastEvents(); loadBroadcastTasks(false, true); startBroadcastAdvance() }
         // 分组(host 持久化, 与 AI 共用): 进选目标/广播页时拉一次, 保证多浏览器与 AI 侧看到的是同一份
@@ -3208,6 +3585,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             state.tab = btn.getAttribute('data-t'); state.msg = ''
             if (state.tab === 'join') loadJoins(); else if (state.tab === 'mute') loadMutes()
             else if (state.tab === 'out') loadOutMode()
+            else if (state.tab === 'session') { loadLocalModel(); bindLocalModel() }
             else if (state.tab === 'bp') loadBotplay()
             else if (state.tab === 'chat') { state.chatItems = []; state.chatErr = ''; }
             paintBody()
@@ -3625,6 +4003,33 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           return '<a class="dk-link" href="' + u + '" target="_blank" rel="noopener noreferrer" title="' + u + '">' + u + '</a>' + trail
         })
       }
+      // ── 媒体地址归一(2026-09-13 主人要求: dock 聊天界面图片要**同时兼容 url 与本地路径/图库链接**) ──
+      //   入站消息的图片已改为给**本地路径**(省 token、看图不用再下载), 浏览器直接拿 D:\… 当然加载不出来,
+      //   于是统一转成同源直出 URL: /api/qqbot-settings/chat/raw-media?p=<本机路径>。
+      //   http(s) / 已是 /api/... 的(含 sticker-img?id=xxx 图库链接) 一律原样。
+      function chatMediaURL(u) {
+        var s = String(u || '').trim()
+        if (!s) return s
+        if (/^(https?:|\/\/|\/api\/|data:|blob:)/i.test(s)) return s
+        if (/^[A-Za-z]:[\\/]/.test(s) || /^\\\\/.test(s) || s.charAt(0) === '/') {
+          return '/api/qqbot-settings/chat/raw-media?p=' + encodeURIComponent(s)
+        }
+        return s
+      }
+      // 图库兜底: 消息里记的本地路径是"当时"的(candidate→library 搬层后就失效),
+      //   但文件名正是图库 id(12 位 sha1) → 加载失败时再用 sticker-img?id= 试一次(按 id 解析, 与层无关)
+      function chatStickerFallback(src) {
+        var s = String(src || '')
+        if (s.indexOf('/chat/raw-media?p=') >= 0) {
+          try { s = decodeURIComponent(s.split('p=')[1] || '') } catch (e) { /* 保持原样 */ }
+        }
+        var base = s.replace(/[?#].*$/, '').split(/[\\/]/).pop() || ''
+        var idm = base.match(/^([0-9a-f]{12})\.([a-z0-9]{2,5})$/i)
+        if (!idm) return ''
+        var dd = ''
+        try { dd = curDataDir() || '' } catch (e) { dd = '' }
+        return '/api/qqbot-settings/sticker-img?id=' + encodeURIComponent(idm[1]) + (dd ? '&dataDir=' + encodeURIComponent(dd) : '')
+      }
       function renderChatList(keepScrollOffset) {
         var box = document.getElementById('dk-chat-box')
         if (!box) return
@@ -3655,10 +4060,17 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             var u = typeof m === 'string' ? m : (m && m.url)
             var k = typeof m === 'string' ? 'image' : ((m && m.kind) || 'image')
             if (!u) return ''
+            u = chatMediaURL(u) // 本机路径 → 同源直出 URL(兼容 url / 本地路径 / 图库链接)
             if (k === 'file') return '<a class="dk-file" href="' + esc(u) + '" target="_blank" rel="noopener" title="' + esc(u) + '">📎 ' + esc((m && m.name) || '文件') + '</a>'
             if (k === 'voice') return '<audio class="dk-audio" controls preload="metadata" src="' + esc(u) + '"></audio>'
             if (k === 'video') return '<video class="dk-video" controls preload="metadata" src="' + esc(u) + '"></video>'
-            return '<img class="dk-img" loading="lazy" data-lb="' + esc(u) + '" src="' + esc(u) + '" referrerpolicy="no-referrer" alt="[图片]" onerror="this.outerHTML=\'<span style=color:#888>[图加载失败]</span>\'">'
+            // 兜底链(按序试): ① 后端给的 QQ 链接(台账兜底, 本地文件被清了也能显示)
+            //                      ② 图库 id 链接 sticker-img?id=(路径搬层后的旧路径救不回时用)
+            var fbs = []
+            if (m && m.fb && String(m.fb) !== String(u)) fbs.push(String(m.fb))
+            var sf = chatStickerFallback(m, u)
+            if (sf && sf !== u && fbs.indexOf(sf) < 0) fbs.push(sf)
+            return '<img class="dk-img" loading="lazy" data-lb="' + esc(u) + '"' + (fbs.length ? ' data-fb="' + esc(JSON.stringify(fbs)) + '"' : '') + ' src="' + esc(u) + '" referrerpolicy="no-referrer" alt="[图片]">'
           }).join('')
           var txt = it.text ? chatRenderText(it.text) : ''
           return '<div class="dk-crow ' + (isOut ? 'out' : 'in') + '">'
@@ -3673,9 +4085,22 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         box.innerHTML = html
         // 图片: 单击/右键 → 灯箱放大(右键不再弹浏览器菜单, 避免误触发 onerror 变加载失败)
         box.querySelectorAll('img.dk-img').forEach(function (img) {
-          var lb = img.getAttribute('data-lb') || img.src
-          img.onclick = function (e) { e.preventDefault(); e.stopPropagation(); openLightbox(lb) }
-          img.oncontextmenu = function (e) { e.preventDefault(); e.stopPropagation(); openLightbox(lb) }
+          var lbOf = function () { return img.getAttribute('data-lb') || img.src }
+          img.onclick = function (e) { e.preventDefault(); e.stopPropagation(); openLightbox(lbOf()) }
+          img.oncontextmenu = function (e) { e.preventDefault(); e.stopPropagation(); openLightbox(lbOf()) }
+          // 加载失败 → 按兜底链依次重试(QQ 链接 → 图库 id 链接) ② 全都失败才灰字提示
+          img.onerror = function () {
+            var list = []
+            try { list = JSON.parse(img.getAttribute('data-fb') || '[]') || [] } catch (e) { list = [] }
+            var i = Number(img.getAttribute('data-fbi') || '0')
+            if (Array.isArray(list) && i < list.length) {
+              img.setAttribute('data-fbi', String(i + 1))
+              img.setAttribute('data-lb', String(list[i]))
+              img.src = String(list[i])
+              return
+            }
+            img.outerHTML = '<span style="color:#888">[图加载失败]</span>'
+          }
         })
         // 滚动: 刷新/切目标 → 滚到底; 上滚加载更早 → 保持视口
         if (keepScrollOffset == null) box.scrollTop = box.scrollHeight

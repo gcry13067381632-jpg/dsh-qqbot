@@ -250,7 +250,8 @@ export async function setupMiddlewares(
       return next();
     }
     const now = Date.now();
-    const last = lastDispatchAt.get(gid) ?? 0;
+    const prev = lastDispatchAt.get(gid);
+    const last = prev ?? 0;
     if (now - last < intervalSec * 1000) {
       // 冷却期内：消息已被 mediaHistoryBuffer 记进群历史，本次不派发 → 不调 next()
       return;
@@ -258,6 +259,13 @@ export async function setupMiddlewares(
     // 冷却结束：派发当前消息。用独立的 batchDispatch 标记，让下游把累积的群历史一起打包
     //（不伪装成 @you，避免出现假 (@you) 标签误导 AI）
     lastDispatchAt.set(gid, now);
+    // ⚠️ 2026-09-13(主人要求): 冷却应当"**真产生回复**才算消耗" —— 派发只是试一下,
+    //    下游可能因为价值评分低分而**不唤醒**(那就没有回复), 这种不该白吃一枚冷却。
+    //    于是把"还回去"的回调挂到 state, 下游判定"本次没回复"时调一次即可。
+    ctx.state.qqCooldownRollback = {
+      prev,
+      restore: () => { if (prev === undefined) lastDispatchAt.delete(gid); else lastDispatchAt.set(gid, prev); },
+    };
     ctx.state.batchDispatch = true;
     return next();
   });

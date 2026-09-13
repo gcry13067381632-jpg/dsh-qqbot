@@ -1206,6 +1206,195 @@ export function apply(ctx) {
     } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
   });
 
+  // ── 本地小模型(2026-09-13 主人定): 状态检测 + 一键下载 ──
+  // 模型: bge-small-zh-v1.5 (ONNX q8 ≈ 23MB, 中文专训); 放用户级 {DSH_HOME|~/.dsh}/models/bge-small-zh
+  // (跨工作区共享一份), 可用 localModel.modelDir 覆盖。下载走 node:https + 镜像兜底。
+  const LOCAL_MODEL_FILES = ['onnx/model_quantized.onnx', 'tokenizer.json', 'tokenizer_config.json', 'config.json'];
+  const LOCAL_MODEL_BASES = [
+    'https://hf-mirror.com/Xenova/bge-small-zh-v1.5/resolve/main',
+    'https://huggingface.co/Xenova/bge-small-zh-v1.5/resolve/main',
+  ];
+  function localModelDirOf(bot) {
+    const cfgDir = String((bot && bot.cfg && bot.cfg.localModel && bot.cfg.localModel.modelDir) || '').trim();
+    if (cfgDir) return cfgDir;
+    const dshHome = (process.env.DSH_HOME && process.env.DSH_HOME.trim()) || join(homedir(), '.dsh');
+    return join(dshHome, 'models', 'bge-small-zh');
+  }
+  /** 下载单文件(跟随重定向); 失败抛错 */
+  async function downloadFile(url, dest, hops = 0) {
+    const { default: https } = await import('node:https');
+    return await new Promise((resolve, reject) => {
+      const req = https.get(url, { headers: { 'user-agent': 'dsh-qqbot', accept: '*/*' } }, (resp) => {
+        const code = resp.statusCode || 0;
+        if (code >= 300 && code < 400 && resp.headers.location && hops < 6) {
+          resp.resume();
+          const next = new URL(resp.headers.location, url).toString();
+          return downloadFile(next, dest, hops + 1).then(resolve, reject);
+        }
+        if (code !== 200) {
+          resp.resume();
+          return reject(new Error(`HTTP ${code}`));
+        }
+        const tmp = dest + '.part';
+        const ws = createWriteStream(tmp);
+        resp.pipe(ws);
+        ws.on('finish', () => ws.close(() => {
+          try { renameSync(tmp, dest); } catch (e) { return reject(e); }
+          resolve(dest);
+        }));
+        ws.on('error', reject);
+      });
+      req.on('error', reject);
+      req.setTimeout(180000, () => req.destroy(new Error('下载超时(180s)')));
+    });
+  }
+  route(ctx, 'GET', '/api/qqbot-settings/local-model/status', async (req, res) => {
+    try {
+      const u = new URL(req.url ?? '/', 'http://x');
+      const bot = nsBot(NSQ(u));
+      const dir = localModelDirOf(bot);
+      const missing = LOCAL_MODEL_FILES.filter((rel) => !existsSync(join(dir, rel)));
+      let bytes = 0;
+      for (const rel of LOCAL_MODEL_FILES) { try { bytes += statSync(join(dir, rel)).size; } catch { /* 缺文件不计数 */ } }
+      const cfg = (bot && bot.cfg && bot.cfg.localModel) || {};
+      writeJson(res, 200, {
+        ok: true,
+        enabled: cfg.enabled !== false,
+        modelDir: dir,
+        available: missing.length === 0,
+        missing,
+        bytes,
+        // ⚠️ 2026-09-13 修(主人反馈"选了低分不唤醒, 过一会又跳回去"): 原来这里漏返回 valueGate,
+        //    面板读回 undefined → 一律按默认 'log' 渲染 → 看着像"保存没生效"(其实配置里已是 block)。
+        valueGate: cfg.valueGate === 'off' || cfg.valueGate === 'block' ? cfg.valueGate : 'log',
+        valueMinScore: typeof cfg.valueMinScore === 'number' ? cfg.valueMinScore : 0.5,
+      });
+    } catch (e) { writeJson(res, 500, { ok: false, error: String((e && e.message) || e) }); }
+  });
+  route(ctx, 'POST', '/api/qqbot-settings/local-model/download', async (req, res) => {
+    try {
+      const body = await readJsonBody(req);
+      const bot = nsBot(String((body && body.ns) || ''));
+      const dir = localModelDirOf(bot);
+      mkdirSync(join(dir, 'onnx'), { recursive: true });
+      const done = [];
+      for (const rel of LOCAL_MODEL_FILES) {
+        const dest = join(dir, rel);
+        if (existsSync(dest)) { done.push(rel + ': 已存在'); continue; }
+        let lastErr = '';
+        let ok = false;
+        for (const base of LOCAL_MODEL_BASES) {
+          try { await downloadFile(base + '/' + rel, dest); ok = true; lastErr = ''; break; }
+          catch (e) { lastErr = String((e && e.message) || e); }
+        }
+        if (!ok) return writeJson(res, 500, { ok: false, error: `${rel} 下载失败: ${lastErr}`, done, modelDir: dir });
+        done.push(rel + ': OK');
+      }
+      writeJson(res, 200, { ok: true, done, modelDir: dir });
+    } catch (e) { writeJson(res, 500, { ok: false, error: String((e && e.message) || e) }); }
+  });
+  // 价值样例库读写(2026-09-13 主人定): {dataRoot}/.qqbot/value-samples.jsonl —— 用户可直接编辑
+  function valueSamplesPathOf(bot) {
+    const dataRoot = (bot && bot.cfg && typeof bot.cfg.dataRoot === 'string' && bot.cfg.dataRoot)
+      ? bot.cfg.dataRoot
+      : ((bot && bot.cwd) || '');
+    return dataRoot ? join(dataRoot, '.qqbot', 'value-samples.jsonl') : '';
+  }
+  route(ctx, 'GET', '/api/qqbot-settings/value-samples', async (req, res) => {
+    try {
+      const u = new URL(req.url ?? '/', 'http://x');
+      const p = valueSamplesPathOf(nsBot(NSQ(u)));
+      if (!p) return writeJson(res, 400, { ok: false, error: '找不到数据目录' });
+      const exists = existsSync(p);
+      const text = exists ? readFileSync(p, 'utf8') : '';
+      const lines = text.split('\n').filter((l) => l.trim());
+      let pos = 0;
+      let neg = 0;
+      let bad = 0;
+      for (const l of lines) {
+        try { const o = JSON.parse(l); if (o.y === 1) pos += 1; else neg += 1; } catch { bad += 1; }
+      }
+      writeJson(res, 200, { ok: true, text, total: lines.length, pos, neg, bad, isDefault: !exists, path: p });
+    } catch (e) { writeJson(res, 500, { ok: false, error: String((e && e.message) || e) }); }
+  });
+  route(ctx, 'POST', '/api/qqbot-settings/value-samples', async (req, res) => {
+    try {
+      const body = await readJsonBody(req);
+      const p = valueSamplesPathOf(nsBot(String((body && body.ns) || '')));
+      if (!p) return writeJson(res, 400, { ok: false, error: '找不到数据目录' });
+      const lines = String((body && body.text) || '').split('\n').filter((l) => l.trim());
+      const bad = [];
+      const clean = [];
+      lines.forEach((l, i) => {
+        try {
+          const o = JSON.parse(l);
+          const m = String(o && o.m ? o.m : '').trim();
+          if (!m) throw new Error('缺 m 字段');
+          clean.push(JSON.stringify({ m, y: o.y === 1 ? 1 : 0, src: typeof o.src === 'string' ? o.src : 'manual' }));
+        } catch (e) { bad.push(`第${i + 1}行 ${String((e && e.message) || e)}`); }
+      });
+      if (bad.length) return writeJson(res, 400, { ok: false, error: `有 ${bad.length} 行格式不对 → ${bad.slice(0, 3).join('; ')}` });
+      mkdirSync(dirname(p), { recursive: true });
+      writeFileSync(p, clean.join('\n') + (clean.length ? '\n' : ''), 'utf8');
+      const pos = clean.filter((l) => JSON.parse(l).y === 1).length;
+      writeJson(res, 200, { ok: true, saved: clean.length, pos, neg: clean.length - pos, path: p });
+    } catch (e) { writeJson(res, 500, { ok: false, error: String((e && e.message) || e) }); }
+  });
+  // 「让ai写」(2026-09-13 主人要的): 模拟一条用户消息唤醒她(照抄定时任务的做法: 伪造 msg → handleInbound)
+  route(ctx, 'POST', '/api/qqbot-settings/value-samples/let-ai-write', async (req, res) => {
+    try {
+      const body = await readJsonBody(req);
+      const ns = String((body && body.ns) || '');
+      const mod = await import('@zaofan/dsh-qqbot/channel-tools');
+      if (typeof mod.askAiToWriteSamples !== 'function') {
+        return writeJson(res, 500, { ok: false, error: '线上插件还是旧版本(需重启宿主加载新代码)' });
+      }
+      const scope = String((body && body.scope) || 'group') === 'c2c' ? 'c2c' : 'group';
+      let peerId = String((body && body.peerId) || '');
+      if (!peerId) {
+        // 兜底(免得非要先选目标): 从最近评分记录里取最近活跃的群
+        try {
+          const b2 = nsBot(ns);
+          const dr = (b2 && b2.cfg && typeof b2.cfg.dataRoot === 'string' && b2.cfg.dataRoot) ? b2.cfg.dataRoot : ((b2 && b2.cwd) || '');
+          const pf = dr ? join(dr, '.qqbot', 'value-scores.jsonl') : '';
+          if (pf && existsSync(pf)) {
+            const rows = readFileSync(pf, 'utf8').split('\n').filter((l) => l.trim());
+            for (let i = rows.length - 1; i >= 0; i--) {
+              try { const o = JSON.parse(rows[i]); if (o && o.gid) { peerId = String(o.gid); break; } } catch { /* 坏行跳过 */ }
+            }
+          }
+        } catch { /* 兜底失败就按"没有目标"返回 */ }
+      }
+      const r = await mod.askAiToWriteSamples(ns, scope, peerId);
+      writeJson(res, 200, r);
+    } catch (e) { writeJson(res, 500, { ok: false, error: String((e && e.message) || e) }); }
+  });
+
+  // 价值评分记录(观察期): {dataRoot}/.qqbot/value-scores.jsonl 尾 N 条
+  // gid= 时**只给该群的记录**(2026-09-13 主人要求: 评分要跟随面板"当前会话"命中的群, 与群管理页一致)
+  route(ctx, 'GET', '/api/qqbot-settings/value-scores', async (req, res) => {
+    try {
+      const u = new URL(req.url ?? '/', 'http://x');
+      const bot = nsBot(NSQ(u));
+      const gid = (u.searchParams.get('gid') || '').trim();
+      const limit = Math.max(1, Math.min(100, Number(u.searchParams.get('limit')) || 20));
+      const dataRoot = (bot && bot.cfg && typeof bot.cfg.dataRoot === 'string' && bot.cfg.dataRoot)
+        ? bot.cfg.dataRoot
+        : ((bot && bot.cwd) || '');
+      const p = dataRoot ? join(dataRoot, '.qqbot', 'value-scores.jsonl') : '';
+      if (!p || !existsSync(p)) return writeJson(res, 200, { ok: true, items: [], total: 0, totalAll: 0, gid });
+      let lines = readFileSync(p, 'utf8').split('\n').filter((l) => l.trim());
+      const totalAll = lines.length;
+      if (gid) {
+        lines = lines.filter((l) => {
+          try { return String(JSON.parse(l).gid || '') === gid; } catch { return false; }
+        });
+      }
+      const items = lines.slice(-limit).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+      writeJson(res, 200, { ok: true, items, total: lines.length, totalAll, gid });
+    } catch (e) { writeJson(res, 500, { ok: false, error: String((e && e.message) || e) }); }
+  });
+
   // 本地成员清单(官方成员列表未开放 → 用机器人见过的发言者兜底; 供禁言"选人"与成员 Tab 展示)
   route(ctx, 'GET', '/api/qqbot-settings/group/members_local', async (req, res) => {
     try {
@@ -1697,6 +1886,123 @@ export function apply(ctx) {
   function chatLocalRawUrl(p) {
     return '/api/qqbot-settings/chat/raw-media?p=' + encodeURIComponent(p);
   }
+  // ── 图片台账(兜底) ──────────────────────────────────────────────────────────
+  // 格式与 dist/features/image-url-ledger.js 完全一致: `{表情包目录}/image-url-ledger.jsonl`,
+  //   一行一条 {id,url,at}; 查表从后往前取最新的那条。上限 1000 条(写侧维护)。
+  // ⚠️ 渲染链是同步的 → 这里自带一份**同步只读**实现(按 mtime+size 缓存), 不去 await 那个模块。
+  const CHAT_LEDGER_NAME = 'image-url-ledger.jsonl';
+  const chatLedgerCache = new Map();
+  // `…\表情包\lib\candidate\x.jpg` → `…\表情包`(找不到 lib 段就退回上一级)
+  function chatLedgerDirOf(imgPath) {
+    const p = String(imgPath || '');
+    const s = p.indexOf('\\') >= 0 ? '\\' : '/';
+    const parts = p.split(/[\\/]/);
+    const i = parts.lastIndexOf('lib');
+    return i > 0 ? parts.slice(0, i).join(s) : dirname(p);
+  }
+  function chatLedgerIndex(dir) {
+    const file = join(dir, CHAT_LEDGER_NAME);
+    let key = 'missing';
+    try { const st = statSync(file); key = st.mtimeMs + ':' + st.size; } catch (e) { /* 台账还没建 */ }
+    const hit = chatLedgerCache.get(file);
+    if (hit && hit.key === key) return hit.index;
+    const index = new Map();
+    try {
+      for (const line of readFileSync(file, 'utf8').split('\n')) {
+        const s = line.trim();
+        if (!s) continue;
+        try {
+          const o = JSON.parse(s);
+          if (o && o.id && o.url) index.set(String(o.id), String(o.url)); // 后出现的覆盖 = 最新链接
+        } catch (e) { /* 坏行跳过 */ }
+      }
+    } catch (e) { /* 没有台账文件 */ }
+    chatLedgerCache.set(file, { key, index });
+    return index;
+  }
+  // 图片文件路径 → 台账里的 QQ 链接(查不到返回 '')
+  function chatLedgerImageUrl(imgPath) {
+    try {
+      const id = chatSrcShortName(imgPath).replace(/\.[a-z0-9]{1,6}$/i, '');
+      if (!id) return '';
+      return chatLedgerIndex(chatLedgerDirOf(imgPath)).get(id) || '';
+    } catch (e) { return ''; }
+  }
+  // 反向: QQ 链接 → { id, dir } —— 历史消息里那条链接以前被我们收进过图库, 现在还能对上号,
+  //   就说明**本地有这张图** → 前端可以改走本地(sticker-img / raw-media), 不必依赖会过期的 rkey。
+  function chatLedgerDirs() {
+    const dirs = new Set();
+    for (const k of chatLedgerCache.keys()) dirs.add(dirname(k));
+    try { const dd = getStickerStore().dataDir; if (dd) dirs.add(String(dd)); } catch (e) { /* 图库不可用 */ }
+    return [...dirs];
+  }
+  function chatLedgerOfUrl(url) {
+    const u = String(url || '');
+    if (!/^https?:\/\//i.test(u)) return null;
+    for (const dir of chatLedgerDirs()) {
+      const idx = chatLedgerIndex(dir);
+      for (const [id, link] of idx) if (link === u) return { id, dir };
+    }
+    return null;
+  }
+  // 图库 id → 同源缩略图接口(sticker-img 按 id 解析, 与所在层无关)
+  function chatStickerImgUrl(id, stickerDir) {
+    if (!id) return '';
+    return '/api/qqbot-settings/sticker-img?id=' + encodeURIComponent(id)
+      + (stickerDir ? '&dataDir=' + encodeURIComponent(stickerDir) : '');
+  }
+  // 图库里的真实路径: 文件名就是图库 id, 但**文件会搬层**(candidate→library→trash),
+  //   消息里记的是"当时"的路径 → 这里问 store 拿当前路径(2026-09-13 主人实测的 [图加载失败] 就是这个)
+  function chatStickerRealPath(imgPath) {
+    try {
+      const id = chatSrcShortName(imgPath).replace(/\.[a-z0-9]{1,6}$/i, '');
+      if (!/^[0-9a-f]{6,}$/i.test(id)) return '';
+      const dir = chatLedgerDirOf(imgPath);
+      const store = getStickerStore(dir);
+      if (!store || typeof store.get !== 'function' || !store.get(id)) return '';
+      const p = typeof store.pathOf === 'function' ? store.pathOf(id) : '';
+      return p && chatLocalFileExists(p) ? p : '';
+    } catch (e) { return ''; }
+  }
+  function chatLocalFileExists(p) {
+    try { return statSync(p).isFile(); } catch (e) { return false; }
+  }
+  // 附件行里的**本机目标**(2026-09-13 主人要求: dock 聊天界面图片要同时兼容 url 与本地路径/图库链接)
+  //   背景: 入站消息的图片从 QQ 链接改成本地路径后(`- Image: 名 (1086×1448) → D:\…\a.jpg`),
+  //   dock 里图片直接不显示了 —— 这里把本机目标转成同源直出 URL 给 <img> 用。
+  //   支持三种: ① Windows 绝对路径 ② /api/qqbot-settings/... 本插件接口(含 sticker-img?id=)
+  //   ③ 其它绝对路径(POSIX)。返回 { url, kind, name, fb } 或 null。
+  //   顺序: ①图库查**当前真实路径**(搬层也能对上) ②文件不在 → 台账 QQ 链接 ③都不行 → 原路径(前端再兜)
+  function chatLocalTargetOf(raw, hasVoiceCtx) {
+    const l = String(raw || '');
+    // 优先取 "→ " 之后到行尾(路径里可能有空格); 没有箭头就在行内找绝对路径
+    const arrow = l.match(/→\s*([\s\S]+?)\s*$/);
+    let cand = arrow ? arrow[1].trim() : '';
+    if (!cand) {
+      const m2 = l.match(/([A-Za-z]:[\\/][^\s]+)/);
+      cand = m2 ? m2[1] : '';
+    }
+    if (!cand) return null;
+    // ① 已经是本插件自己的接口路径 → 原样用(相对路径, 浏览器同源能取)
+    if (/^\/api\/qqbot-settings\//i.test(cand)) {
+      return { url: cand, kind: chatAttachmentKind(l, hasVoiceCtx, undefined) || 'image', name: chatSrcShortName(cand), fb: '' };
+    }
+    // ② 本机文件 → 先问图库拿**当前真实路径**(candidate→library 搬层后, 消息里那条路径已失效 ——
+    //   主人实测的 [图加载失败] 就是这么来的), 文件真不在才退台账的 QQ 链接
+    if (!/^[A-Za-z]:[\\/]/.test(cand) && !/^\\\\/.test(cand) && !cand.startsWith('/')) return null;
+    const lk = chatLocalExtKind(cand) || chatAttachmentKind(l, hasVoiceCtx, undefined) || 'image';
+    const realPath = chatStickerRealPath(cand);
+    const usePath = realPath || cand;
+    const alive = chatLocalFileExists(usePath);
+    const qqUrl = chatLedgerImageUrl(cand) || chatLedgerImageUrl(usePath);
+    const sid = (chatSrcShortName(cand).match(/^([0-9a-f]{6,})\.[a-z0-9]{1,6}$/i) || [])[1] || '';
+    return {
+      url: (!alive && qqUrl) ? qqUrl : chatLocalRawUrl(usePath),
+      fb: alive ? (qqUrl || chatStickerImgUrl(sid, chatLedgerDirOf(usePath))) : '',
+      kind: lk,
+      name: chatSrcShortName(cand),
+    };
+  }
   // 附件行/URL 归属类型: 行内**显式类型标签**优先, 其次文件名/URL fname 扩展名, 最后行标签与上下文
   // ⚠️ 2026-09-10 根因修复(主人实测: "视频还是附件形式, 图片也变成附件了"):
   //   QQ 群聊里图片/视频的 content_type 实测可能是 `'file'`(不是 image/jpeg) —— 官方取值表:
@@ -1762,7 +2068,12 @@ export function apply(ctx) {
       const lp = raw.match(/^([A-Za-z]:[\\/].+)$/);
       if (lp) {
         const lk = chatLocalExtKind(lp[1]);
-        if (lk) { images.push({ url: chatLocalRawUrl(lp[1]), kind: lk }); continue; }
+        if (lk) {
+          const rp = chatStickerRealPath(lp[1]) || lp[1];  // 图库搬层也能对上当前路径
+          const led = lk === 'image' ? chatLedgerImageUrl(lp[1]) : '';
+          images.push({ url: chatLocalRawUrl(rp), kind: lk, fb: led });
+          continue;
+        }
       }
       // 附件描述行: "- Image: …" / "- Video: …" / "- Voice: …" / "- File: …" / "- Attachment URLs: …"
       //            / "[图片: …]" / "[视频: …]" / "[附件: …]" / "[Attachment: name -> …]" / Layer1 的英文标签行
@@ -1772,8 +2083,22 @@ export function apply(ctx) {
         for (const u of urls) {
           const k = chatAttachmentKind(raw, hasVoiceCtx, undefined);
           // 图片/音频须是 QQ 媒体域; 文件(ftn.qq.com 等任意域)直接收
+          // ⚠️ 图片带兜底: 这条链接以前被收进过图库 → 本地有文件, rkey 过期了也能显示(fb → sticker-img)
+          const led = k === 'image' ? chatLedgerOfUrl(u) : null;
+          const fb = led ? chatStickerImgUrl(led.id, led.dir) : '';
           if (k === 'file') { images.push({ url: u, kind: 'file', name: chatFileDisplayName(u) }); got++; }
-          else if (QQ_MEDIA_RE.test(u)) { images.push({ url: u, kind: k }); got++; }
+          else if (QQ_MEDIA_RE.test(u)) { images.push({ url: u, kind: k, fb }); got++; }
+        }
+        if (!got) {
+          // ⚠️ 2026-09-13 新增(主人实测: "web 界面出问题了/图片不显示了"): 目标可能是**本机路径**
+          //   —— 图片入站改成给本地路径(`- Image: 名 (1086×1448) → D:\…\lib\candidate\x.jpg`)后,
+          //   这里原来只认 http(s) URL, 于是图片被当成文本丢掉。现在转成同源直出 URL 正常显示。
+          const lt = chatLocalTargetOf(raw, hasVoiceCtx);
+          if (lt) {
+            if (lt.kind === 'file') images.push({ url: lt.url, kind: 'file', name: lt.name || '文件', fb: lt.fb || '' });
+            else images.push({ url: lt.url, kind: lt.kind, fb: lt.fb || '' });
+            got += 1;
+          }
         }
         if (!got) {
           // Layer 1 的英文描述行(`[Image: 名 800×600]` / `[Video: 名]` / `[File: 名 (1.2MB)]`)不含 URL,
@@ -1788,17 +2113,24 @@ export function apply(ctx) {
         }
         continue;
       }
-      // 整行就是一个 QQ 媒体 URL(纯图片/音频消息体) → 当媒体
+      // 整行就是一个 QQ 媒体 URL(纯图片/音频消息体) → 当媒体(图片同样带本地兜底)
       const urls = raw.match(QQ_URL_RE) || [];
       if (urls.length === 1 && QQ_MEDIA_RE.test(raw) && raw === urls[0]) {
-        images.push({ url: urls[0], kind: chatAttachmentKind(raw, hasVoiceCtx, 'image') });
+        const k1 = chatAttachmentKind(raw, hasVoiceCtx, 'image');
+        const led1 = k1 === 'image' ? chatLedgerOfUrl(urls[0]) : null;
+        images.push({ url: urls[0], kind: k1, fb: led1 ? chatStickerImgUrl(led1.id, led1.dir) : '' });
         continue;
       }
       // 普通行: 行内嵌的 QQ 媒体长 URL 抽走(防撑爆气泡), 其余保留
       if (urls.length) {
         let rest = raw;
         for (const u of urls) {
-          if (QQ_MEDIA_RE.test(u)) { images.push({ url: u, kind: chatAttachmentKind(raw, hasVoiceCtx, 'image') }); rest = rest.split(u).join(''); }
+          if (QQ_MEDIA_RE.test(u)) {
+            const k2 = chatAttachmentKind(raw, hasVoiceCtx, 'image');
+            const led2 = k2 === 'image' ? chatLedgerOfUrl(u) : null;
+            images.push({ url: u, kind: k2, fb: led2 ? chatStickerImgUrl(led2.id, led2.dir) : '' });
+            rest = rest.split(u).join('');
+          }
         }
         rest = rest.trim();
         if (rest) out.push(rest);

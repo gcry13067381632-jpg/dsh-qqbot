@@ -24,6 +24,7 @@ import { readGroupMembers } from './features/chat-ledger.js';
 import * as broadcastQueue from './features/broadcast.js';
 import { wakeSessionAgent, safeAppendUserMessage } from './features/group-hub.js';
 import { managersOf, findManagerByPeer, findManagerBySessionId } from './features/session-registry.js';
+import { handleInbound } from './transport/inbound.js';
 
 /** 诊断日志路径: 默认关闭; 需要排查时设环境变量 QQBOT_DIAG_FILE 指向日志文件 */
 const DIAG_FILE = process.env.QQBOT_DIAG_FILE || '';
@@ -425,7 +426,7 @@ export async function apply(ctx: Context): Promise<void> {
             id = r.id;
             created = r.status === 'new';
           } else if (existsSync(sticker)) {
-            const r = store.importLocalFile(sticker);
+            const r = await store.importLocalFile(sticker);   // 2026-09-13 起 async(内部要算感知哈希 dHash)
             if (r.status === 'error') return { ok: false, msg: `导入失败: ${r.error}` };
             id = r.id;
             created = r.status === 'new';
@@ -1963,5 +1964,62 @@ export async function apply(ctx: Context): Promise<void> {
   } catch (err) {
     ctx.logger?.warn?.(`[channel-tools] 扩展工具加载异常(已忽略): ${err instanceof Error ? err.message : String(err)}`);
     extDiag(`加载异常: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/**
+ * host 面板用(2026-09-13 主人要的「让ai写」按钮):
+ * **照抄定时任务的做法** —— 伪造一条消息直接调 handleInbound 唤醒该群/私聊的 AI 回合
+ * (见 features/scheduler.ts fireTask: 与 SDK 消息同形, messageId 空 → 出站自动走主动推送;
+ *  senderName 用中性名、不打假 (@you), 防污染主人交互记忆)。
+ *
+ * 为什么不复用高层轮子: wakeSessionAgent 要先配"群组管理器会话"; injectSynthetic 是塞聚合窗口(要等人停口);
+ *  而面板按钮要的是**立刻触发** —— 与"定时任务到点必须触发回合"同理, 直调 handleInbound 最贴合。
+ *
+ * host 半边(settings-host.js) 通过 import('@zaofan/dsh-qqbot/channel-tools') 调用(manager 只在插件侧)。
+ */
+export async function askAiToWriteSamples(
+  ns: string,
+  scope: 'group' | 'c2c',
+  peerId: string,
+): Promise<{ ok: boolean; msg: string }> {
+  try {
+    const managers = managersOf();
+    if (managers.length === 0) return { ok: false, msg: '还没有活跃的机器人实例' };
+    const nsOf = (m: unknown): string => String((m as { settingsNs?: string })?.settingsNs ?? '');
+    const mgr = managers.find((m) => nsOf(m) === ns) ?? managers[0];
+    if (!mgr) return { ok: false, msg: '找不到该机器人实例' };
+    if (!peerId) return { ok: false, msg: '请先在面板上方选一个群/私聊目标' };
+    const cfg = (mgr as unknown as { config?: unknown }).config;
+    if (!cfg) return { ok: false, msg: '该实例配置未就绪' };
+    const root = (mgr as unknown as { dataRoot?: string }).dataRoot || '';
+    const prompt = [
+      '【样例库维护】主人点了面板上的「让ai写(有聊天记录最好)」, 请你来维护本地小模型的"开口标准"样例库。',
+      `· 样例库(你要写的): ${root}\\.qqbot\\value-samples.jsonl —— 一行一条 {"m":"群消息文本","y":1} / y=0; 1=你会想接话, 0=你不会理`,
+      `· 评分记录(你来读): ${root}\\.qqbot\\value-scores.jsonl —— 一行一条 JSON, 字段: text=消息原文, score=本地小模型给的分, worth=是否判值得接, min=本会话门槛, gate=当时生效的模式(block=低分不唤醒/log=只记录不拦), conf=置信度(越接近1越有把握), mention=是否被@, top=最近邻样例, agg=聚合条数`,
+      '做法: ①读评分记录最近 100~200 条(用文件工具) ②挑出标注可疑的 —— 尤其 conf<0.5(地图上没这类样本)、mention=true 却 worth=false(被点名却没打算回)、内容与分数明显不符的',
+      '③对照真人群聊语境, 提炼 20~40 条新样例 ④用文件工具把它们**追加**写入样例库(不要覆盖整库) ⑤回报加了几条、都补了哪类。',
+      '样例写法(一行一条 JSON): {"m":"消息文本","y":1或0} —— y=1 她会想接话(提问/求助/@她/她接得住的梗) / y=0 她不会理(群友互聊/短应答/表情)。',
+    ].join('\n');
+    const now = new Date();
+    const pad = (n: number): string => String(n).padStart(2, '0');
+    const ts = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+    const fakeMsg = {
+      kind: scope,
+      senderId: scope === 'c2c' ? peerId : 'master',
+      senderName: '样例库维护',
+      content: `[面板任务 ${ts}] ${prompt}`,
+      messageId: '',
+      timestamp: now.toISOString(),
+      groupOpenid: scope === 'group' ? peerId : undefined,
+      msgType: 0,
+      attachments: undefined,
+    };
+    const noop = (): void => {};
+    const logger = { info: noop, warn: noop, debug: noop, error: noop } as unknown as Parameters<typeof handleInbound>[3];
+    await handleInbound(fakeMsg, mgr, cfg as Parameters<typeof handleInbound>[2], logger, undefined);
+    return { ok: true, msg: `已伪造一条消息唤醒 ${scope === 'group' ? '群' : '私聊'} …${peerId.slice(-6)} 的 AI 回合, 稍等她回复 ✧` };
+  } catch (e) {
+    return { ok: false, msg: `异常: ${e instanceof Error ? e.message : String(e)}` };
   }
 }

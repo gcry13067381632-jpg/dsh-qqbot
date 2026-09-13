@@ -10,6 +10,8 @@
  */
 import type { ContentBlock } from '@deepseek-ai/dsh-llm';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import type { SessionManager } from '../session/index.js';
 import type { ImQQBotConfig } from '../config.js';
 import type { ChatScope, Logger, RawAttachment, ReplyTarget } from '../types.js';
@@ -18,8 +20,12 @@ import { clearGroupHistory } from '../features/history-store.js';
 import { applyInjectRules } from './inject-rules.js';
 import { inferMediaKind, mediaKindLabel } from './media-kind.js';
 import { replaceBotMention, type MentionLike } from '../shared/mention-clean.js';
-import { dataRootOf } from '../gateway/data-root.js';
+import { dataRootOf, stickerDirOf } from '../gateway/data-root.js';
 import { registerMsgIndex } from './msg-index.js';
+import { createValueScorer, appendScoreLog } from '../features/value-score.js';
+import { getStickerStore, computeDHash } from '../features/sticker-store.js';
+import { lookupImagePath, rememberImagePath } from '../features/image-path-cache.js';
+import { recordImageUrl } from '../features/image-url-ledger.js';
 
 // ── 类型定义 ──
 
@@ -71,6 +77,9 @@ interface MiddlewareState {
   aggregated?: boolean;
   processedAttachments?: ProcessedAttachment[];
   downloadedFiles?: DownloadedFile[];
+  /** 群回复冷却回滚(2026-09-13 主人要求"没产生回复就不该消耗冷却"):
+   *  上游(冷却中间件/debounce 批派发)戳冷却时挂上它, 下游判定"本次没回复"就调 restore() 还回去 */
+  qqCooldownRollback?: { prev?: number; restore: () => void };
   [key: string]: unknown;
 }
 
@@ -145,7 +154,7 @@ export async function handleInbound(
     agentBody = `[当前时间 ${_now.getFullYear()}-${_p(_now.getMonth() + 1)}-${_p(_now.getDate())} ${_wd} ${_p(_now.getHours())}:${_p(_now.getMinutes())}]\n\n${agentBody}`;
   }
 
-  logger.info(`Processing: scope=${scope} peerId=${peerId} body="${agentBody.slice(0, 200)}"`);
+  logger.debug(`Processing: scope=${scope} peerId=${peerId} body="${agentBody.slice(0, 200)}"`);
 
   // ── 获取或创建会话 ──
   let record;
@@ -176,12 +185,253 @@ export async function handleInbound(
   }
 
   // ── 构建 UserMessage → followup / (nothink) append 不唤醒 ──
-  const content: ContentBlock[] = [{ type: 'text' as const, text: agentBody }];
+  // ⚠️ 2026-09-13 修(主人问"你看到了吗"): 图片预检提示是在**下面的评分段**才追加到 agentBody 的,
+  //    而这里 message 早就创建好了(用旧文本) → 提示改了变量却没进上下文。故 message 改为 let,
+  //    评分段若追加过提示会重建一次(见后面 `message = createUserMessage(...)`)。
+  let content: ContentBlock[] = [{ type: 'text' as const, text: agentBody }];
 
-  const message = createUserMessage({
+  let message = createUserMessage({
     content,
     source: { kind: 'user' as const },
   });
+
+  // ── 本地小模型价值评分(2026-09-13 主人定, 零 token) ──
+  // 群聊消息先本地打分: log=只记录分数(观察期, 不改行为) / block=低分不唤醒(消息仍 append 进上下文, 不丢)
+  // ⚠️ 2026-09-13 会话级(主人要求"单会话设置就得能单独设"): 先算**本会话生效值** ——
+  //    localModel.overrides["group:<gid>"] 优先, 没有则继承账号级默认。
+  {
+    const lmCfg = config.localModel;
+    const ovKey = `${scope}:${peerId}`;
+    const ovRaw = (lmCfg?.overrides && typeof lmCfg.overrides === 'object'
+      ? (lmCfg.overrides as Record<string, { enabled?: boolean; valueGate?: 'off' | 'log' | 'block'; valueMinScore?: number }>)[ovKey]
+      : undefined) || {};
+    const gate = ovRaw.valueGate ?? lmCfg?.valueGate ?? 'log';
+    const minScore = typeof ovRaw.valueMinScore === 'number'
+      ? ovRaw.valueMinScore
+      : (typeof lmCfg?.valueMinScore === 'number' ? lmCfg.valueMinScore : 0.5);
+    const lmOn = (ovRaw.enabled ?? lmCfg?.enabled) !== false;
+    if (scope === 'group' && lmOn && gate !== 'off') {
+      const mentioned = mwState.mention?.wasMentioned === true;
+      try {
+        const scorer = createValueScorer({
+          dataRoot: dataRootOf(config),
+          modelDir: lmCfg?.modelDir || undefined,
+          logger,
+        });
+        scorer.warmup();   // 后台预热(幂等): 首次入站不等两次加载, 之后零开销
+        // 评分输入清洗(2026-09-13 主人定): 剥掉合并转发/引用块的结构标记, 只留真实语义。
+        // 引用消息的**被引用原文**单独算一次分, 与当前消息取较高者(她在回应那句话 → 往往也需要她参与)。
+        const rawContent = String(msg.content || '');
+        const qm = /\[Quoted message begins\]([\s\S]*?)\[Quoted message ends\]/i.exec(rawContent);
+        const currentRaw = qm ? rawContent.replace(qm[0], ' ') : rawContent;
+        const plain = cleanTextForScore(currentRaw);
+        const quotedPlain = qm ? cleanTextForScore(qm[1] ?? '') : '';
+        // ── 图片消息(2026-09-13 主人定 a+b + B预检) ──
+        // 小模型只认文字 → 图片本身没法直接评分。三条路都用上:
+        //   a) 纯图片也**记一条**(标 📷, 不可评分, 默认不拦)
+        //   b) 图**已在库** → 借它的 tags+desc 当文字评分(零成本; 能判出"这张她会接")
+        //   B) 注入提示: 已收藏过/新图 —— ⚠️ 实测 QQ 的 fileid **也会变**(2026-09-13 主人重发同图暴露,
+        //      两次 fileid 只有前 40 字符相同) → 唯一恒定的是**图片字节哈希**(库 id = sha1 前 12 位),
+        //      所以预检 = 下载到临时文件 → sha1 → 查库 → 用完删。
+        // 图片 URL 收集(2026-09-13 主人三次实测后定稿): 不再按格式逐种匹配 —— 附件/正文/历史/合并转发
+        // 各有各的写法, 直接**认 QQ 多媒体 URL 特征**(multimedia.nt.qq.com.cn/download?...fileid=)最稳。
+        const imgUrls: string[] = [];
+        const collectImg = (text: string): void => {
+          const re = /https:\/\/multimedia\.nt\.qq\.com\.cn\/download\?[^\s\]）)]+/g;
+          let m: RegExpExecArray | null;
+          while ((m = re.exec(text)) !== null) {
+            const u = m[0];
+            if (!imgUrls.includes(u)) imgUrls.push(u);
+          }
+        };
+        // ① 当前消息的附件
+        for (const a of (Array.isArray(msg.attachments) ? msg.attachments : [])) {
+          const at = a as { url?: string; content_type?: string };
+          const u = String(at?.url ?? '').trim();
+          if (u && (/image/i.test(String(at?.content_type ?? '')) || /download\?/.test(u)) && !imgUrls.includes(u)) {
+            imgUrls.push(u);
+          }
+        }
+        // ② 当前消息正文(合并转发/引用会把图写在文本里)
+        collectImg(String(msg.content || ''));
+        // ③ 历史里(聚合把图算进 history 时)
+        for (const h of (Array.isArray(mwState.history) ? mwState.history : [])) {
+          collectImg(String((h as { content?: string })?.content ?? ''));
+        }
+        const firstImg = imgUrls[0] || '';
+        let libItem: { tags?: string[]; desc?: string } | undefined;
+        if (firstImg) {
+          // 内容哈希预检(2026-09-13 改): 直接 https 拿 Buffer → sha1(精确) → 不中再 dHash(容错) → 查库。
+          // 不再走 attachment.ts 的 download()(带 SSRF 防护, 在宿主里静默失败) 也不落临时文件; 失败留日志。
+          try {
+            const store = getStickerStore(stickerDirOf(config));
+            // 收藏中间件已经把图落盘了 → 直接读盘算哈希, 省掉重复下载(2026-09-13)
+            const localP = lookupImagePath(firstImg, logger);
+            let buf: Buffer | undefined;
+            if (localP) {
+              try { buf = readFileSync(localP); } catch { buf = undefined; }
+            }
+            if (!buf || buf.length === 0) buf = await fetchImageBuffer(firstImg);
+            if (buf && buf.length > 0) {
+              const id = createHash('sha1').update(buf).digest('hex').slice(0, 12);
+              let hit = store.get(id) as unknown as { id?: string; tags?: string[]; desc?: string } | undefined;
+              // 逐字节不同但"看起来一样"(QQ 重压缩/改尺寸/转格式)? → 用**感知哈希**dHash 再查一次
+              // ⚠️ 2026-09-13 主人定: 相似匹配**只看正式库(library)** ——
+              //    候选区全是自动下载的图, 拿它们判"像不像"毫无意义还会误报。
+              const exactId = hit?.id;
+              if (!hit) {
+                const dh = await computeDHash(buf);
+                if (dh) hit = store.findByDHash(dh, 5, 'library') as unknown as { id?: string; tags?: string[]; desc?: string } | undefined;
+              }
+              libItem = hit;
+              // 命中(这张图库里/候选区早就有) → 把它**已有的本地文件**记进缓存:
+              //   这条消息就能直接写本地路径, 不用等这次下载, 也不用重复下(2026-09-13)
+              if (hit?.id) {
+                const p = store.pathOf(hit.id);
+                if (p) rememberImagePath(firstImg, p);
+                // 台账兜底: 只有 sha1 精确命中才刷新「id → QQ 链接」——
+                //   dHash 命中的是"看着像"的另一张, 拿它的链接会张冠李戴(保留旧链接更安全)
+                if (hit.id === exactId) recordImageUrl(stickerDirOf(config), hit.id, firstImg);
+              }
+            } else {
+              logger.warn(`im-qqbot: 图片预检下载失败(跳过判重): ${firstImg.slice(0, 70)}…`);
+            }
+          } catch (e) {
+            logger.warn(`im-qqbot: 图片预检异常(跳过判重): ${e instanceof Error ? e.message : String(e)}`);
+          }
+        }
+        // b) 借库标签: 无文字但有库标签 → 用标签+描述当评分文本
+        const libText = libItem ? [...(libItem.tags ?? []), libItem.desc ?? ''].filter(Boolean).join(' ').trim() : '';
+        // 评分: ① 当前消息正文 ② 被引用原话(取较高) ③ 都没有但图在库 → 借库标签 ④ 纯图 → 无分
+        let sc = plain ? await scorer.score(plain) : undefined;
+        let scText = plain;
+        if (quotedPlain) {
+          const qsc = await scorer.score(quotedPlain);
+          if (qsc && (!sc || qsc.score > sc.score)) { sc = qsc; scText = `[被引用的原话] ${quotedPlain}`; }
+        }
+        if (!sc && libText) {
+          sc = await scorer.score(libText);
+          if (sc) scText = `[图片·库内: ${libText.slice(0, 60)}]`;
+        }
+        if (!sc && firstImg) scText = '[图片]';
+        let aggCount = 0;
+        // B) 预检提示: 图片消息附一句 —— ⚠️ **只在真·有信息量时才提示**(2026-09-13 主人定):
+        //    候选区(candidate)是插件自动下载的默认状态, 每张图都会落进去 →
+        //    提示它纯属噪音, 所以候选区/新图**一律不提示**; 只提示「已收藏过」和「在回收站」。
+        if (firstImg) {
+          const lb = libItem as unknown as { layer?: string; tags?: string[] } | undefined;
+          const tg = (lb?.tags ?? []).join('/') || '无';
+          const hint = lb?.layer === 'library'
+            ? `\n[这张图你已收藏过(标签: ${tg}) —— 不用再收藏]`
+            : lb?.layer === 'trash'
+              ? '\n[这张图在回收站里(之前清掉的) —— 想用就还原它]'
+              : '';
+          if (hint) {
+            agentBody = `${agentBody}${hint}`;
+            // ⚠️ 提示是在 message 创建之后追加的 → 必须重建 message, 否则这句进不了上下文(2026-09-13 修)
+            content = [{ type: 'text' as const, text: agentBody }];
+            message = createUserMessage({ content, source: { kind: 'user' as const } });
+          }
+        }
+        // 聚合/批派发时"取最高"(2026-09-13 主人问): 窗口里可能有多条(如「哈哈哈」+「帮我看看这个报错」),
+        // 只算"当前那条"会漏掉窗口里真正需要她的那条 → 对窗口内最近几条也打分, 取最高分那条为准。
+        if ((mwState.aggregated === true || mwState.batchDispatch === true) && Array.isArray(mwState.history)) {
+          // ⚠️ 2026-09-13 修: 这里之前直接拿 history 的**原始文本**评分 → 合并转发/引用块的格式元数据
+          //    又混进来了(实测记录里 text 是 `[群聊的聊天记录] === 消息 1 ===…`)。统一过清洗。
+          const extras = mwState.history
+            .map((h) => cleanTextForScore(String(h.content ?? '')))
+            .filter(Boolean)
+            .slice(-5);
+          aggCount = extras.length;
+          const others = await Promise.all(extras.map((t) => scorer.score(t)));
+          others.forEach((o, i) => {
+            if (!o) return;
+            if (!sc || o.score > sc.score) { sc = o; scText = extras[i] ?? scText; }
+          });
+        }
+        // 记录: 有分数→正常记; 纯图片无分数→也记一条(标 img, 让"图片也在观察范围"看得见)
+        if (sc || firstImg) {
+          // 会话级门槛: 用本会话算出的 minScore 判定(不是 scorer 内部的默认值); 无分(纯图)视作放行
+          const worth = sc ? sc.score >= minScore : true;
+          appendScoreLog(dataRootOf(config), {
+            gid: msg.groupOpenid ?? '',
+            sender: msg.senderName || msg.senderId,
+            mention: mentioned,
+            score: sc ? Math.round(sc.score * 1000) / 1000 : undefined,
+            worth,
+            min: minScore,
+            gate,   // 2026-09-13 加: 记下**当时生效的模式**(排查"为什么低分还回话"必需; 以前只记 min, log/block 分不出来)
+            img: firstImg ? true : undefined,
+            lib: libItem ? true : undefined,
+            conf: sc ? Math.round(sc.confidence * 1000) / 1000 : undefined,
+            agg: aggCount || undefined,
+            top: sc ? sc.top.map((n) => `${n.m.slice(0, 14)}|${n.y}|${n.s.toFixed(2)}`) : undefined,
+            text: scText.slice(0, 120),
+          });
+          if (sc) {
+            logger.debug(`im-qqbot: 价值评分 ${sc.score.toFixed(3)} worth=${worth} min=${minScore} gate=${gate} conf=${sc.confidence.toFixed(2)} mention=${mentioned} agg=${aggCount} "${scText.slice(0, 40)}"`);
+          }
+          // block 模式: 低分 且 未被 @ 且 **不带图** → 不唤醒(append 进上下文, 消息不丢)
+          // ⚠️ 2026-09-13 主人定稿: **取消低置信保护** —— 被 @ 的永远放行, 其余一律只看分数。
+          //
+          // ⚠️ 2026-09-13 三次修(主人问"图片的消息不受影响吧" —— 查记录发现**真的受影响**):
+          //    纯图片(sc 为空)本来就不拦, 但**库里已有的图**会借库标签当评分文本 → 因此有分数,
+          //    而且那个分数往往是低分(实测: 【表情: 微笑】+库内图 = 0.022) → 被拦掉。
+          //    这跟"群友发图往往是给她看/求接梗"的初衷完全相反 ⇒ 现在**只要带图就一律不拦**
+          //    (分数照记, 便于主人观察; 只是不拿它做拦截判定)。
+          if (sc && gate === 'block' && !mentioned && !worth && !firstImg) {
+            const ag = record.agent as unknown as {
+              whenIdle?: () => Promise<void>;
+              session?: { append?: (type: string, data: unknown, opts?: { surfaceOp?: string }) => unknown };
+            } | undefined;
+            const sess = ag?.session;
+            let appended = false;
+            if (sess && typeof sess.append === 'function') {
+              if (typeof ag?.whenIdle === 'function') {
+                try { await Promise.race([ag.whenIdle(), new Promise((r) => setTimeout(r, 60_000))]); } catch { /* 超时继续追加 */ }
+              }
+              try {
+                sess.append('user/message', message, { surfaceOp: 'append' });
+                appended = true;
+              } catch (err) {
+                logger.warn(`[价值评分] 低分 append 失败(仍然不唤醒): ${err instanceof Error ? err.message : String(err)}`);
+              }
+            } else {
+              logger.warn('[价值评分] 低分但会话无 append 能力 —— 仍然不唤醒(这条可能不进上下文)');
+            }
+            record.lastInboundAt = Date.now();
+            logger.debug(`[价值评分] 低分不唤醒 ${sc.score.toFixed(2)}<${minScore} (gate=block, appended=${appended}): key=${scope}:${peerId} "${plain.slice(0, 30)}"`);
+            // ⚠️ 2026-09-13(主人要求"没产生回复就别消耗回复冷却"): 上游派发时戳了一枚群冷却,
+            //    既然这次**没唤醒=没回复**, 就把那枚冷却还回去 —— 否则一条低分闲聊会白让群里静默 90 秒。
+            const rb = mwState.qqCooldownRollback;
+            if (rb && typeof rb.restore === 'function') {
+              try {
+                rb.restore();
+                mwState.qqCooldownRollback = undefined;
+                logger.debug('[价值评分] 已回滚本群回复冷却(本次没产生回复)');
+              } catch (err) {
+                logger.warn(`[价值评分] 冷却回滚失败(忽略): ${err instanceof Error ? err.message : String(err)}`);
+              }
+            }
+            clearGroupHistory(config.appId, msg.groupOpenid ?? msg.senderId);
+            return;
+          }
+          if (sc && gate === 'block' && !mentioned && !worth && firstImg) {
+            logger.debug(`[价值评分] 带图消息不拦(群友发图常是给她看的) ${sc.score.toFixed(2)}<${minScore}: key=${scope}:${peerId}`);
+          }
+          if (sc && gate !== 'block' && !mentioned && !worth) {
+            // ⚠️ 提到 info(2026-09-13): 主人排查"低分为什么还回话"时, 一眼就能在控制台看到
+            //    "哦，是模式还在 log" —— 而不是靠猜。平时也就每次群消息一行, 可接受。
+            logger.debug(`[价值评分] 低分放行(模式=${gate} 不是 block 所以不拦) ${sc.score.toFixed(2)}<${minScore}${aggCount ? ` agg=${aggCount}` : ''}: key=${scope}:${peerId} "${plain.slice(0, 30)}"`);
+          }
+        }
+      } catch (e) {
+        // ⚠️ 这条是**fail-open 的可见化**: 评分环节出异常 = 照旧唤醒(不能因为打分坏了把群静音),
+        //    但必须在控制台留痕迹, 否则"低分还回话"永远查不出来。
+        logger.warn(`im-qqbot: 价值评分异常(本次照常唤醒): ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+  }
 
   // 完全不思考(nothink, 2026-09-07 主人定): QQ 入站不唤醒 LLM, 但消息仍要进入上下文。
   // 组装好的完整 agentBody(含时间戳/发送者标签/历史)以 user/message append 进会话,
@@ -200,7 +450,7 @@ export async function handleInbound(
         }
         record.lastInboundAt = Date.now();
         sess.append('user/message', message, { surfaceOp: 'append' });
-        logger.info(`[nothink] 已 append(不唤醒): key=${scope}:${peerId}`);
+        logger.debug(`[nothink] 已 append(不唤醒): key=${scope}:${peerId}`);
         // append 后同样清群历史缓存: 避免下次真人触发时把这段再打包一遍(上下文不重复)
         if (scope === 'group') {
           clearGroupHistory(config.appId, msg.groupOpenid ?? msg.senderId);
@@ -216,7 +466,7 @@ export async function handleInbound(
     record.lastInboundAt = Date.now();
     record.turnActive = true;
     record.agent.followup(message);
-    logger.info(`→ followup sent(nothink 兜底): key=${scope}:${peerId}`);
+    logger.debug(`→ followup sent(nothink 兜底): key=${scope}:${peerId}`);
     return;
   }
 
@@ -224,7 +474,7 @@ export async function handleInbound(
   // 置回合活跃(消息聚合, 2026-09-07): followup 发出即算回合开始, debounce 见忙攒消息; turn/end 由 outbound 复位
   record.turnActive = true;
   record.agent.followup(message);
-  logger.info(`→ followup sent: key=${scope}:${peerId}`);
+  logger.debug(`→ followup sent: key=${scope}:${peerId}`);
 
   // 群消息回复后清空历史缓存（避免下次 @ 时重复组包，对齐 openclaw-qqbot dispatch）
   if (scope === 'group') {
@@ -311,6 +561,65 @@ function buildUserContent(msg: ProcessedMessage, state: MiddlewareState, logger:
 }
 
 /**
+ * 图片预检专用下载(2026-09-13): 直接用 node:https 取 Buffer, **不经 attachment.ts 的 download()**
+ * —— 那个带 SSRF 防护(assertSafeHostname), 在宿主环境里会静默失败(实测: 手工 https 能下、运行时却命中不了)。
+ * 任何失败 → undefined(调用方当"判不了"处理, 绝不拦消息)。
+ */
+async function fetchImageBuffer(url: string, maxBytes = 5 * 1024 * 1024): Promise<Buffer | undefined> {
+  try {
+    const https = await import('node:https');
+    return await new Promise<Buffer | undefined>((resolve) => {
+      const req = https.get(url, { headers: { 'user-agent': 'dsh-qqbot' } }, (res) => {
+        const code = res.statusCode || 0;
+        if (code < 200 || code >= 300) { res.resume(); resolve(undefined); return; }
+        const chunks: Buffer[] = [];
+        let n = 0;
+        res.on('data', (c: Buffer) => {
+          n += c.length;
+          if (n > maxBytes) { req.destroy(); resolve(undefined); return; }
+          chunks.push(c);
+        });
+        res.on('end', () => resolve(Buffer.concat(chunks)));
+        res.on('error', () => resolve(undefined));
+      });
+      req.on('error', () => resolve(undefined));
+      req.setTimeout(15000, () => { req.destroy(); resolve(undefined); });
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 评分前清洗(2026-09-13 主人定): 合并转发/引用块会把大量**格式元数据**混进文本,
+ * 直接拿去评分 → 语义被稀释(实测一条合并消息里 90% 是 `=== 消息 1 ===`/`[发送者]`/`[附件1] 类型:…`)。
+ * 这里只剥"结构与标记", 保留真正的消息正文。
+ */
+function cleanTextForScore(raw: string): string {
+  let s = String(raw || '');
+  s = s
+    .replace(/\[Quoted message begins\]/gi, ' ')
+    .replace(/\[Quoted message ends\]/gi, ' ')
+    .replace(/\[Current message\]/gi, ' ')
+    .replace(/\[群聊的聊天记录\]/g, ' ')
+    .replace(/={2,}\s*消息\s*\d+\s*={2,}/g, ' ')      // === 消息 1 ===
+    .replace(/---\s*第\s*\d+\s*条\s*---/g, ' ')        // --- 第1条 ---
+    .replace(/\[发送者\][^\n]*/g, ' ')
+    .replace(/\[消息内容\]/g, ' ')
+    .replace(/\[消息类型\][^\n]*/g, ' ')
+    .replace(/\[关联消息\]/g, ' ')
+    .replace(/\[附件\d*\][^\n]*/g, ' ')                 // [附件1] 类型:图片 文件名:… URL:…
+    .replace(/\[图片:\s*https?:\/\/[^\]]*\]/g, ' ')      // [图片: URL]
+    .replace(/\[表情:\s*[^\]]*\]/g, ' ')
+    .replace(/\[当前时间[^\]]*\]/g, ' ')
+    .replace(/\[系统提示\][^\n]*/g, ' ')
+    .replace(/\[Chat history begins\]|\[Chat history ends\]/gi, ' ')
+    .replace(/^\s*[-·]\s*Image:[^\n]*/gim, ' ')          // - Image: xxx.jpg (550×550) → URL
+    .replace(/^\s*\[[\u4e00-\u9fa5A-Za-z]{1,8}\]\s*$/gm, ' '); // 独占一行的 [标签]
+  return s.replace(/[ \t]+/g, ' ').replace(/\n{2,}/g, '\n').trim();
+}
+
+/**
  * Layer 2: 引用消息块
  */
 function buildQuotePart(quote?: ResolvedQuote): string {
@@ -375,7 +684,7 @@ function buildDynamicCtx(msg: ProcessedMessage, state: MiddlewareState, download
   //   原来按 `content_type` 分流 —— 但 QQ 群聊里**图片/视频的 content_type 实测就是 `'file'`**,
   //   于是图片视频全被塞进 `- File:` 行, dock(chatAttachmentKind 见 `- File:`)渲染成 `📎 download`。
   //   改为按 inferMediaKind() 推断真实类型, 用**显式类型前缀**输出:
-  //     `- Image: 名 (850×651) → url` / `- Video: 名 → url` / `- Voice: 名 → url` / `- File: 名 (1.2MB) → 路径|url`
+  //     `- Image: 名 (850×651) → 本地路径|url` / `- Video: 名 → url` / `- Voice: 名 → url` / `- File: 名 (1.2MB) → 路径|url`
   //   好处: ① AI 能分清哪个 URL 是图/视频/语音(旧的纯 URL 汇总行做不到, 主人已指出);
   //        ② dock 认类型前缀 → 图片直显、视频可播、语音可放;
   //        ③ 语音的 ASR 转录在 Layer 1 的 `[Voice message] 文本` 里, 此处只给 URL(不重复)。
@@ -394,7 +703,12 @@ function buildDynamicCtx(msg: ProcessedMessage, state: MiddlewareState, download
       continue;
     }
     if (!att.url) continue;
-    lines.push(`- ${mediaKindLabel(kind)}: ${head}→ ${att.url}`);
+    // ⚠️ 2026-09-13 主人要求: 图片优先给**本地路径**(收藏中间件已落盘) ——
+    //   ① AI 要看图直接读盘, 不用再下载(QQ 的临时 URL 又长又会过期);
+    //   ② URL 那串 fileid/rkey 很长, 换成本地路径 token 也短。
+    //   没落盘(采集关闭 / 下载失败 / 超预算还没回来) → 老老实实回退原始 URL。
+    const localImg = kind === 'image' ? lookupImagePath(att.url) : undefined;
+    lines.push(`- ${mediaKindLabel(kind)}: ${head}→ ${localImg ?? att.url}`);
   }
 
   if (lines.length === 0) return '';

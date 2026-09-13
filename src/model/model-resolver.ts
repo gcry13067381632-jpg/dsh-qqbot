@@ -177,10 +177,10 @@ export class ModelResolver {
         | { listProviders(): Promise<unknown> | unknown; listModels(provider: string): Promise<readonly unknown[]> }
         | undefined;
 
-      console.log(`[model] listModels: llm=${llm ? 'found' : 'MISSING'} listProviders=${typeof llm?.listProviders} listModels=${typeof (llm as { listModels?: unknown } | undefined)?.listModels}`);
+      dbg(`[model] listModels: llm=${llm ? 'found' : 'MISSING'} listProviders=${typeof llm?.listProviders} listModels=${typeof (llm as { listModels?: unknown } | undefined)?.listModels}`);
       if (llm && typeof llm.listProviders === 'function') {
         const providers = await llm.listProviders();
-        console.log(`[model] listProviders -> ${Array.isArray(providers) ? providers.length + ' 个' : typeof providers}`);
+        dbg(`[model] listProviders -> ${Array.isArray(providers) ? providers.length + ' 个' : typeof providers}`);
         if (Array.isArray(providers)) {
           for (const p of providers) {
             const pid = typeof p === 'string' ? p : (p as { id?: string })?.id;
@@ -188,7 +188,7 @@ export class ModelResolver {
             try {
               if (typeof llm.listModels !== 'function') continue;
               const ms = await llm.listModels(pid);
-              console.log(`[model] provider=${pid} models=${Array.isArray(ms) ? ms.length : '非数组'}`);
+              dbg(`[model] provider=${pid} models=${Array.isArray(ms) ? ms.length : '非数组'}`);
               if (!Array.isArray(ms)) continue;
               for (const m of ms) {
                 const mid = (m as { id?: string })?.id;
@@ -196,13 +196,13 @@ export class ModelResolver {
                 models.push({ provider: pid, id: mid, name: (m as { name?: string })?.name || undefined });
               }
             } catch (err) {
-              console.log(`[model] provider=${pid} listModels 异常: ${err instanceof Error ? err.message : String(err)}`);
+              dbg(`[model] provider=${pid} listModels 异常: ${err instanceof Error ? err.message : String(err)}`);
             }
           }
         }
       }
     } catch (err) {
-      console.log(`[model] 宿主 llm 服务异常: ${err instanceof Error ? err.message : String(err)}`);
+      dbg(`[model] 宿主 llm 服务异常: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     // ② settings.yaml llm-pi-ai.providers(火山/豆包等, 去重)
@@ -210,7 +210,7 @@ export class ModelResolver {
       if (!models.some((x) => x.provider === m.provider && x.id === m.id)) models.push(m);
     }
 
-    console.log(`[model] listModels 合计 ${models.length} 个`);
+    dbg(`[model] listModels 合计 ${models.length} 个`);
     return models;
   }
 
@@ -283,4 +283,10 @@ export class ModelResolver {
       return undefined;
     }
   }
+}
+
+// ── 诊断输出(2026-09-13 主人要求): **默认静默** —— 插件用户不需要这些调试噪音,
+//    排障时设环境变量 DSH_QQBOT_DEBUG=1 即可全部打出来。
+function dbg(msg: string): void {
+  if (process.env.DSH_QQBOT_DEBUG) console.log(msg);
 }

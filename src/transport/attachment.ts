@@ -69,8 +69,9 @@ async function assertSafeHostname(hostname: string): Promise<void> {
   }
 }
 
-/** 安全下载：仅 HTTPS + SSRF 防护 + 大小上限 + 超时，返回下载字节数 */
-async function download(url: string, destPath: string, maxBytes: number): Promise<number> {
+/** 安全下载：仅 HTTPS + SSRF 防护 + 大小上限 + 超时，返回下载字节数。
+ *  (2026-09-13 起 export: 图片预检要复用它下载后算内容哈希 —— QQ 的 fileid/rkey 都会变, 只有字节哈希恒定) */
+export async function download(url: string, destPath: string, maxBytes: number): Promise<number> {
   const parsed = new URL(url);
   if (parsed.protocol !== 'https:') {
     throw new Error(`Only HTTPS allowed: ${parsed.protocol}`);
@@ -97,14 +98,19 @@ async function download(url: string, destPath: string, maxBytes: number): Promis
 export async function downloadFileAttachments(
   attachments: RawAttachment[] | undefined,
   cwd: string,
-  messageId: string,
+  _messageId: string,   // 保留形参(调用方按位置传): 2026-09-13 起目录名不再用 msg_id(会堆空目录)
   logger: Logger,
 ): Promise<DownloadedFile[]> {
   const files = (attachments ?? []).filter(a => a.content_type === 'file' && a.url);
   if (files.length === 0) return [];
 
-  const dir = join(cwd, '.qqbot', messageId);
-  mkdirSync(dir, { recursive: true });
+  // ⚠️ 2026-09-13 修(主人发现 `.qqbot/` 下一堆空的 ROBOT1.0_* 目录):
+  //   原来 `dir = {cwd}/.qqbot/{messageId}` 且**无条件 mkdir** —— 每条带附件的消息就建一个以 msg_id 命名的
+  //   目录, 文件太大/下载失败时目录还留着 → 无限堆空目录。改为: ①按天分目录 attachments/YYYY-MM-DD
+  //   ②**懒创建**(真要下载时才 mkdir)。
+  const day = new Date().toISOString().slice(0, 10);
+  const dir = join(cwd, '.qqbot', 'attachments', day);
+  let dirReady = false;
 
   const results: DownloadedFile[] = [];
   for (const file of files) {
@@ -117,6 +123,11 @@ export async function downloadFileAttachments(
       logger.debug(`im-qqbot: skip download (${file.size}B too large): ${file.filename}`);
       results.push({ filename: file.filename, localPath, displayPath });
       continue;
+    }
+
+    if (!dirReady) {
+      mkdirSync(dir, { recursive: true });
+      dirReady = true;
     }
 
     let bytes: number;

@@ -32,7 +32,9 @@ const LEGACY_IMAGE_RULE: InjectRuleConfig = {
     contentKeywords: [],
     matchScope: 'any',
   },
-  prompt: '上方消息包含图片链接(URL)，请直接把该URL传给桥接视觉工具（modlens_read_image / analyze_image）看图并描述内容，不要只复述链接。',
+  // ⚠️ 2026-09-13 改文案: 图片给的是**本地路径**(下载没成功时才回退成 QQ 链接) ——
+  //    所以别说死"URL"或"路径", 统一说"地址(本地路径或链接)", 两种都能覆盖。
+  prompt: '上方消息里的图片会给出地址（本地文件路径；下载失败时是 QQ 链接），请直接把它交给桥接视觉工具（modlens_read_image / analyze_image）看图并描述内容，不要只复述地址。',
 };
 
 /** 消息是否含附件图片。

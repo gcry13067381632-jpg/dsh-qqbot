@@ -301,8 +301,17 @@ export function debounceLayer(
         }
         dbg(`  merged-order=[${merged.map(m => JSON.stringify(String(m.content ?? m.msg?.content ?? '').slice(0, 16))).join(',')}] cur=${JSON.stringify(String(cur.content ?? cur.msg?.content ?? '').slice(0, 16))} hasMention=${hasMention}`);
         // 群普通(无@)批派发 → 记冷却(与群冷却中间件共享 lastDispatchAt, 防刷屏语义保留)
-        if (!hasMention) cooldownAt.set(gid, Date.now());
-        logger.info(`[debounce] flush(group ${gid}) 窗口${entries.length}条/store${storeHist.length}条 → handleInbound`);
+        // ⚠️ 2026-09-13(主人要求): 冷却要"**真产生回复**才算消耗" —— 批派发只是一次尝试,
+        //    下游可能因价值评分低分而不唤醒(没回复) → 把回滚回调一并交下去, 让它还这枚冷却。
+        if (!hasMention) {
+          const prev = cooldownAt.get(gid);
+          cooldownAt.set(gid, Date.now());
+          state.qqCooldownRollback = {
+            prev,
+            restore: () => { if (prev === undefined) cooldownAt.delete(gid); else cooldownAt.set(gid, prev); },
+          };
+        }
+        logger.debug(`[debounce] flush(group ${gid}) 窗口${entries.length}条/store${storeHist.length}条 → handleInbound`);
         await handleInbound(curMsg, manager, config, logger, state);
       } else {
         // 私聊: 无群历史缓冲, 窗口自缓冲 → 文本按序拼接 + 合并附件成一条合成消息
@@ -321,7 +330,7 @@ export function debounceLayer(
           content: textLines.join('\n'),
           attachments: allAtts.length > 0 ? allAtts : undefined,
         };
-        logger.info(`[debounce] flush(c2c ${String(base.senderId ?? '')}) ${entries.length}条 → handleInbound`);
+        logger.debug(`[debounce] flush(c2c ${String(base.senderId ?? '')}) ${entries.length}条 → handleInbound`);
         await handleInbound(merged, manager, config, logger, { aggregated: w.turnDeferred === true });
       }
     } catch (err) {
@@ -357,12 +366,12 @@ export function debounceLayer(
       w.timer = setTimeout(() => void flush(key, w as DebounceWindow), silenceMs);
       w.timer.unref?.();
       dbg(`inject ${key} n=${w.entries.length} text=${JSON.stringify(text.slice(0, 30))}`);
-      logger.info(`[debounce] 合成消息入窗 ${key}(窗口${w.entries.length}条): ${text.slice(0, 40)}`);
+      logger.debug(`[debounce] 合成消息入窗 ${key}(窗口${w.entries.length}条): ${text.slice(0, 40)}`);
       return true;
     }
     // 聚合未启用 → 退化: 立即唤醒一轮(不再聚合)
     void handleInbound(fake as never, manager, config, logger, { mention: { wasMentioned: true } } as never);
-    logger.info(`[debounce] 合成消息(聚合未启用) → handleInbound 立即唤醒: ${text.slice(0, 40)}`);
+    logger.debug(`[debounce] 合成消息(聚合未启用) → handleInbound 立即唤醒: ${text.slice(0, 40)}`);
     return true;
   });
   return async (ctx: MiddlewareContext, next: () => Promise<void>): Promise<void> => {

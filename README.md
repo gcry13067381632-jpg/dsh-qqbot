@@ -253,6 +253,75 @@ npx @deepseek-ai/dsh web --patch /path/to/dsh-qqbot/cordis.dev.yml
 
 **配置项**(Web 面板 ⑥ 可改, 见下表 `groupAdmin.*`)
 
+## 🧠 本地小模型（可选，省 token）(v1.4.5+)
+
+让插件先用一个**跑在本机的小模型**给群消息打分（「价值评分」）：分数低于门槛、又**没被 @** 的闲聊
+**直接不唤醒 AI** → 那一轮 token 就省下来了；被 @ 的永远放行，**带图的消息一律放行**（群友发图多半是给她看的）。
+
+- **模型**：`bge-small-zh-v1.5`（中文专训，ONNX 量化版 **≈ 23MB**，CPU 毫秒级，**零 token、完全离线**，不上传任何内容）
+- **位置**：`{DSH_HOME | ~/.dsh}/models/bge-small-zh/`（用户级，跨工作区共用一份；也可在配置里指别的目录）
+- **缺了也不影响使用**：检测不到模型就**自动静默关闭**评分，插件照常跑（只是不再省 token）
+
+### ① 一条命令下载（推荐）
+
+```bash
+node scripts/download-model.mjs                                   # 源码分发(在插件仓库根目录跑)
+node node_modules/@zaofan/dsh-qqbot/scripts/download-model.mjs    # npm 装的插件(npm 目录内)
+```
+
+默认**优先走国内镜像** `hf-mirror.com`（失败自动换官方源），下载完会校验体积并打印后续步骤。可选参数：
+
+```bash
+node scripts/download-model.mjs --dir "D:\models\bge-small-zh"   # 换目录(填进插件配置 localModel.modelDir)
+node scripts/download-model.mjs --source hf                       # 强制官方源
+```
+
+### ② 手动下载（就三个文件）
+
+把 `<源>` 换成 `https://hf-mirror.com` 或 `https://huggingface.co`，文件放到 `~/.dsh/models/bge-small-zh/`：
+
+| 下载地址 | 存放位置 | 体积参考 |
+|---|---|---|
+| `<源>/BAAI/bge-small-zh-v1.5/resolve/main/onnx/model_quantized.onnx` | `bge-small-zh/onnx/model_quantized.onnx` | ≈ 23MB |
+| `<源>/BAAI/bge-small-zh-v1.5/resolve/main/tokenizer.json` | `bge-small-zh/tokenizer.json` | ≈ 430KB |
+| `<源>/BAAI/bge-small-zh-v1.5/resolve/main/config.json` | `bge-small-zh/config.json` | < 1KB |
+
+Windows PowerShell 例子：
+
+```powershell
+$dir  = "$env:USERPROFILE\.dsh\models\bge-small-zh"
+$base = "https://hf-mirror.com/BAAI/bge-small-zh-v1.5/resolve/main"
+New-Item -ItemType Directory -Force "$dir\onnx" | Out-Null
+Invoke-WebRequest "$base/onnx/model_quantized.onnx" -OutFile "$dir\onnx\model_quantized.onnx"
+Invoke-WebRequest "$base/tokenizer.json"            -OutFile "$dir\tokenizer.json"
+Invoke-WebRequest "$base/config.json"               -OutFile "$dir\config.json"
+```
+
+### ③ 交给 AI 做（把下面这段直接粘给你的 AI / dsh 里的她）
+
+```text
+请帮我在本机装好 dsh 的 qqbot 插件要用的本地小模型（离线、不上传内容）：
+1. 下载 BAAI/bge-small-zh-v1.5 的三个文件到 `~/.dsh/models/bge-small-zh/`：
+   onnx/model_quantized.onnx（≈23MB）、tokenizer.json、config.json；
+   国内优先用 https://hf-mirror.com，失败再试 https://huggingface.co。
+2. 目录结构必须是：<模型目录>/onnx/model_quantized.onnx、<模型目录>/tokenizer.json、<模型目录>/config.json
+3. 下完自己校验：model_quantized.onnx ≥ 20MB、tokenizer.json ≥ 300KB；
+   也可以直接跑插件仓库里的一键脚本：`node scripts/download-model.mjs`
+4. 最后告诉我：插件设置页「本地小模型」这一项该填什么、以及三个评分模式 off / log / block 分别什么行为。
+```
+
+### 评分模式怎么选
+
+| 模式 | 行为 | 建议 |
+|---|---|---|
+| `off` | 完全不评分，所有消息照常唤醒 | 不想掺和 |
+| `log` | **只记分，不拦** | **观察期**：先跑几天，在面板「最近评分」看分准不准 |
+| `block` | 低于门槛（默认 `0.5`）**不唤醒** | 正式使用、省 token |
+
+- **会话级覆盖**：dock「⚙ 单会话设置」里可以**按群单独设**模式 / 门槛 / 开关（存 `settings.yaml` 的 `localModel.overrides`），**保存即时生效，无需重启**（v1.4.5 起）。
+- **拦截边界**：被 @ 的永远放行；带图一律放行；**只有被拦在唤醒之前**（没花 token）的那次才会**回滚**本群的回复冷却 —— 冷却本来就是用来省 token 的，token 花了就不算白花。
+- **评分记录**：`{dataRoot}/.qqbot/value-scores.jsonl`，一行一条，字段 `score / worth / gate / min / conf / mention / img / lib / agg / top`。面板能直读，也可以让 AI 读它来维护样例库（`{dataRoot}/.qqbot/value-samples.jsonl`：`{"m":"消息文本","y":1|0}`，y=1 表示"她会想接话"）。
+
 ## 配置项
 
 | 配置 | 类型 | 默认值 | 说明 |
