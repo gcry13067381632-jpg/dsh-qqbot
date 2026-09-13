@@ -4,6 +4,8 @@ An **enhanced fork** of the QQ Bot IM plugin for [deepseek-harness](https://gith
 
 📦 Repo: [gcry13067381632-jpg/dsh-qqbot](https://github.com/gcry13067381632-jpg/dsh-qqbot) (forked from [tencent-connect/dsh-qqbot](https://github.com/tencent-connect/dsh-qqbot))
 
+> ⭐ **If it works well for you, please star the repo** — it is the only visible signal that someone is using it, and it keeps the project going.
+
 [中文文档](./README.md) | English
 
 ## 🐋 This fork (enhanced edition)
@@ -407,6 +409,10 @@ pnpm dev
 export QQBOT_APPID="xxx" QQBOT_SECRET="xxx"
 npx @deepseek-ai/dsh web --patch /path/to/dsh-qqbot/cordis.dev.yml
 ```
+
+## Support
+
+If this plugin saved you some tokens — or made your QQ bot feel alive — a **⭐ Star** is the most concrete way to say thanks. Bugs and feature requests: [Issues](https://github.com/gcry13067381632-jpg/dsh-qqbot/issues).
 
 ## License
 
