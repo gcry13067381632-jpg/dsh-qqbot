@@ -129,3 +129,24 @@ export function lookupImageUrl(stickerDir: string, idOrPath: string): string | u
 export function lookupImageUrlByPath(imgPath: string): string | undefined {
   return lookupImageUrl(stickerDirFromImagePath(imgPath), imgPath);
 }
+
+// ── 反向查: QQ 链接 → 图库 id（省 token: 历史里那条几百字符的长链接能换成短标记/本地路径） ──
+const revCache = new Map<string, { key: string; rev: Map<string, string> }>();
+
+/** QQ 链接 → 图库 id（查不到返回 undefined; 反向索引按 mtime/size 缓存） */
+export function lookupStickerIdByUrl(stickerDir: string, url: string): string | undefined {
+  const u = String(url || '');
+  if (!/^https?:\/\//i.test(u)) return undefined;
+  const file = ledgerFileOfStickerDir(stickerDir);
+  let key = 'missing';
+  try {
+    const st = statSync(file);
+    key = `${st.mtimeMs}:${st.size}`;
+  } catch { /* 没有台账 */ }
+  const hit = revCache.get(file);
+  if (hit && hit.key === key) return hit.rev.get(u);
+  const rev = new Map<string, string>();
+  for (const it of loadAll(file)) rev.set(it.url, it.id); // 后出现的覆盖 = 最新
+  revCache.set(file, { key, rev });
+  return rev.get(u);
+}

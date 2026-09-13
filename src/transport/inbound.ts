@@ -11,7 +11,7 @@
 import type { ContentBlock } from '@deepseek-ai/dsh-llm';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import type { SessionManager } from '../session/index.js';
 import type { ImQQBotConfig } from '../config.js';
 import type { ChatScope, Logger, RawAttachment, ReplyTarget } from '../types.js';
@@ -25,7 +25,8 @@ import { registerMsgIndex } from './msg-index.js';
 import { createValueScorer, appendScoreLog } from '../features/value-score.js';
 import { getStickerStore, computeDHash } from '../features/sticker-store.js';
 import { lookupImagePath, rememberImagePath } from '../features/image-path-cache.js';
-import { recordImageUrl } from '../features/image-url-ledger.js';
+import { recordImageUrl, lookupStickerIdByUrl } from '../features/image-url-ledger.js';
+import { pushQuote } from '../features/quote-cache.js';
 
 // ── 类型定义 ──
 
@@ -136,7 +137,7 @@ export async function handleInbound(
       });
     } catch { /* 台账落盘失败不影响消息流 */ }
   }
-  let agentBody = assembleAgentBody(msg, mwState, scope, logger, downloaded, refEnabled, msgRef);
+  let agentBody = assembleAgentBody(msg, mwState, scope, logger, downloaded, refEnabled, msgRef, dataRootOf(config), stickerDirOf(config));
 
   if (!agentBody) return;
 
@@ -497,6 +498,8 @@ function assembleAgentBody(
   downloaded: DownloadedFile[],
   enableRef: boolean,
   msgRef: string,
+  dataRoot: string,
+  stickerDir: string,
 ): string | null {
   const userContent = buildUserContent(msg, state, logger);
 
@@ -508,6 +511,9 @@ function assembleAgentBody(
     const quoted = extractQuotedContent(msg);
     if (quoted) quotePart = `[Quoted message begins]\n${quoted}\n[Quoted message ends]\n[Current message]\n`;
   }
+  // ⚠️ 2026-09-13 主人要求(省 token): 引用原文只给**前 QUOTE_KEEP 字**,
+  //   完整原文进本地缓存(每会话最多 10 条) → AI 需要时用 `quote_view` 工具取。
+  quotePart = trimQuoteBlock(quotePart, dataRoot, msg, logger);
 
   const isGroup = scope === 'group';
   const wasMentioned = state.mention?.wasMentioned ?? false;
@@ -522,7 +528,10 @@ function assembleAgentBody(
   //   mediaHistoryBuffer 记进历史、又作为当前消息出现** → 同一条消息(含媒体 URL)在上下文里出现
   //   两遍: 历史里是 `[昵称] [图片: url]`(foldMedia 折叠版), 当前是 Layer4 的 `- Image: 名 → url`。
   //   按 messageId 剔掉历史中与当前消息重复的那条。
-  const history = (state.history ?? []).filter(h => !h.messageId || h.messageId !== msg.messageId);
+  const history = (state.history ?? [])
+    .filter(h => !h.messageId || h.messageId !== msg.messageId)
+    // 省 token: 历史里的 `[图片: <250 字符长链接>]` → 本地路径 / 干脆 `[图片]`
+    .map(h => ({ ...h, content: localizeHistoryImages(String(h.content ?? ''), stickerDir) }));
   const agentBody = buildAgentBody(base, history, isGroup, wasMentioned, batchDispatch, aggregated);
 
   return agentBody;
@@ -628,6 +637,64 @@ function buildQuotePart(quote?: ResolvedQuote): string {
   const quoteText = quote.text || quote.entry?.content || 'Original content unavailable';
 
   return `[Quoted message begins]\n${quoteText}\n[Quoted message ends]\n[Current message]\n`;
+}
+
+/** 引用原文保留字数: 超出部分只进本地缓存(2026-09-13 主人定, 短引用就别折腾了) */
+const QUOTE_KEEP = 60;
+
+/**
+ * 历史里的图片行瘦身(2026-09-13 主人要求"把省 token 做到极致"):
+ *   历史中每条图片都是 `[图片: https://multimedia…fileid=…&rkey=…]`(≈250 字符!) —— 群聊图一多就是纯浪费。
+ *   现在改成: ①能定位到本地文件 → `[图片: <本地路径>]`(≈60 字符, 还能真去看图)
+ *             ②定位不到 → 直接 `[图片]`(4 字符, 反正也读不了那张过期链接)
+ *   解析链: image-path-cache(URL→路径) → 台账反查 id → 图库当前真实路径(搬层也对)。
+ */
+function resolveImageLocalPath(url: string, stickerDir: string): string | undefined {
+  const cached = lookupImagePath(url);
+  if (cached) return cached;
+  try {
+    const id = lookupStickerIdByUrl(stickerDir, url);
+    if (!id) return undefined;
+    const store = getStickerStore(stickerDir);
+    const p = store.pathOf(id);
+    if (p && existsSync(p)) return p;
+  } catch { /* 查不到就算了 */ }
+  return undefined;
+}
+
+function localizeHistoryImages(text: string, stickerDir: string): string {
+  if (!text || text.indexOf('[图片') < 0) return text;
+  return text.replace(/\[图片:\s*(https?:\/\/[^\]\s]+)\]/g, (_m, url: string) => {
+    const p = resolveImageLocalPath(url, stickerDir);
+    return p ? `[图片: ${p}]` : '[图片]';
+  });
+}
+
+/**
+ * 引用块瘦身(2026-09-13 主人要求: 引用太长很吃 token) —— 
+ *   引用原文只给**前 {@link QUOTE_KEEP} 字**, 完整原文落本地缓存
+ *   `{dataRoot}/.qqbot/quote-cache.json`(**每会话最多 10 条**), AI 需要时用 `quote_view` 工具取。
+ * 短引用(≤ QUOTE_KEEP)原样不动(免得为了省几个字反而多一次工具调用);
+ * 缓存失败则照旧给全文(宁可费 token, 不丢信息)。
+ */
+function trimQuoteBlock(quotePart: string, dataRoot: string, msg: ProcessedMessage, logger: Logger): string {
+  if (!quotePart) return quotePart;
+  const m = /\[Quoted message begins\]\n?([\s\S]*?)\n?\[Quoted message ends\]/.exec(quotePart);
+  if (!m) return quotePart;
+  const full = (m[1] ?? '').trim();
+  if (full.length <= QUOTE_KEEP) return quotePart;
+  const key = `${msg.kind === 'group' ? 'group' : 'c2c'}:${(msg.kind === 'group' ? msg.groupOpenid : undefined) ?? msg.senderId}`;
+  try {
+    const e = pushQuote(dataRoot, key, full, msg.senderName);
+    const head = full.slice(0, QUOTE_KEEP).replace(/\s+/g, ' ');
+    logger.debug(`[引用] 原文 ${full.length} 字 → 只给前 ${QUOTE_KEEP} 字(缓存 #${e.id})`);
+    return quotePart.replace(
+      m[0],
+      `[Quoted message begins]\n${head}…[引用#${e.id}: 全文 ${full.length} 字已缓存, 需要时用 quote_view 查]\n[Quoted message ends]`,
+    );
+  } catch {
+    return quotePart;
+  }
 }
 
 /**

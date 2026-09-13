@@ -25,6 +25,7 @@ import * as broadcastQueue from './features/broadcast.js';
 import { wakeSessionAgent, safeAppendUserMessage } from './features/group-hub.js';
 import { managersOf, findManagerByPeer, findManagerBySessionId } from './features/session-registry.js';
 import { handleInbound } from './transport/inbound.js';
+import { getQuote } from './features/quote-cache.js';
 
 /** 诊断日志路径: 默认关闭; 需要排查时设环境变量 QQBOT_DIAG_FILE 指向日志文件 */
 const DIAG_FILE = process.env.QQBOT_DIAG_FILE || '';
@@ -1849,11 +1850,53 @@ export async function apply(ctx: Context): Promise<void> {
     },
   });
 
+  // quote_view: 查看引用内容(2026-09-13 主人定, 省 token) ——
+  //   引用原文超过 60 字时, 入站上下文只给**前 60 字**, 全文落在
+  //   `{dataRoot}/.qqbot/quote-cache.json`(**每会话最多 10 条**), 需要时用本工具取完整原文。
+  //   ⚠️ 工具描述**刻意写四个字**(主人要求): 描述进 system prompt, 越短越省。
+  const quoteViewTool = defineTool({
+    name: 'quote_view',
+    description: '查看引用内容',
+    parameters: {
+      idx: { type: 'integer', description: '引用编号(默认最新一条)' },
+    },
+    output: {
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          ok: { type: 'boolean', required: true },
+          msg: { type: 'string', required: true },
+          text: { type: 'string' },
+        },
+      },
+      render: (_a, v: { ok: boolean; msg: string; text?: string }) => [
+        { type: 'text' as const, text: v.ok ? (v.text || '') : `查询失败: ${v.msg}` },
+      ],
+    },
+    async execute(args, exec) {
+      try {
+        const s = findSessionRec(channelOf(exec as never), exec as never);
+        const mgr = s?.ch?.manager as unknown as { dataRoot?: string } | undefined;
+        const rec = s?.rec as unknown as { scope?: string; peerId?: string } | undefined;
+        const dataRoot = String(mgr?.dataRoot || '');
+        if (!dataRoot || !rec?.scope || !rec?.peerId) return { ok: false, msg: '未找到当前 QQ 会话' };
+        const rawIdx = (args as { idx?: number }).idx;
+        const idx = typeof rawIdx === 'number' && Number.isFinite(rawIdx) ? rawIdx : undefined;
+        const e = getQuote(dataRoot, `${rec.scope}:${rec.peerId}`, idx);
+        if (!e) return { ok: false, msg: '没有缓存的引用(短引用不缓存; 或这条引用是更早的、已被 10 条上限挤掉)' };
+        return { ok: true, msg: `引用#${e.id}`, text: `引用#${e.id}${e.sender ? `（${e.sender}）` : ''}: ${e.text}` };
+      } catch (err) {
+        return { ok: false, msg: err instanceof Error ? err.message : String(err) };
+      }
+    },
+  });
+
   // 逐个注册并记录结果(便于线上定位是哪个工具失败)
   const toolDefs: Array<{ name: string; tool: unknown }> = [
     { name: 'send_media', tool: sendMediaTool },
     { name: 'recall_message', tool: recallTool },
     { name: 'text_break', tool: textBreakTool },
+    { name: 'quote_view', tool: quoteViewTool },
     { name: 'tools_reload', tool: toolsReloadTool },
     { name: 'reply_gate', tool: replyGateTool },
     { name: 'outbound_mode', tool: outboundModeTool },
