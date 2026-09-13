@@ -23,7 +23,9 @@ import { setOutboundModeWriter } from './features/outbound-mode-switch.js';
 
 // ── Cordis 插件元数据 ──
 export const name = 'im-qqbot';
-export const inject = ['agents'];
+// ⚠️ 2026-09-13(主人验到注入没生效才发现): 用 ctx.systemPrompt.context() 注册运行时上下文贡献**必须**在此声明依赖,
+//    否则 ctx.systemPrompt 拿不到 → 注册会走“宿主未提供”兜底, 小传注入等于没接上。
+export const inject = ['agents', 'systemPrompt'];
 export const Config = ConfigSchema;
 
 export type { ImQQBotConfig } from './config.js';
