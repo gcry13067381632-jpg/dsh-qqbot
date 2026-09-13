@@ -253,7 +253,7 @@ npx @deepseek-ai/dsh web --patch /path/to/dsh-qqbot/cordis.dev.yml
 
 **配置项**(Web 面板 ⑥ 可改, 见下表 `groupAdmin.*`)
 
-## 🧠 本地小模型（可选，省 token）(v1.4.5+)
+## 🧠 智能回复（本地小模型 · 可选，省 token）(v1.4.5+)
 
 让插件先用一个**跑在本机的小模型**给群消息打分（「价值评分」）：分数低于门槛、又**没被 @** 的闲聊
 **直接不唤醒 AI** → 那一轮 token 就省下来了；被 @ 的永远放行，**带图的消息一律放行**（群友发图多半是给她看的）。
@@ -282,15 +282,15 @@ node scripts/download-model.mjs --source hf                       # 强制官方
 
 | 下载地址 | 存放位置 | 体积参考 |
 |---|---|---|
-| `<源>/BAAI/bge-small-zh-v1.5/resolve/main/onnx/model_quantized.onnx` | `bge-small-zh/onnx/model_quantized.onnx` | ≈ 23MB |
-| `<源>/BAAI/bge-small-zh-v1.5/resolve/main/tokenizer.json` | `bge-small-zh/tokenizer.json` | ≈ 430KB |
-| `<源>/BAAI/bge-small-zh-v1.5/resolve/main/config.json` | `bge-small-zh/config.json` | < 1KB |
+| `<源>/Xenova/bge-small-zh-v1.5/resolve/main/onnx/model_quantized.onnx` | `bge-small-zh/onnx/model_quantized.onnx` | ≈ 23MB |
+| `<源>/Xenova/bge-small-zh-v1.5/resolve/main/tokenizer.json` | `bge-small-zh/tokenizer.json` | ≈ 430KB |
+| `<源>/Xenova/bge-small-zh-v1.5/resolve/main/config.json` | `bge-small-zh/config.json` | < 1KB |
 
 Windows PowerShell 例子：
 
 ```powershell
 $dir  = "$env:USERPROFILE\.dsh\models\bge-small-zh"
-$base = "https://hf-mirror.com/BAAI/bge-small-zh-v1.5/resolve/main"
+$base = "https://hf-mirror.com/Xenova/bge-small-zh-v1.5/resolve/main"
 New-Item -ItemType Directory -Force "$dir\onnx" | Out-Null
 Invoke-WebRequest "$base/onnx/model_quantized.onnx" -OutFile "$dir\onnx\model_quantized.onnx"
 Invoke-WebRequest "$base/tokenizer.json"            -OutFile "$dir\tokenizer.json"

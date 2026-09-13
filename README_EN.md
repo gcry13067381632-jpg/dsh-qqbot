@@ -205,7 +205,7 @@ auto-cancelled when the agent is cancelled or dsh exits.
 > Idea source: QQ-approval design of wang-22-code/dsh-qqbot-bridge (host dsh `approval/request`
 > standard event — the same wiring used by official dsh-acp and the Web approval dialog).
 
-## 🧠 Local small model (optional — saves tokens) (v1.4.5+)
+## 🧠 Smart reply (local small model, optional — saves tokens) (v1.4.5+)
 
 Let the plugin score incoming group messages **locally first** ("value scoring"): chatter that scores below the
 threshold **and is not @-mentioning the bot** will **not wake the model at all** → those tokens are simply not spent.
@@ -235,9 +235,9 @@ Replace `<base>` with `https://hf-mirror.com` or `https://huggingface.co`, and p
 
 | Download | Put at | Size |
 |---|---|---|
-| `<base>/BAAI/bge-small-zh-v1.5/resolve/main/onnx/model_quantized.onnx` | `bge-small-zh/onnx/model_quantized.onnx` | ≈ 23MB |
-| `<base>/BAAI/bge-small-zh-v1.5/resolve/main/tokenizer.json` | `bge-small-zh/tokenizer.json` | ≈ 430KB |
-| `<base>/BAAI/bge-small-zh-v1.5/resolve/main/config.json` | `bge-small-zh/config.json` | < 1KB |
+| `<base>/Xenova/bge-small-zh-v1.5/resolve/main/onnx/model_quantized.onnx` | `bge-small-zh/onnx/model_quantized.onnx` | ≈ 23MB |
+| `<base>/Xenova/bge-small-zh-v1.5/resolve/main/tokenizer.json` | `bge-small-zh/tokenizer.json` | ≈ 430KB |
+| `<base>/Xenova/bge-small-zh-v1.5/resolve/main/config.json` | `bge-small-zh/config.json` | < 1KB |
 
 ### ③ Let your AI do it (paste this to the AI / to her)
 

@@ -306,7 +306,7 @@ export const REFERENCE_CONTEXT = [
 
 /** 本地小模型(2026-09-13 主人定): 零 token 的本地语义能力(价值评分 / 表情包语义搜索), 模型缺失时静默降级 */
 const localModelSchema = Schema.object({
-  enabled: Schema.boolean().default(true).description('本地小模型(省 token): 开=本地先筛(价值评分/表情包语义搜索); 模型缺失或加载失败自动关闭'),
+  enabled: Schema.boolean().default(true).description('智能回复(本地小模型, 省 token): 开=本地先筛(价值评分/表情包语义搜索); 模型缺失或加载失败自动关闭'),
   modelDir: Schema.string().default('').description('模型目录(留空=默认 {DSH_HOME|~/.dsh}/models/bge-small-zh)'),
   valueGate: Schema.union(['off', 'log', 'block']).default('log').description('价值评分模式(账号默认): off=不评分 / log=只记录分数 / block=低分不唤醒AI(消息仍进上下文)'),
   valueMinScore: Schema.number().min(0).max(1).default(0.5).description('价值评分门槛(0~1, 越高越安静): 近邻相似度低于此值视为不值得回应'),

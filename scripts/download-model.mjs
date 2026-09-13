@@ -17,11 +17,13 @@ import { homedir } from 'node:os';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
-const REPO = 'BAAI/bge-small-zh-v1.5';
+// ⚠️ 仓库必须是 **Xenova**(transformers.js 转换版, 才有 onnx/ 量化权重); BAAI 官方仓库没有 onnx 目录
+const REPO = 'Xenova/bge-small-zh-v1.5';
 /** 需要下载的文件（相对仓库路径 → 相对模型目录路径），带最小体积校验（KB） */
 const FILES = [
   { repo: 'onnx/model_quantized.onnx', local: 'onnx/model_quantized.onnx', minKB: 20000, label: '模型权重(量化 ONNX)' },
   { repo: 'tokenizer.json', local: 'tokenizer.json', minKB: 300, label: '分词器' },
+  { repo: 'tokenizer_config.json', local: 'tokenizer_config.json', minKB: 0.2, label: '分词器配置' },
   { repo: 'config.json', local: 'config.json', minKB: 0.3, label: '模型配置' },
 ];
 const MIRRORS = {

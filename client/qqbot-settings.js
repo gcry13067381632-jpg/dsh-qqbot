@@ -1993,7 +1993,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         return ac ? (ac.dataDir || '') : ''
       }
       function outNsQ() { return state.ns ? 'ns=' + encodeURIComponent(state.ns) : '' }
-      // ⚙ 单会话设置 · 本地小模型(2026-09-13 主人定)
+      // ⚙ 单会话设置 · 智能回复(本地小模型; 2026-09-13 主人定, 15:2x 改名)
       // 📊 评分列表 HTML(单独抽出: 供"局部刷新"只替换内容, 不整块重绘)
       function scoreListHtml(vs) {
         if (vs === undefined || vs === null) return '<div class="dk-empty" style="padding:8px 0">读取中…</div>'
@@ -2242,7 +2242,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             if (h) h.textContent = d && d.ok ? ('✓ ' + d.msg) : ('失败: ' + ((d && d.error) || (d && d.msg) || '未知'))
           }).catch(function (e) { if (h) h.textContent = '异常: ' + e.message })
         }
-        // ⚙ 单会话设置: 次级标签切换(🧠 本地小模型 / 📄 空白样板)
+        // ⚙ 单会话设置: 次级标签切换(🧠 智能回复 / 📄 空白样板)
         panel.querySelectorAll('[data-sttab]').forEach(function (sb) {
           sb.onclick = function () {
             var v = sb.getAttribute('data-sttab')
@@ -3094,11 +3094,11 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             }).join('')
           + '</div>'
       }
-      // ⚙ 单会话设置 · 次级标签栏(2026-09-13 主人要求: 本地小模型独立成子标签, 另留一个空标签当样板)
+      // ⚙ 单会话设置 · 次级标签栏(2026-09-13 主人要求: 智能回复独立成子标签, 另留一个空标签当样板)
       function sessionSubTabs() {
         var st = state.stTab || 'lm'
         return '<div class="dk-row" style="gap:4px;margin:4px 0 6px;flex-wrap:wrap;border-bottom:1px dashed #e2d9ff;padding-bottom:6px">'
-          + [['lm', '🧠 本地小模型'], ['blank', '📄 空白样板']]
+          + [['lm', '🧠 智能回复'], ['blank', '📄 空白样板']]
             .map(function (s) {
               return '<button class="dk-btn' + (st === s[0] ? ' on' : '') + '" data-sttab="' + s[0] + '">' + s[1] + '</button>'
             }).join('')
@@ -3352,7 +3352,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           body += '<span class="dk-msg" id="dk-out-hint" style="color:#2f9e44;margin:4px 0"></span>'
         } else if (state.tab === 'session') {
           // ⚙ 单会话设置(2026-09-13 主人定): 放"每个会话单独生效"的设置。
-          // 次级标签: 🧠 本地小模型 / 📄 空白样板(留作以后加新设置的模板)。
+          // 次级标签: 🧠 智能回复 / 📄 空白样板(留作以后加新设置的模板)。
           body += sessionSubTabs()
           var st = state.stTab || 'lm'
           if (st === 'blank') {
@@ -3368,7 +3368,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             body += '<div class="dk-empty">读取中…(若长时间不动, 点「🔄 重新检测」)</div>'
           } else {
             var lmMb = lm.bytes ? (Math.round((lm.bytes / 1048576) * 10) / 10) : 0
-            var lmState = lm.available ? ('✅ 已就绪' + (lmMb ? ' · ' + lmMb + ' MB' : '')) : ('⚠️ 未安装(缺 ' + (lm.missing || []).length + ' 个文件)')
+            var lmState = lm.available ? ('✅ 已就绪' + (lmMb ? ' · ' + lmMb + ' MB' : '')) : ('⚠️ 未安装(缺 ' + (lm.missing || []).length + ' 个文件) —— 点右边「⬇️ 下载模型」即可')
             // ⚠️ 2026-09-13 会话级: 评分模式/门槛/启用 **优先取当前会话的覆盖项**(overrides[group:xxx]),
             //    没有则继承账号级默认; 界面用"继承/已单独设置"标出来。
             var lmCfg = state.lmCfg || {}
@@ -3382,7 +3382,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
                 : (typeof lm.valueMinScore === 'number' ? lm.valueMinScore : 0.5))
             var onV = (typeof ov.enabled === 'boolean') ? ov.enabled
               : ((typeof lmCfg.enabled === 'boolean') ? lmCfg.enabled : (lm.enabled !== false))
-            body += '<div class="dk-row" style="font-weight:700;font-size:13px;margin:10px 0 2px">🧠 本地小模型 · bge-small-zh-v1.5</div>'
+            body += '<div class="dk-row" style="font-weight:700;font-size:13px;margin:10px 0 2px">🧠 智能回复（本地小模型） · bge-small-zh-v1.5</div>'
             // 本会话标识 + 继承状态(让"单会话"名副其实: 一眼看出这套值是谁的)
             body += '<div class="dk-row" style="gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 4px">'
               + '<span class="dk-msg" style="font-size:12px;color:#7c6bd6">本会话: ' + esc(curHitLabel()) + '</span>'
@@ -3391,14 +3391,14 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
               + (hasOv ? '<button class="dk-btn" id="dk-lm-reset" style="font-size:11px;padding:1px 6px" title="删除本会话的单独设置, 恢复继承账号默认">↩ 恢复继承</button>' : '')
               + '</div>'
             body += '<div class="dk-row" style="gap:8px;flex-wrap:wrap;align-items:center">'
-              + '<label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;cursor:pointer"><input type="checkbox" id="dk-lm-on"' + (onV ? ' checked' : '') + '> 启用(省 token)</label>'
+              + '<label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;cursor:pointer"><input type="checkbox" id="dk-lm-on"' + (onV ? ' checked' : '') + '> 启用智能回复(省 token)</label>'
               + '<span class="dk-msg" style="font-size:12px;color:' + (lm.available ? '#2f9e44' : '#c23131') + '">' + esc(lmState) + '</span>'
               + '</div>'
             body += '<div class="dk-row" style="gap:6px;margin:4px 0;flex-wrap:wrap">'
               + '<input class="qqs-inp" id="dk-lm-dir" style="flex:1;min-width:200px" placeholder="模型目录(留空=默认 ~/.dsh/models/bge-small-zh)" value="' + esc(lm.modelDir || '') + '">'
               + '<button class="dk-btn" id="dk-lm-save">💾 保存</button>'
               + '<button class="dk-btn" id="dk-lm-check">🔄 重新检测</button>'
-              + (lm.available ? '' : '<button class="dk-btn ok" id="dk-lm-dl">⬇️ 下载模型</button>')
+              + (lm.available ? '' : '<button class="dk-btn ok" id="dk-lm-dl">⬇️ 下载模型(自动)</button>')
               + '</div>'
             // 评分模式 + 门槛(2026-09-13): off=不评分 / log=只记录(默认观察期) / block=低分不唤醒
             body += '<div class="dk-row" style="gap:8px;flex-wrap:wrap;align-items:center;margin:6px 0 2px">'

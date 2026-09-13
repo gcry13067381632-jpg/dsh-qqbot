@@ -111,12 +111,12 @@ export function createLocalEmbedder(opts: { modelDir?: string; logger?: Logger; 
         const name = basename(modelDir);
         extractor = (await mod.pipeline('feature-extraction', name, { dtype: 'q8' })) as ExtractorFn;
         loadMs = Date.now() - t0;
-        logger?.info(`[im-qqbot] 本地小模型就绪: ${name} (${loadMs}ms)`);
+        logger?.info(`[im-qqbot] 智能回复(本地小模型)就绪: ${name} (${loadMs}ms)`);
         return true;
       } catch (e) {
         failed = true;
         failureReason = e instanceof Error ? e.message : String(e);
-        logger?.warn(`[im-qqbot] 本地小模型不可用(${modelDir}): ${failureReason}`);
+        logger?.warn(`[im-qqbot] 智能回复不可用(本地小模型 ${modelDir}): ${failureReason}`);
         return false;
       } finally {
         loading = undefined;
@@ -136,7 +136,7 @@ export function createLocalEmbedder(opts: { modelDir?: string; logger?: Logger; 
       if (dims === undefined && Array.isArray(arr[0])) dims = arr[0].length;
       return arr;
     } catch (e) {
-      logger?.warn(`[im-qqbot] 本地小模型推理失败: ${e instanceof Error ? e.message : String(e)}`);
+      logger?.warn(`[im-qqbot] 智能回复推理失败: ${e instanceof Error ? e.message : String(e)}`);
       return undefined;
     }
   }
