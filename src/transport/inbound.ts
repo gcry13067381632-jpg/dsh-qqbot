@@ -29,7 +29,7 @@ import { recordImageUrl, lookupStickerIdByUrl } from '../features/image-url-ledg
 import { pushQuote } from '../features/quote-cache.js';
 import { computeRelevance, touchAffinity } from '../features/local-signals.js';
 import { touchDaily } from '../features/intimacy-ledger.js';
-import { recallLines } from '../features/people-memo.js';
+import { recallLines, setPendingMemo } from '../features/people-memo.js';
 import { createLocalEmbedder } from '../features/local-embed.js';
 
 // ── 类型定义 ──
@@ -354,19 +354,11 @@ export async function handleInbound(
               });
               const r = await recallLines(dataRootOf(config), uid, plain || scText || '', embedder, 2);
               if (r.lines.length > 0) {
-                const ag2 = record.agent as unknown as {
-                  session?: { append?: (type: string, data: unknown, opts?: { surfaceOp?: string }) => unknown };
-                } | undefined;
-                const sess2 = ag2?.session;
-                if (sess2 && typeof sess2.append === 'function') {
-                  const memoText = `[人家记得的 ${msg.senderName || '他'}: ${r.lines.map((l) => l.replace(/^-\s*/, '')).join(' / ')}]`;
-                  const memoMsg = createUserMessage({
-                    content: [{ type: 'text' as const, text: memoText }],
-                    source: { kind: 'plugin' as never, plugin: 'qqbot-people-memo', form: 'notice' as never },
-                  });
-                  sess2.append('user/message', memoMsg, { surfaceOp: 'append' });
-                  memoInjectAt.set(uid, Date.now());
-                }
+                const memoText = `[人家记得的 ${msg.senderName || '他'}: ${r.lines.map((l) => l.replace(/^-\s*/, '')).join(' / ')}]`;
+                // 交给 systemPrompt.context(运行时上下文贡献)注入 —— 不写进用户消息, 不打扰 web/dock 观感,
+                // 且 system prompt 保持字节级稳定 → 前缀缓存全程命中(与 @a9i5k4/dsh-auto-memory 同款姿势)
+                setPendingMemo(memoText);
+                memoInjectAt.set(uid, Date.now());
               }
             }
           } catch { /* 小传注入失败不影响主链 */ }

@@ -7,6 +7,7 @@
 import type { Context } from '@deepseek-ai/cordis';
 import { ConfigSchema, EditableConfigSchema, type EditableConfig, type ImQQBotConfig } from './config.js';
 import { bootstrapGateway } from './gateway/index.js';
+import { takePendingMemoText } from './features/people-memo.js';
 import type { DshAgentRegistry } from './session/index.js';
 import { getProfileDir, resolveEnv } from './shared/index.js';
 import { runQrSetup, persistCredentialsToProfile } from './setup.js';
@@ -130,6 +131,20 @@ export async function apply(ctx: Context, config: ImQQBotConfig): Promise<void> 
     }
   } catch (err) {
     logger.warn?.(`im-qqbot: settings host 桥装载跳过: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // 群友小传 → 注册为**运行时上下文贡献**(dsh systemPrompt.context, 与 @a9i5k4/dsh-auto-memory 同款姿势):
+  //   user-role 快照挂在历史尾部, system prompt 本体保持字节级稳定 → 前缀缓存全程命中, 不被打穿。
+  try {
+    const sp = (ctx as unknown as { systemPrompt?: { context?: (c: { name: string; order: number; text: (a: unknown) => string }) => () => void } }).systemPrompt;
+    if (sp && typeof sp.context === 'function') {
+      sp.context({ name: 'qqbot-people-memo', order: 60, text: () => takePendingMemoText() });
+      logger.info('[im-qqbot] 群友小传已注册为运行时上下文贡献');
+    } else {
+      logger.warn('[im-qqbot] 宿主未提供 systemPrompt.context —— 小传注入退化为不注入');
+    }
+  } catch (err) {
+    logger.warn(`[im-qqbot] 小传上下文注册失败: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   await bootstrapGateway(ctx, agents, resolvedConfig, logger);
