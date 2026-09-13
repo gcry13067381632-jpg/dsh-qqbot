@@ -226,15 +226,16 @@ export function touchAffinity(
  *    "降低好感度"是另一套机制（负面事件），暂不实现（主人 2026-09-13 明确区分）。
  */
 export function memoryStrength(e: AffinityEntry, now = Date.now()): number {
-  const reviews = Math.max(0, e.reviews ?? e.msgs ?? 0);
+  // 兼容老台账(2026-09-13 前只记了 msgs): 取两者较大 —— 别把历史活跃度算没了
+  const reviews = Math.max(0, e.reviews ?? 0, e.msgs ?? 0);
   const lastReview = e.lastReview ?? e.lastAt ?? now;
   // ⚠️ 2026-09-13 修(主人实测"怎么全是 100"): 原来"刚聊过 = 强度 1 = 满分", 人人 100 没区分度。
   //   现在分两层: **熟悉度 fam**(累积决定上限) + **遗忘**(时间衰减, 下限随复习抬高)。
-  //     fam   = min(1, 0.25×log10(1+reviews) + 0.05)   1 条≈0.13 / 10 条≈0.31 / 100 条≈0.55 / 1000 条≈0.80
+  //     fam   = min(1, 0.35×log10(1+reviews) + 0.10)   1 条≈0.21 / 13 条≈0.50(眼熟) / 85 条≈0.78(熟人) / 1000 条≈1.0
   //     floor = min(0.6, 0.15×log10(1+reviews))        复习越多, 忘到底也留得越多(老熟人不回陌生)
   //     τ     = 2 天 ×(1 + reviews/20)                  间隔效应: 越熟忘得越慢
   //   S = floor + (fam - floor) × exp(-Δt/τ)  —— 刚聊完≈fam(新人就是低), 久不聊沉到 floor
-  const fam = Math.min(1, 0.25 * Math.log10(1 + reviews) + 0.05);
+  const fam = Math.min(1, 0.35 * Math.log10(1 + reviews) + 0.10);
   const floor = Math.min(0.6, 0.15 * Math.log10(1 + reviews));
   const top = Math.max(fam, floor);
   const tauDays = 2 * (1 + reviews / 20);
