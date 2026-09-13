@@ -1304,7 +1304,7 @@ export function apply(ctx) {
       const mod = await import('./dist/features/local-signals.js');
       const limit = Math.max(1, Math.min(50, Math.round(Number(u.searchParams.get('limit'))) || 8));
       const items = (mod.topAffinity(dataRoot, limit) || []).map((x) => ({
-        key: x.key, name: x.name || '', score: x.score, msgs: x.msgs, mentions: x.mentions, replies: x.replies, lastAt: x.lastAt,
+        key: x.key, name: x.name || '', score: x.score, tier: x.tier || '', reviews: x.reviews || 0, msgs: x.msgs, mentions: x.mentions, replies: x.replies, lastAt: x.lastAt,
       }));
       writeJson(res, 200, { ok: true, items });
     } catch (e) { writeJson(res, 500, { ok: false, error: String((e && e.message) || e) }); }

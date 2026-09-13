@@ -228,10 +228,18 @@ export function touchAffinity(
 export function memoryStrength(e: AffinityEntry, now = Date.now()): number {
   const reviews = Math.max(0, e.reviews ?? e.msgs ?? 0);
   const lastReview = e.lastReview ?? e.lastAt ?? now;
+  // ⚠️ 2026-09-13 修(主人实测"怎么全是 100"): 原来"刚聊过 = 强度 1 = 满分", 人人 100 没区分度。
+  //   现在分两层: **熟悉度 fam**(累积决定上限) + **遗忘**(时间衰减, 下限随复习抬高)。
+  //     fam   = min(1, 0.25×log10(1+reviews) + 0.05)   1 条≈0.13 / 10 条≈0.31 / 100 条≈0.55 / 1000 条≈0.80
+  //     floor = min(0.6, 0.15×log10(1+reviews))        复习越多, 忘到底也留得越多(老熟人不回陌生)
+  //     τ     = 2 天 ×(1 + reviews/20)                  间隔效应: 越熟忘得越慢
+  //   S = floor + (fam - floor) × exp(-Δt/τ)  —— 刚聊完≈fam(新人就是低), 久不聊沉到 floor
+  const fam = Math.min(1, 0.25 * Math.log10(1 + reviews) + 0.05);
   const floor = Math.min(0.6, 0.15 * Math.log10(1 + reviews));
+  const top = Math.max(fam, floor);
   const tauDays = 2 * (1 + reviews / 20);
   const dtDays = Math.max(0, (now - lastReview) / 86400_000);
-  const s = floor + (1 - floor) * Math.exp(-dtDays / tauDays);
+  const s = floor + (top - floor) * Math.exp(-dtDays / tauDays);
   return Math.max(0, Math.min(1, s));
 }
 
@@ -255,11 +263,11 @@ export function affinityScore(e: AffinityEntry, now = Date.now()): number {
 export function topAffinity(
   dataRoot: string,
   limit = 10,
-): Array<{ key: string; name?: string; score: number; msgs: number; mentions: number; replies: number; lastAt: number }> {
+): Array<{ key: string; name?: string; score: number; tier: string; reviews: number; msgs: number; mentions: number; replies: number; lastAt: number }> {
   const data = loadAff(dataRoot);
   const now = Date.now();
   return Object.entries(data.map)
-    .map(([key, e]) => ({ key, name: e.name, score: affinityScore(e, now), msgs: e.msgs, mentions: e.mentions, replies: e.replies, lastAt: e.lastAt }))
+    .map(([key, e]) => ({ key, name: e.name, score: affinityScore(e, now), tier: memoryTier(memoryStrength(e, now)), reviews: e.reviews ?? e.msgs, msgs: e.msgs, mentions: e.mentions, replies: e.replies, lastAt: e.lastAt }))
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);
 }
