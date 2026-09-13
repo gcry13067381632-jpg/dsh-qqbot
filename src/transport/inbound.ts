@@ -28,6 +28,7 @@ import { lookupImagePath, rememberImagePath } from '../features/image-path-cache
 import { recordImageUrl, lookupStickerIdByUrl } from '../features/image-url-ledger.js';
 import { pushQuote } from '../features/quote-cache.js';
 import { computeRelevance, touchAffinity } from '../features/local-signals.js';
+import { touchDaily } from '../features/intimacy-ledger.js';
 
 // ── 类型定义 ──
 
@@ -370,6 +371,15 @@ export async function handleInbound(
               mention: mentioned,
               reply: (rel?.relReply ?? 0) >= 0.6,
             });
+            // 日报台账(2026-09-13 主人要《本周亲密度小报》): 按天分桶, 只记肉眼可核的事实
+            if (scope === 'group' && msg.groupOpenid) {
+              touchDaily(dataRootOf(config), msg.groupOpenid, msg.senderId, {
+                name: msg.senderName,
+                mention: mentioned,
+                reply: (rel?.relReply ?? 0) >= 0.6,
+                img: Boolean(firstImg),
+              });
+            }
           } catch { /* ignore */ }
           appendScoreLog(dataRootOf(config), {
             gid: msg.groupOpenid ?? '',
