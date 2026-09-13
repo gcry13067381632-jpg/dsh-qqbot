@@ -215,6 +215,7 @@ window.__ModuleLoader__.load({
               sticker: v.sticker || {},
               injectRules: Array.isArray(v.injectRules) ? v.injectRules : [],
               imageHint: typeof v.imageHint === 'boolean' ? v.imageHint : undefined,
+              messageReference: v.messageReference !== false,
               schedule: v.schedule && Array.isArray(v.schedule.targets) ? v.schedule : { targets: [] },
               // groupPrompt 必须读回来, 否则每次保存都会把它清空成 ''
               // undefined(从未设置)→ 显示默认守则; ''(用户明确清空)→ 保持空(无守则)
@@ -283,6 +284,7 @@ window.__ModuleLoader__.load({
               behavior: v2.behavior || {}, sticker: v2.sticker || {},
               injectRules: Array.isArray(v2.injectRules) ? v2.injectRules : [],
               imageHint: typeof v2.imageHint === 'boolean' ? v2.imageHint : undefined,
+              messageReference: v2.messageReference !== false,
               schedule: v2.schedule && Array.isArray(v2.schedule.targets) ? v2.schedule : { targets: [] },
               groupPrompt: typeof v2.groupPrompt === 'string' ? v2.groupPrompt : (typeof cfg.groupPrompt === 'string' ? cfg.groupPrompt : DEFAULT_GROUP_PROMPT),
               enableApprovals: v2.enableApprovals === true,
@@ -350,7 +352,8 @@ window.__ModuleLoader__.load({
         }),
         h('button', { className: 'qqs-btn', onClick: addRule }, '+ 添加一条提醒'),
         h('div', { style: boxStyle },
-          BoolRow({ label: '图片消息自动提示 AI 看图(内置兜底; 不勾=不再注入「请把URL传给识图工具」那条)', value: cfg.imageHint !== false, onChange: function (v) { setCfg(function (c) { return { ...c, imageHint: v } }) } })),
+          BoolRow({ label: '图片消息自动提示 AI 看图(内置兜底; 不勾=不再注入「请把URL传给识图工具」那条)', value: cfg.imageHint !== false, onChange: function (v) { setCfg(function (c) { return { ...c, imageHint: v } }) } }),
+          BoolRow({ label: '引用消息(默认开): 入站消息带短消息号(本地台账索引,省token) + 引用消息附原文; AI 用 [rf:短号] 引用对方消息', value: cfg.messageReference !== false, onChange: function (v) { setCfg(function (c) { return { ...c, messageReference: v } }) } })),
 
         h('div', { style: sectionTitle }, '④ 定时唤醒'),
         h('p', { style: { fontSize: 12, color: '#888' } }, '已合并到「定时任务」页(顶部 tab)一起编辑——到点主动开口的群/人分组,与她答应你的定时提醒,都在那边管理。'),
@@ -964,6 +967,7 @@ window.__ModuleLoader__.load({
           },
           injectRules: Array.isArray(v.injectRules) ? v.injectRules : [],
           imageHint: typeof v.imageHint === 'boolean' ? v.imageHint : undefined,
+          messageReference: v.messageReference !== false,
           schedule: { targets: targets() },
           groupPrompt: typeof v.groupPrompt === 'string' ? v.groupPrompt : DEFAULT_GROUP_PROMPT,
         }
@@ -3656,7 +3660,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             if (k === 'video') return '<video class="dk-video" controls preload="metadata" src="' + esc(u) + '"></video>'
             return '<img class="dk-img" loading="lazy" data-lb="' + esc(u) + '" src="' + esc(u) + '" referrerpolicy="no-referrer" alt="[图片]" onerror="this.outerHTML=\'<span style=color:#888>[图加载失败]</span>\'">'
           }).join('')
-          var txt = it.text ? '<div>' + linkifyText(esc(mdPlain(it.text))) + '</div>' : ''
+          var txt = it.text ? chatRenderText(it.text) : ''
           return '<div class="dk-crow ' + (isOut ? 'out' : 'in') + '">'
             + '<div class="dk-ava">' + ava + '</div>'
             + '<div class="dk-cmain">'
@@ -3676,6 +3680,23 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         // 滚动: 刷新/切目标 → 滚到底; 上滚加载更早 → 保持视口
         if (keepScrollOffset == null) box.scrollTop = box.scrollHeight
         else box.scrollTop = box.scrollHeight - keepScrollOffset
+      }
+      // 聊天文本渲染(2026-09-13 引用消息功能): 把 [Quoted message begins]…[Quoted message ends] 块
+      // 渲染成"引用样式"气泡(左边框+灰底), 其余正文照常显示。没有引用块则整段照常。
+      function chatRenderText(t) {
+        var src = String(t || '')
+        var re = /\[Quoted message begins\]([\s\S]*?)\[Quoted message ends\]/g
+        var parts = []
+        var m, last = 0
+        while ((m = re.exec(src)) !== null) {
+          if (m.index > last) parts.push('<div>' + linkifyText(esc(mdPlain(src.slice(last, m.index)))) + '</div>')
+          var q = (m[1] || '').replace(/^\s*\n/, '').replace(/\n\s*$/, '')
+          parts.push('<div style="border-left:3px solid #5b7cfa;background:rgba(91,124,250,.10);padding:5px 9px;margin:2px 0 7px;border-radius:6px;color:#9fb0ff;font-size:12px;white-space:pre-wrap">↩ ' + linkifyText(esc(mdPlain(q))) + '</div>')
+          last = m.index + m[0].length
+        }
+        if (last < src.length) parts.push('<div>' + linkifyText(esc(mdPlain(src.slice(last)))) + '</div>')
+        if (!parts.length) parts.push('<div>' + linkifyText(esc(mdPlain(src))) + '</div>')
+        return parts.join('')
       }
       // 头像字符: 群友取昵称首字; 私聊/无名兜底
       function chatAvaOf(who) {

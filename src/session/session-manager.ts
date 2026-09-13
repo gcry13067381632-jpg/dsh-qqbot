@@ -17,7 +17,7 @@ import { SessionId } from '@deepseek-ai/dsh-session';
 import type { Context } from '@deepseek-ai/cordis';
 import type { ChatScope, Logger, ReplyTarget } from '../types.js';
 import type { ImQQBotConfig } from '../config.js';
-import { FIXED_CHANNEL_CONTEXT } from '../config.js';
+import { FIXED_CHANNEL_CONTEXT, REFERENCE_CONTEXT } from '../config.js';
 import { dataRootOf, stickerDirOf } from '../gateway/data-root.js';
 import { SettingsReader } from '../model/settings-reader.js';
 import { ModelResolver } from '../model/model-resolver.js';
@@ -908,7 +908,9 @@ export class SessionManager {
         const dec = decision as { kind?: string; messages?: unknown[] };
         if (dec?.kind !== 'enter' || !Array.isArray(dec.messages)) return decision;
         const rules = this.readLiveGroupPromptForNs(ns);
-        const body = [FIXED_CHANNEL_CONTEXT.trim(), rules.trim()].filter(Boolean).join('\n\n');
+        // 引用消息指令(2026-09-13 主人定): 开关关闭时不注入
+        const refCtx = this.config.messageReference === false ? '' : REFERENCE_CONTEXT;
+        const body = [FIXED_CHANNEL_CONTEXT.trim(), refCtx.trim(), rules.trim()].filter(Boolean).join('\n\n');
         if (!body) return decision;
         const text = `<system-reminder>\n${body}\n</system-reminder>`;
         const desired = {

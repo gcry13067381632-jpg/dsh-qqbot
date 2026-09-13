@@ -18,6 +18,8 @@ import { clearGroupHistory } from '../features/history-store.js';
 import { applyInjectRules } from './inject-rules.js';
 import { inferMediaKind, mediaKindLabel } from './media-kind.js';
 import { replaceBotMention, type MentionLike } from '../shared/mention-clean.js';
+import { dataRootOf } from '../gateway/data-root.js';
+import { registerMsgIndex } from './msg-index.js';
 
 // ── 类型定义 ──
 
@@ -32,6 +34,10 @@ interface ProcessedMessage {
   groupOpenid?: string;
   msgType?: number;
   attachments?: RawAttachment[];
+  /** 引用消息(message_type=103): 被引用消息原文(2026-09-13 引用消息功能) */
+  messageType?: number;
+  msgElements?: Array<{ content?: string; msg_idx?: string; message_type?: number }>;
+  message_scene?: { ext?: string[] };
   [key: string]: unknown;
 }
 
@@ -109,7 +115,19 @@ export async function handleInbound(
   const downloaded = mwState.downloadedFiles ?? [];
 
   // ── 组装 agentBody（对齐 openclaw-qqbot body-assembler） ──
-  let agentBody = assembleAgentBody(msg, mwState, scope, logger, downloaded);
+  // 引用消息短消息号(2026-09-13 主人定): 入站登记到本地台账({dataRoot}/.qqbot/msg-index/{peer}/refs.json),
+  // 注入**短号**(如 #0913a)替代长 msg_id 省 token; 出站 [rf:短号] 再查表还原完整 id。
+  const refEnabled = config.messageReference !== false;
+  let msgRef = '';
+  if (refEnabled && msg.messageId) {
+    try {
+      msgRef = registerMsgIndex(dataRootOf(config), scope, peerId, msg.messageId, {
+        senderId: msg.senderId,
+        senderName: msg.senderName,
+      });
+    } catch { /* 台账落盘失败不影响消息流 */ }
+  }
+  let agentBody = assembleAgentBody(msg, mwState, scope, logger, downloaded, refEnabled, msgRef);
 
   if (!agentBody) return;
 
@@ -227,18 +245,25 @@ function assembleAgentBody(
   scope: ChatScope,
   logger: Logger,
   downloaded: DownloadedFile[],
+  enableRef: boolean,
+  msgRef: string,
 ): string | null {
   const userContent = buildUserContent(msg, state, logger);
 
   if (!userContent && (!msg.attachments || msg.attachments.length === 0)) return null;
 
-  const quotePart = buildQuotePart(state.quote);
+  let quotePart = buildQuotePart(state.quote);
+  // 引用消息(2026-09-13): SDK 中间件没解析出 quote 时, 自己从 103/msg_elements 提取被引用原文
+  if (!quotePart && enableRef) {
+    const quoted = extractQuotedContent(msg);
+    if (quoted) quotePart = `[Quoted message begins]\n${quoted}\n[Quoted message ends]\n[Current message]\n`;
+  }
 
   const isGroup = scope === 'group';
   const wasMentioned = state.mention?.wasMentioned ?? false;
   const batchDispatch = state.batchDispatch === true;
   const aggregated = state.aggregated === true;
-  const userMessage = buildUserMessage(userContent, quotePart, msg.senderId, msg.senderName, isGroup, wasMentioned);
+  const userMessage = buildUserMessage(userContent, quotePart, msg.senderId, msg.senderName, isGroup, wasMentioned, msgRef);
 
   const dynamicCtx = buildDynamicCtx(msg, state, downloaded);
 
@@ -297,7 +322,23 @@ function buildQuotePart(quote?: ResolvedQuote): string {
 }
 
 /**
+ * 引用消息原文提取(2026-09-13 主人定): 收到引用消息(message_type=103)时,
+ * msg_elements[] 里带被引用消息的原文; 只有标记没有内容时退化为引用索引提示。
+ */
+function extractQuotedContent(msg: ProcessedMessage): string {
+  const els = Array.isArray(msg.msgElements) ? msg.msgElements : [];
+  const texts = els.map((e) => e?.content).filter((t): t is string => Boolean(t));
+  if (texts.length > 0) return texts.join('\n');
+  const ext = Array.isArray(msg.message_scene?.ext) ? msg.message_scene.ext : [];
+  const refIdx = ext.find((x) => typeof x === 'string' && x.startsWith('ref_msg_idx='));
+  if (refIdx) return `(被引用消息索引: ${refIdx.slice('ref_msg_idx='.length)})`;
+  return '';
+}
+
+/**
  * Layer 3: 带发送者标签的用户消息
+ * 引用消息功能开启时, 每条入站都带**短消息号**(msgRef, 形如 0913a; 群聊挂发送者标签, 私聊独立一行)
+ * —— AI 想引用对方时在正文写 [rf:短号](2026-09-13 主人定: 短号省 token, 台账见 msg-index.ts)。
  */
 function buildUserMessage(
   userContent: string,
@@ -306,14 +347,16 @@ function buildUserMessage(
   senderName: string | undefined,
   isGroup: boolean,
   wasMentioned: boolean,
+  msgRef: string,
 ): string {
   if (!isGroup) {
-    return `${quotePart}${userContent}`;
+    const idPart = msgRef ? `[消息号: ${msgRef}]\n` : '';
+    return `${quotePart}${idPart}${userContent}`;
   }
 
   const mentionTag = wasMentioned ? ' (@you)' : '';
   const displayName = senderName ?? shortSenderId(senderId);
-  const senderTag = `[${displayName} (${senderId})]`;
+  const senderTag = msgRef ? `[${displayName} (${senderId}) #${msgRef}]` : `[${displayName} (${senderId})]`;
   return `${quotePart}${senderTag} ${userContent}${mentionTag}`;
 }
 

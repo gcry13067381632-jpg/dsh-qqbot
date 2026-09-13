@@ -22,6 +22,9 @@ const MEDIA_RE = /\[MEDIA:(image|video|voice|file)\|([^\]]+)\]/g;
 const RECALL_RE = /\[RECALL(?::\s*(\d+))?\]/;
 /** 全局版：一次性清除/收集文本里所有撤回指令 */
 const RECALL_G_RE = /\[RECALL(?::\s*(\d+))?\]/g;
+/** 引用消息标记：[rf:短消息号] — 出站时这条消息以"引用回复"形式发出(2026-09-13 主人定:
+ *  短号(如 0913a)省 token, 台账查表还原完整 msg_id, 见 transport/msg-index.ts) */
+const REF_TAG_RE = /\[rf:([^\]\s]{1,32})\]/gi;
 
 /** 是否含撤回指令 */
 export function containsRecall(text: string): boolean {
@@ -78,10 +81,25 @@ export function parseOutbound(text: string): Segment[] {
 }
 
 /**
- * 把标记文本清理成"仅剩要展示的纯文本"（去掉富媒体与撤回指令），供降级/预览。
+ * 把标记文本清理成"仅剩要展示的纯文本"（去掉富媒体/撤回/引用指令），供降级/预览。
  */
 export function stripDirectives(text: string): string {
-  return text.replace(MEDIA_RE, '').replace(RECALL_G_RE, '').replace(/\n{3,}/g, '\n\n').trim();
+  return text.replace(MEDIA_RE, '').replace(RECALL_G_RE, '').replace(REF_TAG_RE, '').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/**
+ * 提取引用消息标记：[rf:短消息号]（2026-09-13 主人定）。
+ * 命中返回 { index, rest }；rest 为剔除该标记后的剩余文本。无标记返回 undefined。
+ * 同一段文本只取第一个标记（一条消息只能引用一条）。
+ */
+export function extractRefTag(text: string): { index: string; rest: string } | undefined {
+  REF_TAG_RE.lastIndex = 0;
+  const m = REF_TAG_RE.exec(text);
+  if (!m) return undefined;
+  const index = (m[1] ?? '').trim();
+  if (!index) return undefined;
+  const rest = text.replace(REF_TAG_RE, '').replace(/\n{3,}/g, '\n\n').trim();
+  return { index, rest };
 }
 
 /**

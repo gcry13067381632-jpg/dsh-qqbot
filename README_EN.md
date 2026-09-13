@@ -221,6 +221,21 @@ auto-cancelled when the agent is cancelled or dsh exits.
 | `textChunkLimit` | number | `4500` | Max chars per message |
 | `sessionIdleTimeout` | number | `1800000` | Session idle timeout (ms), default 30 min |
 | `debug` | boolean | `false` | Debug mode |
+| `messageReference` | boolean | `true` | Message-reference master switch (v1.4.1): inbound messages carry a **short message number** + quoted originals are included + the reference instruction is injected, so the AI can reply with a quote via `[rf:short-id]`; off = nothing injected |
+
+## Message Reference (v1.4.1, on by default)
+
+Every inbound message carries a **short message number** (e.g. `#0913a` — month/day + rolling id):
+
+```
+[做早饭 (E9020753…) #0913a] take a look at this
+```
+
+- To quote a message, the AI writes `[rf:0913a]` in its reply body → the reply is sent as a **quote bubble** (the other side sees "she quoted this message"). The tag itself is never displayed.
+- When someone quotes a message, the **quoted original** is included in the context (`[Quoted message begins] … [Quoted message ends]`), so the AI understands what is being replied to.
+- The short-id ↔ full msg_id mapping lives in a local ledger at `{dataRoot}/.qqbot/msg-index/{group|dm}/refs.json` — **one folder per conversation**, capped at **500 entries** each (oldest dropped first), with timestamps and sender nicknames so it stays human-readable.
+- Why: full msg_ids (60+ chars) no longer enter the context — a short id costs **1-2 tokens** instead of ~20+ per message.
+- Turn it off in the settings panel (section ③, "引用消息"): no ledger, no short ids, no instruction injected.
 
 ## Built-in Commands
 

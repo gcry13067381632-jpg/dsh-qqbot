@@ -241,6 +241,8 @@ export interface EditableConfig {
   /** 图片消息是否自动追加「看图」内置提示(默认 true)。关掉=不再注入「请把 URL 传给识图工具」那条
    *  —— 模型自己就能读图时可以关它。 */
   imageHint?: boolean;
+  /** 引用消息总开关(默认 true): 开=入站消息带短消息号(台账索引) + 引用消息附原文 + 注入引用指令, 出站支持 [rf:短号] 标签 */
+  messageReference?: boolean;
   /** 群聊常驻守则(默认含表情包礼仪; QQ 通道级注入, 跨 preset 不碰 persona) */
   groupPrompt?: string;
   /** 定时唤醒任务(M3) */
@@ -275,6 +277,15 @@ export const DEFAULT_GROUP_PROMPT = [
 export const FIXED_CHANNEL_CONTEXT = [
   '【@ 人的方法】当你要对特定某人说话，在回复文本里直接写 <@对方openid>（无斜杠）就能在 QQ 群里 @ 到对方（高亮显示），例如 <@0123456789ABCDEF0123456789ABCDEF> 起床啦。如果别人@你，你用 @对方 回复；也可以主动 @别人。',
   '【富媒体】你在 QQ 里能真的发图/文件/语音/视频:在回复正文里写 MEDIA:image|路径(两端加英文方括号)即发图,file/voice/video 同理,标记不显示;想撤回自己的消息单独输出一行 RECALL(两端加英文方括号)。',
+].join('\n');
+
+/**
+ * 引用消息能力说明(2026-09-13 主人定; 短消息号版): 开启 messageReference 时随群守则一起注入。
+ * 教 AI ①入站消息带短"消息号"(如 #0913a) ②出站用 [rf:消息号] 引用对方。
+ */
+export const REFERENCE_CONTEXT = [
+  '【引用消息】本群已开启引用能力(可在设置关闭): 每条入站消息都带一个"消息号"(形如 #0913a, 很短)。',
+  '想让自己的回复"引用"某条消息: 在回复正文里写 [rf:消息号](两端加英文方括号), 如 [rf:0913a] —— 这条回复就会以"引用"形式发出, 对方能看到你引用了他那条消息。消息号就是入站消息标签里 # 后面那一小串。',
 ].join('\n');
 
 // ── 共享字段子 schema(主 ConfigSchema 与 EditableConfigSchema 复用) ──
@@ -506,6 +517,7 @@ export const EditableConfigSchema: Schema<EditableConfig> = Schema.object({
   }).description('表情包图库'),
   injectRules: Schema.array(injectRuleItemSchema).default([]).description('条件注入规则'),
   imageHint: Schema.boolean().default(true).description('图片消息自动追加「看图」内置提示(默认开; 关掉=不再注入那条「把 URL 传给识图工具」)'),
+  messageReference: Schema.boolean().default(true).description('引用消息(默认开): 入站消息带短消息号 + 引用消息附原文 + 注入引用指令; 出站支持 [rf:短号] 标签引用对方消息'),
   groupPrompt: Schema.string().default(DEFAULT_GROUP_PROMPT).description('群聊常驻守则(默认含表情包礼仪;可清空关闭)'),
   schedule: scheduleSchema,
   enableApprovals: Schema.boolean().default(false).description('QQ 远程审批: dsh 权限申请发到 QQ, 用 /approve CODE 放行(保存后对新请求生效)'),
@@ -560,6 +572,8 @@ export interface ImQQBotConfig {
   /** 图片消息是否自动追加「看图」内置提示(默认 true)。关掉=不再注入「请把 URL 传给识图工具」那条
    *  —— 模型自己就能读图时可以关它。 */
   imageHint?: boolean;
+  /** 引用消息总开关(默认 true): 开=入站消息带短消息号(台账索引) + 引用消息附原文 + 注入引用指令, 出站支持 [rf:短号] 标签 */
+  messageReference?: boolean;
   /** 定时唤醒任务(M3) */
   schedule: ScheduleConfig;
   /** QQ 群管理(入群审批/禁言等; 需机器人=群管理员) */
@@ -636,6 +650,7 @@ export const ConfigSchema: Schema<ImQQBotConfig> = Schema.object({
   }).description('表情包图库'),
   injectRules: Schema.array(injectRuleItemSchema).default([]).description('条件注入规则:消息含图片/链接/自定义文本时自动插入系统提示'),
   imageHint: Schema.boolean().default(true).description('图片消息自动追加「看图」内置提示(默认开; 关掉=不再注入那条「把 URL 传给识图工具」)'),
+  messageReference: Schema.boolean().default(true).description('引用消息(默认开): 入站消息带短消息号 + 引用消息附原文 + 注入引用指令; 出站支持 [rf:短号] 标签引用对方消息'),
   schedule: scheduleSchema,
   groupAdmin: groupAdminSchema,
   showToolResults: Schema.boolean().default(false).description('是否展示工具调用成功结果（工具错误始终展示）'),

@@ -10,6 +10,8 @@ export interface ReplyTarget {
   scope: ChatScope;
   targetId: string;
   msgId?: string;
+  /** 引用回复: 出站时带 message_reference 引用这条消息(由正文 [rf:短号] 标签触发, 2026-09-13) */
+  referenceMessageId?: string;
 }
 
 /** QQ 入站消息（简化） */

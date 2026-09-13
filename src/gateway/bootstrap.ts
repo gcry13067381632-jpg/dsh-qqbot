@@ -224,6 +224,24 @@ export async function bootstrapGateway(
     sendMarkdown: async (target, content) => {
       try {
         const rawText = String(content || '');
+        // 引用消息(2026-09-13 主人定): AI 写 [rf:短号] → 台账查表还原 msg_id, 出站带 message_reference 以"引用"形式发出
+        const refId = target.referenceMessageId;
+        if (refId) {
+          // 保留 target(含 msgId 被动回复)+ 加引用 —— SDK send(): body.msg_id 与 body.message_reference 并存,
+          // 2026-09-13 修: 之前用 tgtNoMsg 去 msgId 变纯主动, 主动消息易被 QQ 静默拦, 主人测试看不到引用
+          const hasMd = hasMarkdownSyntax(rawText);
+          const refBody = hasMd
+            ? { target, msgType: 2 as const, markdown: { content: rawText }, messageReference: { message_id: refId } }
+            : { target, msgType: 0 as const, content: rawText, messageReference: { message_id: refId } };
+          try {
+            const resp = (await bot.send(refBody as never)) as { id?: string } | undefined;
+            pushSent(target, resp?.id);
+            return resp;
+          } catch (refErr) {
+            logger.warn(`引用消息发送失败, 降级为普通发送: ${refErr instanceof Error ? refErr.message : String(refErr)}`);
+            // fallthrough: 去掉引用, 走原有发送路径
+          }
+        }
         // 纯文本降级: 无 markdown 语法/@标签 → 直接纯文本通道, 省富媒体额度与频控
         if (!hasMarkdownSyntax(rawText)) {
           const respT = (await bot.sendText(target, rawText)) as { id?: string } | undefined;

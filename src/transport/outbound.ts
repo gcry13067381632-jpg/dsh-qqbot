@@ -8,6 +8,8 @@ import type { SessionManager, SessionRecord } from '../session/index.js';
 import type { ImQQBotConfig } from '../config.js';
 import type { Logger, ReplyTarget } from '../types.js';
 import { OutboundBuffer, sendRichOutbound, type QQBotSender } from './outbound-buffer.js';
+import { resolveMsgIndex } from './msg-index.js';
+import { dataRootOf } from '../gateway/data-root.js';
 import { formatToolResult, type ToolsRegistryLike, type ToolResultData } from './tool-presenter.js';
 import {
   parseEvent,
@@ -106,6 +108,16 @@ class OutboundRouter {
   private activeTarget(record: SessionRecord): ReplyTarget {
     const rt = record.replyTarget;
     return { scope: rt.scope, targetId: rt.targetId };
+  }
+
+  /**
+   * 引用短号查表(2026-09-13 主人定): 正文里 [rf:短号] → 完整 msg_id。
+   * 台账按 peer 存({dataRoot}/.qqbot/msg-index/{peer}/refs.json, 见 transport/msg-index.ts)。
+   */
+  private refLookupFor(record: SessionRecord): (index: string) => string | undefined {
+    const rt = record.replyTarget;
+    const root = dataRootOf(this.config);
+    return (index) => resolveMsgIndex(root, rt.scope, rt.targetId, index);
   }
 
   /**
@@ -217,6 +229,8 @@ class OutboundRouter {
         this.config.cwd,
         () => this.resolveTarget(record),
         this.chunkTargetFn(record),
+        undefined,
+        this.refLookupFor(record),
       );
       this.buffers.set(sessionId, buffer);
     }
@@ -355,6 +369,8 @@ class OutboundRouter {
         (m) => this.logger.error(m),
         () => this.resolveTarget(_record),
         this.chunkTargetFn(_record),
+        undefined,
+        this.refLookupFor(_record),
       );
     } catch (err) {
       this.logger.error(`im-qqbot: ${tag} failed: ${err instanceof Error ? err.message : String(err)}`);

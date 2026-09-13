@@ -11,6 +11,7 @@ import { StreamingWriter } from './streaming-writer.js';
 import {
   containsRecall,
   collectRecallIndices,
+  extractRefTag,
   parseOutbound,
   stripDirectives,
   resolveSource,
@@ -76,8 +77,27 @@ export async function sendRichOutbound(
    *  带上 target 是因为 QQ 的被动回复 5 条上限**按 msg_id 计** —— msg_id 一变(群友中途发言)
    *  配额即重置, 计数必须跟着归零, 否则会误补发(2026-09-10 主人指出)。 */
   onBlockSent?: (text: string, target: ReplyTarget) => void,
+  /** 引用短号查表(2026-09-13 主人定): 传短号(如 0913a) → 完整 msg_id; 台账见 transport/msg-index.ts */
+  refLookup?: (index: string) => string | undefined,
 ): Promise<void> {
-  const eff = (): ReplyTarget => (resolveTarget ? resolveTarget() : target);
+  // 引用消息(2026-09-13 主人定): 正文里的 [rf:短号] → 查本地台账还原完整 msg_id → 以"引用"形式发出
+  const ref = extractRefTag(text);
+  const refId = (() => {
+    const idx = ref?.index;
+    if (!idx) return '';
+    if (refLookup) {
+      try { const hit = refLookup(idx); if (hit) return hit; } catch { /* 查表失败按无引用处理 */ }
+    }
+    // 兜底: AI 若直接写了完整 msg_id(ROBOT1.0_…)也接受
+    if (/^ROBOT1\.0_/i.test(idx)) return idx;
+    logError?.(`im-qqbot: 引用短号 ${idx} 在台账里查不到, 本条按普通消息发出`);
+    return '';
+  })();
+  // 叠加引用(2026-09-13 修): 保留 msgId(被动回复) + 加 referenceMessageId —— SDK send() 支持
+  // body.msg_id 与 body.message_reference 并存。**所有**目标构造路径都要过这里。
+  const withRef = (t: ReplyTarget): ReplyTarget =>
+    refId ? { scope: t.scope, targetId: t.targetId, msgId: t.msgId, referenceMessageId: refId } : t;
+  const eff = (): ReplyTarget => withRef(resolveTarget ? resolveTarget() : target);
   const hasRecall = containsRecall(text);
   const displayable = stripDirectives(text);
   // 只要含 [RECALL(:N)] 就执行，一条回复里多个 [RECALL] 逐个撤(可一次撤多条)；
@@ -130,7 +150,9 @@ export async function sendRichOutbound(
         const chunk = chunks[ci] as string;
         if (!chunk.trim()) continue;
         // 逐块目标: passive 收尾(正文块>5 第6块起转主动)由 chunkTarget 决定; 缺省用 eff()
-        const tgt = chunkTarget ? chunkTarget(ci, chunks.length) : eff();
+        // ⚠️ 2026-09-13 修: chunkTarget 分支必须同样叠加引用 —— 原实现直接 chunkTarget(...) 绕过 eff(),
+        // passive 模式(当前实例)下 [reference:] 标签被 stripDirectives 剔掉却没附引用, 主人两次实测都看不到引用
+        const tgt = withRef(chunkTarget ? chunkTarget(ci, chunks.length) : (resolveTarget ? resolveTarget() : target));
         await bot.sendMarkdown(tgt, chunk);
         onBlockSent?.(chunk, tgt);
         if (ci < chunks.length - 1) await new Promise((r) => setTimeout(r, 500));
@@ -156,6 +178,8 @@ export class OutboundBuffer {
     private readonly chunkTarget?: (i: number, total: number) => ReplyTarget,
     /** 每成功发出一个正文块后回调(见 sendRichOutbound 同名参数) */
     private readonly onBlockSent?: (text: string, target: ReplyTarget) => void,
+    /** 引用短号查表(见 sendRichOutbound 同名参数; 2026-09-13 主人定) */
+    private readonly refLookup?: (index: string) => string | undefined,
   ) {
     this.writer = streamingEnabled
       ? new StreamingWriter({ bot, target: record.replyTarget, logger, throttleMs: STREAM_THROTTLE_MS })
@@ -196,6 +220,7 @@ export class OutboundBuffer {
         this.resolveTarget,
         this.chunkTarget,
         this.onBlockSent,
+        this.refLookup,
       );
     } catch (err) {
       this.logger.error(`im-qqbot: flush failed: ${err instanceof Error ? err.message : String(err)}`);
