@@ -196,9 +196,13 @@ export function touchAffinity(
  *   点名分 = min(20, mentions×2)
  *   接话分 = min(30, replies×3)
  *   新鲜度 = 1 小时内 +10 / 1 天内 +5 / 更久 0
+ *
+ * ⚠️ 2026-09-13 修(群友"亚瑟"读码抓到): 互动分原用 20×log10(1+msgs)/log10(101) 是**发散**的
+ *   (实测 msgs=1000 → 29.9 分、10 万 → 49.9 分、10 亿 → 89.8 分; 注释写"100 条≈20 分"容易被当成上限)。
+ *   现改**饱和式**(希尔/米氏形式): 20×msgs/(msgs+40) —— **40 条 = 拿一半分, 上限 20**, 刷不出高分。
  */
 export function affinityScore(e: AffinityEntry, now = Date.now()): number {
-  const msgs = 20 * (Math.log10(1 + e.msgs) / Math.log10(101));
+  const msgs = 20 * (e.msgs / (e.msgs + 40));
   const mentions = Math.min(20, e.mentions * 2);
   const replies = Math.min(30, e.replies * 3);
   const age = now - e.lastAt;
