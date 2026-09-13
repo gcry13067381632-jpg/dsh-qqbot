@@ -341,7 +341,9 @@ export async function handleInbound(
             message = createUserMessage({ content, source: { kind: 'user' as const } });
           }
         }
-          // 群友小传按需注入(2026-09-13 主人定): 有就带 1~2 行, 同一人 24h 内不重复(防监视感)
+          // 群友小传按需注入(2026-09-13 主人定): 走**运行时上下文**(plugin 来源) ——
+          //   AI 看得到, 而聊天界面会把它当上下文过滤掉, 不打扰 web/dock 观感。
+          //   同一人 24h 内不重复注入(防监视感); 注入失败不影响主链。
           try {
             const uid = msg.senderId;
             const lastAt = memoInjectAt.get(uid) ?? 0;
@@ -352,10 +354,19 @@ export async function handleInbound(
               });
               const r = await recallLines(dataRootOf(config), uid, plain || scText || '', embedder, 2);
               if (r.lines.length > 0) {
-                memoInjectAt.set(uid, Date.now());
-                agentBody = `${agentBody}\n[人家记得的 ${msg.senderName || '他'}: ${r.lines.map((l) => l.replace(/^-\s*/, '')).join(' / ')}]`;
-                content = [{ type: 'text' as const, text: agentBody }];
-                message = createUserMessage({ content, source: { kind: 'user' as const } });
+                const ag2 = record.agent as unknown as {
+                  session?: { append?: (type: string, data: unknown, opts?: { surfaceOp?: string }) => unknown };
+                } | undefined;
+                const sess2 = ag2?.session;
+                if (sess2 && typeof sess2.append === 'function') {
+                  const memoText = `[人家记得的 ${msg.senderName || '他'}: ${r.lines.map((l) => l.replace(/^-\s*/, '')).join(' / ')}]`;
+                  const memoMsg = createUserMessage({
+                    content: [{ type: 'text' as const, text: memoText }],
+                    source: { kind: 'plugin' as never, plugin: 'qqbot-people-memo', form: 'notice' as never },
+                  });
+                  sess2.append('user/message', memoMsg, { surfaceOp: 'append' });
+                  memoInjectAt.set(uid, Date.now());
+                }
               }
             }
           } catch { /* 小传注入失败不影响主链 */ }

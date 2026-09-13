@@ -3,7 +3,7 @@
  *
  * 设计要点（详见 参考文档/dsh-qqbot-好感度系统设计_20260913.md §4.3）:
  *   · 一人一个本地 Markdown: `{dataRoot}/.qqbot/people/<uid>.md`（人可读、可手改、可删）
- *   · 八栏: 身份 / 本事 / 经历 / 成就 / 喜好与雷区 / 价值观 / 与她的关系 / 对鲸鱼娘的期望
+ *   · 八栏: 身份 / 本事 / 经历 / 成就 / 喜好与雷区 / 价值观 / 与该 AI 的关系 / 对该 AI 的期望
  *   · **只写旁人也复述得出来的事实** + 一句"她当时怎么接的"; 不写评价、不猜测
  *   · 原文留档: 摘要之上不动, 摘要改味了能对回来
  *   · 写入节流: 同一人**一天最多一条**(她顺手记, 不是台账)
@@ -92,7 +92,7 @@ export function appendMemoLine(
     mkdirSync(dir, { recursive: true });
     const cur = existsSync(p) ? readFileSync(p, 'utf8') : undefined;
     if (!cur) {
-      const head = `# ${opts.name || key}\n\n> 小传（八栏：身份/本事/经历/成就/喜好与雷区/价值观/与她的关系/对鲸鱼娘的期望）\n> 只写旁人也复述得出来的事实 + 她当时怎么接的；不写评价与猜测。原文留档不动。\n\n## 记事\n`;
+      const head = `# ${opts.name || key}\n\n> 小传（八栏：身份/本事/经历/成就/喜好与雷区/价值观/与该 AI 的关系/对该 AI 的期望）\n> 只写旁人也复述得出来的事实 + AI 当时怎么接的；不写评价与猜测。原文留档不动。\n\n## 记事\n`;
       writeFileSync(p, `${head}${bullet}\n`, 'utf8');
       return { ok: true, msg: '已新建小传并记下这条' };
     }
