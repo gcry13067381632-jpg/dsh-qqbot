@@ -509,7 +509,7 @@ function assembleAgentBody(
   // 引用消息(2026-09-13): SDK 中间件没解析出 quote 时, 自己从 103/msg_elements 提取被引用原文
   if (!quotePart && enableRef) {
     const quoted = extractQuotedContent(msg);
-    if (quoted) quotePart = `[Quoted message begins]\n${quoted}\n[Quoted message ends]\n[Current message]\n`;
+    if (quoted) quotePart = `[Quoted message begins]\n${escapeQuoteMarkers(quoted)}\n[Quoted message ends]\n[Current message]\n`;
   }
   // ⚠️ 2026-09-13 主人要求(省 token): 引用原文只给**前 QUOTE_KEEP 字**,
   //   完整原文进本地缓存(每会话最多 10 条) → AI 需要时用 `quote_view` 工具取。
@@ -634,9 +634,21 @@ function cleanTextForScore(raw: string): string {
 function buildQuotePart(quote?: ResolvedQuote): string {
   if (!quote?.text && !quote?.entry?.content) return '';
 
-  const quoteText = quote.text || quote.entry?.content || 'Original content unavailable';
+  const quoteText = escapeQuoteMarkers(quote.text || quote.entry?.content || 'Original content unavailable');
 
   return `[Quoted message begins]\n${quoteText}\n[Quoted message ends]\n[Current message]\n`;
+}
+
+/**
+ * 引用原文里的**块标记转义**(2026-09-13 主人实测抓到的坑):
+ *   AI 可能在代码块里示范 `[Quoted message begins]` 这段字面量, 被引用后它会混进引用块,
+ *   让"第一个 begin + 第一个 end"这种匹配切错位置。把内层的方括号退化成圆括号:
+ *   语义照旧看得懂, 但不再参与结构匹配。
+ */
+function escapeQuoteMarkers(text: string): string {
+  return String(text || '')
+    .replace(/\[Quoted message begins\]/gi, '(Quoted message begins)')
+    .replace(/\[Quoted message ends\]/gi, '(Quoted message ends)');
 }
 
 /** 引用原文保留字数: 超出部分只进本地缓存(2026-09-13 主人定, 短引用就别折腾了) */
@@ -671,27 +683,32 @@ function localizeHistoryImages(text: string, stickerDir: string): string {
 }
 
 /**
- * 引用块瘦身(2026-09-13 主人要求: 引用太长很吃 token) —— 
+ * 引用块瘦身(2026-09-13 主人要求: 引用太长很吃 token) ——
  *   引用原文只给**前 {@link QUOTE_KEEP} 字**, 完整原文落本地缓存
  *   `{dataRoot}/.qqbot/quote-cache.json`(**每会话最多 10 条**), AI 需要时用 `quote_view` 工具取。
  * 短引用(≤ QUOTE_KEEP)原样不动(免得为了省几个字反而多一次工具调用);
  * 缓存失败则照旧给全文(宁可费 token, 不丢信息)。
+ *
+ * ⚠️ 2026-09-13 主人实测抓到一个隐蔽 bug: 若**被引用的原文里自带** `[Quoted message begins]`
+ *   (比如 AI 在代码块里示范过这个格式), 原来的**非贪婪正则**会先匹配到内层那个"结束"标记 →
+ *   截断切错位置、外层的 `[Quoted message ends]` 反而留在后面。
+ *   现在: ①取**第一个 begin + 最后一个 end**(认外层) ②引用原文里的标记先转义(见 escapeQuoteMarkers)。
  */
 function trimQuoteBlock(quotePart: string, dataRoot: string, msg: ProcessedMessage, logger: Logger): string {
   if (!quotePart) return quotePart;
-  const m = /\[Quoted message begins\]\n?([\s\S]*?)\n?\[Quoted message ends\]/.exec(quotePart);
-  if (!m) return quotePart;
-  const full = (m[1] ?? '').trim();
+  const B = '[Quoted message begins]';
+  const E = '[Quoted message ends]';
+  const b = quotePart.indexOf(B);
+  const e = quotePart.lastIndexOf(E);
+  if (b < 0 || e < 0 || e <= b) return quotePart;
+  const full = quotePart.slice(b + B.length, e).trim();
   if (full.length <= QUOTE_KEEP) return quotePart;
   const key = `${msg.kind === 'group' ? 'group' : 'c2c'}:${(msg.kind === 'group' ? msg.groupOpenid : undefined) ?? msg.senderId}`;
   try {
-    const e = pushQuote(dataRoot, key, full, msg.senderName);
+    const hit = pushQuote(dataRoot, key, full, msg.senderName);
     const head = full.slice(0, QUOTE_KEEP).replace(/\s+/g, ' ');
-    logger.debug(`[引用] 原文 ${full.length} 字 → 只给前 ${QUOTE_KEEP} 字(缓存 #${e.id})`);
-    return quotePart.replace(
-      m[0],
-      `[Quoted message begins]\n${head}…[引用#${e.id}: 全文 ${full.length} 字已缓存, 需要时用 quote_view 查]\n[Quoted message ends]`,
-    );
+    logger.debug(`[引用] 原文 ${full.length} 字 → 只给前 ${QUOTE_KEEP} 字(缓存 #${hit.id})`);
+    return `${quotePart.slice(0, b)}${B}\n${head}…[引用#${hit.id}: 全文 ${full.length} 字已缓存, 需要时用 quote_view 查]\n${E}${quotePart.slice(e + E.length)}`;
   } catch {
     return quotePart;
   }
