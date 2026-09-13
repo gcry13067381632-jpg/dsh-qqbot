@@ -29,6 +29,8 @@ import { recordImageUrl, lookupStickerIdByUrl } from '../features/image-url-ledg
 import { pushQuote } from '../features/quote-cache.js';
 import { computeRelevance, touchAffinity } from '../features/local-signals.js';
 import { touchDaily } from '../features/intimacy-ledger.js';
+import { recallLines } from '../features/people-memo.js';
+import { createLocalEmbedder } from '../features/local-embed.js';
 
 // ── 类型定义 ──
 
@@ -63,6 +65,9 @@ interface HistoryEntry {
   timestamp: number;
   messageId: string;
 }
+
+/** 小传注入节流(同一人 24h 内不重复): uid → 上次注入时间 */
+const memoInjectAt = new Map<string, number>();
 
 interface MentionState {
   wasMentioned?: boolean;
@@ -336,6 +341,24 @@ export async function handleInbound(
             message = createUserMessage({ content, source: { kind: 'user' as const } });
           }
         }
+          // 群友小传按需注入(2026-09-13 主人定): 有就带 1~2 行, 同一人 24h 内不重复(防监视感)
+          try {
+            const uid = msg.senderId;
+            const lastAt = memoInjectAt.get(uid) ?? 0;
+            if (scope === 'group' && uid && Date.now() - lastAt > 24 * 3600_000) {
+              const embedder = createLocalEmbedder({
+                modelDir: typeof lmCfg?.modelDir === 'string' ? lmCfg.modelDir : undefined,
+                logger,
+              });
+              const r = await recallLines(dataRootOf(config), uid, plain || scText || '', embedder, 2);
+              if (r.lines.length > 0) {
+                memoInjectAt.set(uid, Date.now());
+                agentBody = `${agentBody}\n[人家记得的 ${msg.senderName || '他'}: ${r.lines.map((l) => l.replace(/^-\s*/, '')).join(' / ')}]`;
+                content = [{ type: 'text' as const, text: agentBody }];
+                message = createUserMessage({ content, source: { kind: 'user' as const } });
+              }
+            }
+          } catch { /* 小传注入失败不影响主链 */ }
         // 聚合/批派发时"取最高"(2026-09-13 主人问): 窗口里可能有多条(如「哈哈哈」+「帮我看看这个报错」),
         // 只算"当前那条"会漏掉窗口里真正需要她的那条 → 对窗口内最近几条也打分, 取最高分那条为准。
         if ((mwState.aggregated === true || mwState.batchDispatch === true) && Array.isArray(mwState.history)) {

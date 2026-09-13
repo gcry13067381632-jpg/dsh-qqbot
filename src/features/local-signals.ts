@@ -136,6 +136,12 @@ export interface AffinityEntry {
   replies: number;
   firstAt: number;
   lastAt: number;
+  /** 记忆强度 0~1（2026-09-13 主人定：按记忆曲线遗忘；每次互动=一次复习 → 回满） */
+  strength?: number;
+  /** 复习次数（= 有效互动次数; 用来抬高遗忘下限、拉长遗忘时间常数） */
+  reviews?: number;
+  /** 上次复习（= 上次互动）时间戳 */
+  lastReview?: number;
 }
 
 interface AffinityFile {
@@ -183,6 +189,10 @@ export function touchAffinity(
     cur.msgs += 1;
     if (opts.mention) cur.mentions += 1;
     if (opts.reply) cur.replies += 1;
+    // 记忆曲线(2026-09-13 主人定): 每次互动算一次**复习** → 强度回满, 复习次数 +1
+    cur.reviews = (cur.reviews ?? 0) + 1;
+    cur.strength = 1;
+    cur.lastReview = now;
     if (opts.name) cur.name = String(opts.name).slice(0, 40);
     cur.lastAt = now;
     data.map[key] = cur;
@@ -201,13 +211,44 @@ export function touchAffinity(
  *   (实测 msgs=1000 → 29.9 分、10 万 → 49.9 分、10 亿 → 89.8 分; 注释写"100 条≈20 分"容易被当成上限)。
  *   现改**饱和式**(希尔/米氏形式): 20×msgs/(msgs+40) —— **40 条 = 拿一半分, 上限 20**, 刷不出高分。
  */
+/**
+ * 记忆强度（0~1）—— 2026-09-13 主人定：**按记忆曲线遗忘**，不是"只升不降"的功劳榜。
+ *
+ * 模型（艾宾浩斯式）：
+ *   S = floor + (1 - floor) × exp(-Δt / τ)
+ *   · τ（遗忘时间常数）随**复习次数**拉长 —— 这是"间隔效应"：越熟忘得越慢
+ *        τ = 2 天 × (1 + reviews/20)      （复习 20 次 ≈ 4 天一半，复习 100 次 ≈ 12 天一半）
+ *   · floor（**遗忘下限**）随复习次数**抬高** —— 主人要求"下限可以不断抬高"：
+ *        floor = min(0.6, 0.15 × log10(1 + reviews))   （老熟人久别重逢也不会掉回陌生）
+ *   · 每次互动 = 一次复习 → S 回满 1
+ *
+ * ⚠️ 只做**遗忘**，不做惩罚：分数不会因为"说错话"被扣。
+ *    "降低好感度"是另一套机制（负面事件），暂不实现（主人 2026-09-13 明确区分）。
+ */
+export function memoryStrength(e: AffinityEntry, now = Date.now()): number {
+  const reviews = Math.max(0, e.reviews ?? e.msgs ?? 0);
+  const lastReview = e.lastReview ?? e.lastAt ?? now;
+  const floor = Math.min(0.6, 0.15 * Math.log10(1 + reviews));
+  const tauDays = 2 * (1 + reviews / 20);
+  const dtDays = Math.max(0, (now - lastReview) / 86400_000);
+  const s = floor + (1 - floor) * Math.exp(-dtDays / tauDays);
+  return Math.max(0, Math.min(1, s));
+}
+
+/** 档位（滞回：进档门槛高于退档，防止抖动） */
+export function memoryTier(strength: number, prevTier?: string): '陌生人' | '眼熟' | '熟人' {
+  const enterHot = 0.7;
+  const keepHot = 0.55;
+  const enterWarm = 0.4;
+  const keepWarm = 0.28;
+  if (prevTier === '熟人') return strength >= keepHot ? '熟人' : strength >= keepWarm ? '眼熟' : '陌生人';
+  if (prevTier === '眼熟') return strength >= enterHot ? '熟人' : strength >= keepWarm ? '眼熟' : '陌生人';
+  return strength >= enterHot ? '熟人' : strength >= enterWarm ? '眼熟' : '陌生人';
+}
+
+/** 0~100 分（= 记忆强度 × 100；面板与排序沿用它，语义已从"功劳榜"改为"记忆强度"） */
 export function affinityScore(e: AffinityEntry, now = Date.now()): number {
-  const msgs = 20 * (e.msgs / (e.msgs + 40));
-  const mentions = Math.min(20, e.mentions * 2);
-  const replies = Math.min(30, e.replies * 3);
-  const age = now - e.lastAt;
-  const fresh = age < 3600_000 ? 10 : age < 86400_000 ? 5 : 0;
-  return Math.round(Math.min(100, msgs + mentions + replies + fresh));
+  return Math.round(memoryStrength(e, now) * 100);
 }
 
 /** 按熟度排序（面板/工具用） */

@@ -26,6 +26,7 @@ import { wakeSessionAgent, safeAppendUserMessage } from './features/group-hub.js
 import { managersOf, findManagerByPeer, findManagerBySessionId } from './features/session-registry.js';
 import { handleInbound } from './transport/inbound.js';
 import { getQuote } from './features/quote-cache.js';
+import { appendMemoLine, deleteMemo, listMemos, readMemo } from './features/people-memo.js';
 
 /** 诊断日志路径: 默认关闭; 需要排查时设环境变量 QQBOT_DIAG_FILE 指向日志文件 */
 const DIAG_FILE = process.env.QQBOT_DIAG_FILE || '';
@@ -1891,12 +1892,66 @@ export async function apply(ctx: Context): Promise<void> {
     },
   });
 
+  // people_memo: 群友小传（2026-09-13 主人定）—— 文字版好感度的本体。
+  //   记一行(同一人一天最多一条) / 查看 / 删除（群里一句"别记人家"就删）。描述刻意写短。
+  const peopleMemoTool = defineTool({
+    name: 'people_memo',
+    description: '群友小传: 记一行/查看/删除(只写旁人能复述的事实)',
+    parameters: {
+      who: { type: 'string', required: true, description: '群友昵称或 openid' },
+      line: { type: 'string', description: '要记的一行; 不传=只看' },
+      del: { type: 'boolean', description: 'true=删掉这个人的小传' },
+    },
+    output: {
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: { ok: { type: 'boolean', required: true }, msg: { type: 'string', required: true } },
+      },
+      render: (_a, v: { ok: boolean; msg: string }) => [{ type: 'text' as const, text: v.msg }],
+    },
+    async execute(args, exec) {
+      try {
+        const a = args as { who?: string; line?: string; del?: boolean };
+        const s = findSessionRec(channelOf(exec as never), exec as never);
+        const mgr = s?.ch?.manager as unknown as { dataRoot?: string } | undefined;
+        const rec = s?.rec as unknown as { scope?: string; peerId?: string } | undefined;
+        const dataRoot = String(mgr?.dataRoot || '');
+        if (!dataRoot) return { ok: false, msg: '未找到当前会话的数据根' };
+        // who → openid: 优先在群成员台账里按昵称找
+        let key = String(a.who || '').trim();
+        if (!/^[0-9A-Fa-f]{16,}$/.test(key) && rec?.scope === 'group' && rec.peerId) {
+          try {
+            const dataDir = join(dataRoot, '表情包');
+            const mems = readGroupMembers(dataDir, rec.peerId) || [];
+            const hit = mems.find((m) => m && m.name === key) || mems.find((m) => m && typeof m.name === 'string' && m.name.includes(key));
+            if (hit && hit.mid) key = hit.mid;
+          } catch { /* 用昵称兜底当 key */ }
+        }
+        if (a.del) {
+          const r = deleteMemo(dataRoot, key);
+          return { ok: r.ok, msg: r.ok ? '好, 已经把 ' + a.who + ' 那份小传删掉了, 以后也不记他' : r.msg };
+        }
+        if (a.line) {
+          const r = appendMemoLine(dataRoot, key, a.line, { name: a.who, force: false });
+          return { ok: r.ok, msg: r.ok ? '记下了: ' + a.line.slice(0, 60) : r.msg };
+        }
+        const cur = readMemo(dataRoot, key);
+        if (cur) return { ok: true, msg: cur.slice(0, 1200) };
+        const all = listMemos(dataRoot);
+        return { ok: true, msg: '还没有 ' + a.who + ' 的小传。现有 ' + all.length + ' 份: ' + all.slice(0, 8).map((x) => x.key).join(', ') };
+      } catch (e) {
+        return { ok: false, msg: e instanceof Error ? e.message : String(e) };
+      }
+    },
+  });
+
   // 逐个注册并记录结果(便于线上定位是哪个工具失败)
   const toolDefs: Array<{ name: string; tool: unknown }> = [
     { name: 'send_media', tool: sendMediaTool },
     { name: 'recall_message', tool: recallTool },
     { name: 'text_break', tool: textBreakTool },
     { name: 'quote_view', tool: quoteViewTool },
+    { name: 'people_memo', tool: peopleMemoTool },
     { name: 'tools_reload', tool: toolsReloadTool },
     { name: 'reply_gate', tool: replyGateTool },
     { name: 'outbound_mode', tool: outboundModeTool },
