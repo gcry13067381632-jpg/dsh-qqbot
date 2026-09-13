@@ -142,6 +142,8 @@ export interface AffinityEntry {
   reviews?: number;
   /** 上次复习（= 上次互动）时间戳 */
   lastReview?: number;
+  /** 上次复习的**日期**(YYYY-MM-DD): 同一天多次互动只算一次复习（2026-09-13 主人定: 每天就几次复习） */
+  lastReviewDay?: string;
 }
 
 interface AffinityFile {
@@ -189,10 +191,15 @@ export function touchAffinity(
     cur.msgs += 1;
     if (opts.mention) cur.mentions += 1;
     if (opts.reply) cur.replies += 1;
-    // 记忆曲线(2026-09-13 主人定): 每次互动算一次**复习** → 强度回满, 复习次数 +1
-    cur.reviews = (cur.reviews ?? 0) + 1;
-    cur.strength = 1;
-    cur.lastReview = now;
+    // 记忆曲线(2026-09-13 主人定; 经主人两次纠正后定稿):
+    //   **复习 = 当天第一次出现**(一天最多算一次) —— 刷屏不会多算, 复习次数≈"来过几天"。
+    //   强度每次互动都回满(衰减从最后一次互动算起); 曲线本体在 memoryStrength() 里。
+    const day = new Date(now).toISOString().slice(0, 10);
+    if ((cur.lastReviewDay ?? '') !== day) {
+      cur.reviews = (cur.reviews ?? 0) + 1;
+      cur.lastReviewDay = day;
+    }
+    cur.strength = 1; // 刚有互动 → 强度回满
     if (opts.name) cur.name = String(opts.name).slice(0, 40);
     cur.lastAt = now;
     data.map[key] = cur;
@@ -238,7 +245,7 @@ export function memoryStrength(e: AffinityEntry, now = Date.now()): number {
   const fam = Math.min(1, 0.35 * Math.log10(1 + reviews) + 0.10);
   const floor = Math.min(0.6, 0.15 * Math.log10(1 + reviews));
   const top = Math.max(fam, floor);
-  const tauDays = 2 * (1 + reviews / 20);
+  const tauDays = 3 * (1 + reviews / 10); // 来过 10 天 → 时间常数 6 天; 来过 50 天 → 18 天
   const dtDays = Math.max(0, (now - lastReview) / 86400_000);
   const s = floor + (top - floor) * Math.exp(-dtDays / tauDays);
   return Math.max(0, Math.min(1, s));
