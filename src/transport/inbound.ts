@@ -392,7 +392,9 @@ export async function handleInbound(
           }).catch(() => undefined);
           // ② 好感度台账(观察期, **只统计不生效**): 互动 / 被点名 / 接话(相关度≥0.6)
           try {
-            touchAffinity(dataRootOf(config), `${scope}:${peerId}`, {
+            // ⚠️ 2026-09-13 修(借主人截图发现): 键原来只到"会话"(scope:peerId), 于是**整群消息累加到一条**、
+            //   名字还被最后一个发言人覆盖(截图里"愤怒的小鸟 消息85"其实是整群总数)。改成**按人分键**。
+            touchAffinity(dataRootOf(config), `${scope}:${peerId}|${msg.senderId}`, {
               name: msg.senderName,
               mention: mentioned,
               reply: (rel?.relReply ?? 0) >= 0.6,
