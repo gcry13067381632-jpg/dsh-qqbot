@@ -205,6 +205,66 @@ auto-cancelled when the agent is cancelled or dsh exits.
 > Idea source: QQ-approval design of wang-22-code/dsh-qqbot-bridge (host dsh `approval/request`
 > standard event — the same wiring used by official dsh-acp and the Web approval dialog).
 
+## 🧠 Local small model (optional — saves tokens) (v1.4.5+)
+
+Let the plugin score incoming group messages **locally first** ("value scoring"): chatter that scores below the
+threshold **and is not @-mentioning the bot** will **not wake the model at all** → those tokens are simply not spent.
+Messages that @ the bot always pass; **messages with images always pass** (people usually send images *to* her).
+
+- **Model**: `bge-small-zh-v1.5` (Chinese-tuned, quantized ONNX **≈ 23MB**, millisecond-level on CPU, **fully offline**, zero tokens, nothing is uploaded)
+- **Location**: `{DSH_HOME | ~/.dsh}/models/bge-small-zh/` (user-level, shared across workspaces; a custom dir can be set in the config)
+- **Missing model is fine**: scoring silently disables itself and the plugin keeps working (you just don't get the savings)
+
+### ① One command (recommended)
+
+```bash
+node scripts/download-model.mjs                                   # from the source checkout
+node node_modules/@zaofan/dsh-qqbot/scripts/download-model.mjs    # when installed via npm
+```
+
+It prefers the China mirror `hf-mirror.com` and falls back to the official host, verifies file sizes, and prints the next steps.
+
+```bash
+node scripts/download-model.mjs --dir "D:\models\bge-small-zh"   # custom dir → put it in localModel.modelDir
+node scripts/download-model.mjs --source hf                       # force the official host
+```
+
+### ② Manual download (only three files)
+
+Replace `<base>` with `https://hf-mirror.com` or `https://huggingface.co`, and put the files under `~/.dsh/models/bge-small-zh/`:
+
+| Download | Put at | Size |
+|---|---|---|
+| `<base>/BAAI/bge-small-zh-v1.5/resolve/main/onnx/model_quantized.onnx` | `bge-small-zh/onnx/model_quantized.onnx` | ≈ 23MB |
+| `<base>/BAAI/bge-small-zh-v1.5/resolve/main/tokenizer.json` | `bge-small-zh/tokenizer.json` | ≈ 430KB |
+| `<base>/BAAI/bge-small-zh-v1.5/resolve/main/config.json` | `bge-small-zh/config.json` | < 1KB |
+
+### ③ Let your AI do it (paste this to the AI / to her)
+
+```text
+Please install the local small model used by the dsh qqbot plugin on this machine (offline; nothing is uploaded):
+1. Download three files from BAAI/bge-small-zh-v1.5 into `~/.dsh/models/bge-small-zh/`:
+   onnx/model_quantized.onnx (~23MB), tokenizer.json, config.json.
+   Prefer https://hf-mirror.com, fall back to https://huggingface.co.
+2. The layout must be: <model dir>/onnx/model_quantized.onnx, <model dir>/tokenizer.json, <model dir>/config.json
+3. Verify afterwards: model_quantized.onnx ≥ 20MB, tokenizer.json ≥ 300KB.
+   The plugin repo ships a one-shot script: `node scripts/download-model.mjs`
+4. Finally tell me which setting to fill in the plugin settings page, and what the three
+   scoring modes off / log / block actually do.
+```
+
+### Which mode to pick
+
+| Mode | Behaviour | Suggested |
+|---|---|---|
+| `off` | no scoring at all, everything wakes her | not interested |
+| `log` | **records scores but never blocks** | **observation period** — watch the panel for a few days |
+| `block` | below the threshold (default `0.5`) **does not wake** | production use, saves tokens |
+
+- **Per-session override**: the dock's "⚙ Single-session settings" can set mode / threshold / toggle **per group** (stored in `localModel.overrides` in `settings.yaml`), **applied live, no restart needed** (since v1.4.5).
+- **Boundaries**: @-mentions always pass; messages with images always pass; only a dispatch that was blocked **before waking her** (no tokens spent) rolls the group reply-cooldown back — the cooldown exists to save tokens, so already-spent tokens still count.
+- **Score log**: `{dataRoot}/.qqbot/value-scores.jsonl`, one JSON per line with `score / worth / gate / min / conf / mention / img / lib / agg / top`. The panel reads it directly, and the AI can read it to maintain the sample library (`{dataRoot}/.qqbot/value-samples.jsonl`, `{"m":"text","y":1|0}` — y=1 means "she would want to reply").
+
 ## Configuration
 
 | Config | Type | Default | Description |
