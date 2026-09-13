@@ -2032,7 +2032,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             else {
               state.affHtml = items.map(function (x, i) {
                 var age = x.lastAt ? Math.round((Date.now() - x.lastAt) / 60000) : 0
-                return (i + 1) + '. ' + (x.name || x.key) + '  [' + (x.tier || '陌生人') + ']  (来过' + (x.reviews || 0) + '天/消息' + x.msgs + '/点名' + x.mentions + '/接话' + x.replies + (age < 120 ? ' · ' + age + '分钟前' : '') + ')'
+                return (i + 1) + '. ' + (x.name || x.key) + '  💗' + (x.score != null ? x.score : '-') + ' [' + (x.tier || '陌生人') + ']  (来过' + (x.reviews || 0) + '天/消息' + x.msgs + '/点名' + x.mentions + '/接话' + x.replies + (age < 120 ? ' · ' + age + '分钟前' : '') + ')'
               }).join('\n')
             }
             if (box) box.textContent = state.affHtml
