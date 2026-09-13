@@ -1293,6 +1293,23 @@ export function apply(ctx) {
       writeJson(res, 200, { ok: true, done, modelDir: dir });
     } catch (e) { writeJson(res, 500, { ok: false, error: String((e && e.message) || e) }); }
   });
+  // 好感度台账(2026-09-13 主人定, 观察期): 只读, 供面板显示"谁跟她最熟"
+  //   数据源: {dataRoot}/.qqbot/affinity.json (每条群消息累计 互动/被点名/接话; 熟度现算, 公式透明)
+  route(ctx, 'GET', '/api/qqbot-settings/affinity', async (req, res) => {
+    try {
+      const u = new URL(req.url ?? '/', 'http://x');
+      const bot = nsBot(NSQ(u));
+      const dataRoot = (bot && bot.cfg && typeof bot.cfg.dataRoot === 'string' && bot.cfg.dataRoot) ? bot.cfg.dataRoot : ((bot && bot.cwd) || '');
+      if (!dataRoot) return writeJson(res, 200, { ok: true, items: [] });
+      const mod = await import('./dist/features/local-signals.js');
+      const limit = Math.max(1, Math.min(50, Math.round(Number(u.searchParams.get('limit'))) || 8));
+      const items = (mod.topAffinity(dataRoot, limit) || []).map((x) => ({
+        key: x.key, name: x.name || '', score: x.score, msgs: x.msgs, mentions: x.mentions, replies: x.replies, lastAt: x.lastAt,
+      }));
+      writeJson(res, 200, { ok: true, items });
+    } catch (e) { writeJson(res, 500, { ok: false, error: String((e && e.message) || e) }); }
+  });
+
   // 价值样例库读写(2026-09-13 主人定): {dataRoot}/.qqbot/value-samples.jsonl —— 用户可直接编辑
   function valueSamplesPathOf(bot) {
     const dataRoot = (bot && bot.cfg && typeof bot.cfg.dataRoot === 'string' && bot.cfg.dataRoot)

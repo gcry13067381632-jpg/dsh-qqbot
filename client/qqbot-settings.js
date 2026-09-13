@@ -2020,6 +2020,25 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         return out
       }
       // 局部刷新评分列表(不调 paintBody → 不闪、不打断滚动、不丢输入框焦点)
+      // 好感度(观察期): 只读展示 —— 谁互动最多/被点名最多/最常接她的话
+      function loadAffinity() {
+        if (state.tab !== 'session') return
+        var box = panel ? panel.querySelector('#dk-aff-box') : null
+        fetch('/api/qqbot-settings/affinity' + (state.ns ? '?' + outNsQ() : ''))
+          .then(function (r) { return r.json() })
+          .then(function (d) {
+            var items = (d && d.items) || []
+            if (items.length === 0) { state.affHtml = '还没有数据 —— 群里聊几句就出来了'; }
+            else {
+              state.affHtml = items.map(function (x, i) {
+                var age = x.lastAt ? Math.round((Date.now() - x.lastAt) / 60000) : 0
+                return (i + 1) + '. ' + (x.name || x.key) + '  💗' + x.score + '  (消息' + x.msgs + '/点名' + x.mentions + '/接话' + x.replies + (age < 120 ? ' · ' + age + '分钟前' : '') + ')'
+              }).join('\n')
+            }
+            if (box) box.textContent = state.affHtml
+          })
+          .catch(function () { if (box) box.textContent = '好感度读取失败' })
+      }
       function refreshScoreList() {
         if (state.tab !== 'session') return
         fetch('/api/qqbot-settings/value-scores' + scoreQuery())
@@ -2106,6 +2125,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           .then(function (r) { return r.json() })
           .then(function (d) { state.valueScores = d && d.ok ? d : { items: [], total: 0 }; paintBody() })
           .catch(function () { state.valueScores = { items: [], total: 0 }; paintBody() })
+          .then(function () { loadAffinity() })
           .then(function () { state.lmBusy = false })
         // 每 10 秒局部刷新一次评分列表(只换 #dk-vs-box 内容, 不整块重绘 → 不闪)
         if (state.lmTimer) clearInterval(state.lmTimer)
@@ -3420,6 +3440,9 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
               + '<span class="dk-msg" style="font-size:11px;color:#999">每 10 秒自动更新</span>'
               + '</div>'
             body += '<div id="dk-vs-box">' + scoreListHtml(state.valueScores) + '</div>'
+            // 💗 好感度(观察期, 只统计不生效): 数据源 {dataRoot}/.qqbot/affinity.json
+            body += '<div class="dk-row" style="font-weight:700;font-size:13px;margin:10px 0 2px">💗 好感度(观察期·只统计)</div>'
+            body += '<div class="dk-msg" id="dk-aff-box" style="font-size:12px;color:#666;white-space:pre-wrap">' + (state.affHtml || '加载中…') + '</div>'
             // ✍️ 样例库编辑(2026-09-13 主人问"哪里写样本"): 直接改 jsonl, 保存后下一条消息生效
             body += '<div class="dk-row" style="font-weight:700;font-size:13px;margin:12px 0 2px;gap:8px;align-items:center;flex-wrap:wrap">'
               + '<span>✍️ 样例库(决定她的开口标准)</span>'

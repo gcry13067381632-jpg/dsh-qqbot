@@ -17,6 +17,7 @@ import {
   resolveSource,
 } from './rich-media.js';
 import { stickerPerTurnCtx } from '../features/sticker-gate.js';
+import { rememberBotReply } from '../features/bot-reply-memo.js';
 
 /** 流式输出节流间隔(ms)：连续 chunk 累积后停顿该间隔才推送 */
 const STREAM_THROTTLE_MS = 200;
@@ -153,6 +154,9 @@ export async function sendRichOutbound(
         // ⚠️ 2026-09-13 修: chunkTarget 分支必须同样叠加引用 —— 原实现直接 chunkTarget(...) 绕过 eff(),
         // passive 模式(当前实例)下 [reference:] 标签被 stripDirectives 剔掉却没附引用, 主人两次实测都看不到引用
         const tgt = withRef(chunkTarget ? chunkTarget(ci, chunks.length) : (resolveTarget ? resolveTarget() : target));
+        // 记住她刚说的话(2026-09-13): 相关度信号 relReply 要用「当前消息 vs 她上一条发言」判断
+        // "是不是有人在接她的话" —— 内存级, 不落盘, 失败也不影响发送
+        try { if (tgt.scope === 'group') rememberBotReply(tgt.targetId, chunk); } catch { /* ignore */ }
         await bot.sendMarkdown(tgt, chunk);
         onBlockSent?.(chunk, tgt);
         if (ci < chunks.length - 1) await new Promise((r) => setTimeout(r, 500));

@@ -27,6 +27,7 @@ import { getStickerStore, computeDHash } from '../features/sticker-store.js';
 import { lookupImagePath, rememberImagePath } from '../features/image-path-cache.js';
 import { recordImageUrl, lookupStickerIdByUrl } from '../features/image-url-ledger.js';
 import { pushQuote } from '../features/quote-cache.js';
+import { computeRelevance, touchAffinity } from '../features/local-signals.js';
 
 // ── 类型定义 ──
 
@@ -354,6 +355,22 @@ export async function handleInbound(
         if (sc || firstImg) {
           // 会话级门槛: 用本会话算出的 minScore 判定(不是 scorer 内部的默认值); 无分(纯图)视作放行
           const worth = sc ? sc.score >= minScore : true;
+          // ① 相关度(观察期, **只记录不参与判定**): 当前消息 ↔ 她上一条发言 / 群里最近 5 条(2026-09-13 主人定)
+          const rel = await computeRelevance({
+            gid: msg.groupOpenid ?? '',
+            currentText: scText || plain,
+            history: mwState.history as Array<{ messageId?: string; content?: string }> | undefined,
+            modelDir: typeof lmCfg?.modelDir === 'string' ? lmCfg.modelDir : undefined,
+            logger,
+          }).catch(() => undefined);
+          // ② 好感度台账(观察期, **只统计不生效**): 互动 / 被点名 / 接话(相关度≥0.6)
+          try {
+            touchAffinity(dataRootOf(config), `${scope}:${peerId}`, {
+              name: msg.senderName,
+              mention: mentioned,
+              reply: (rel?.relReply ?? 0) >= 0.6,
+            });
+          } catch { /* ignore */ }
           appendScoreLog(dataRootOf(config), {
             gid: msg.groupOpenid ?? '',
             sender: msg.senderName || msg.senderId,
@@ -365,6 +382,10 @@ export async function handleInbound(
             img: firstImg ? true : undefined,
             lib: libItem ? true : undefined,
             conf: sc ? Math.round(sc.confidence * 1000) / 1000 : undefined,
+            // 相关度(观察期): relReply=接她的话 / relHist=接群里的话题 / final=期望的融合分(暂不生效)
+            relReply: rel?.relReply,
+            relHist: rel?.relHist,
+            final: sc ? Math.round((0.6 * sc.score + 0.25 * (rel?.relReply ?? 0) + 0.15 * (rel?.relHist ?? 0)) * 1000) / 1000 : undefined,
             agg: aggCount || undefined,
             top: sc ? sc.top.map((n) => `${n.m.slice(0, 14)}|${n.y}|${n.s.toFixed(2)}`) : undefined,
             text: scText.slice(0, 120),
