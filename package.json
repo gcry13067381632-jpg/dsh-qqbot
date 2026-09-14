@@ -57,6 +57,7 @@
   "license": "MIT",
   "files": [
     "dist",
+    "docs/USER-GUIDE.md",
     "client",
     "cordis.patch.yml",
     "settings-host.js",
