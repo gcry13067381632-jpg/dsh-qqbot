@@ -27,9 +27,13 @@ import { getStickerStore, computeDHash } from '../features/sticker-store.js';
 import { lookupImagePath, rememberImagePath } from '../features/image-path-cache.js';
 import { recordImageUrl, lookupStickerIdByUrl } from '../features/image-url-ledger.js';
 import { pushQuote } from '../features/quote-cache.js';
-import { computeRelevance, touchAffinity } from '../features/local-signals.js';
+import { computeRelevance, touchAffinity, classifyEmo, getAffinityEntry, memoryStrength } from '../features/local-signals.js';
 import { touchDaily } from '../features/intimacy-ledger.js';
-import { recallLines, setPendingMemo } from '../features/people-memo.js';
+import { noteLastSender, attitudeOf, attitudeRange, attitudeGateFor, ATTITUDE_GATE_ENABLED } from '../features/attitude.js';
+import { confidentEmo } from '../features/four-source.js';
+import { AGG_SCORE_MODE, weightedAggregate } from '../features/agg-score.js';
+import { recallLines, setPendingMemo, countWroteToday } from '../features/people-memo.js';
+import { detectSelfDisclosure, selfDisclosureHint, bumpHint } from '../features/self-disclosure.js';
 import { createLocalEmbedder } from '../features/local-embed.js';
 
 // ── 类型定义 ──
@@ -153,6 +157,52 @@ export async function handleInbound(
   // ⚠️ 本地手改功能（曾被重编译冲掉），改完务必保持 src 与部署 dist 同步。
   agentBody = applyInjectRules(agentBody, msg, config.injectRules, logger, config.imageHint !== false);
 
+  // 群友自述 → 临时提醒她"可以记一条"（2026-09-14 主人定：按关键词命中，**零常驻开销**）
+  //   为什么不常驻：主人定过"用法不写进守则，常驻注入每轮都占 token"。
+  //   为什么敢用关键词：误报代价极小（最多多记一条，能删；一天只有 3 条额度），漏报也无害（下次再说还会触发）。
+  //   ⚠️ 候选**不止"当前那条"**（主人 2026-09-14 问"和消息聚合什么关系"）：
+  //     消息聚合/批派发时，窗口里前面几条在 mwState.history 里 —— 群聊的 msg.content 只装**最后一条**
+  //     （私聊才是多条拼接）。所以两边都扫、取最近 5 条，与价值评分"取最高"的口径一致（见下方评分段）。
+  //     更早的历史不进候选：否则会为几天前的老消息反复提醒同一条。
+  try {
+    const candidates: Array<{ text: string; senderId: string; senderName?: string }> = [
+      { text: String(msg.content ?? ''), senderId: msg.senderId, senderName: msg.senderName },
+    ];
+    if ((mwState.aggregated === true || mwState.batchDispatch === true) && Array.isArray(mwState.history)) {
+      for (const h of mwState.history.slice(-5)) {
+        const e = h as { content?: unknown; senderId?: unknown; senderName?: unknown };
+        const t = cleanTextForScore(String(e.content ?? ''));
+        if (t && typeof e.senderId === 'string') {
+          candidates.push({
+            text: t,
+            senderId: e.senderId,
+            senderName: typeof e.senderName === 'string' ? e.senderName : undefined,
+          });
+        }
+      }
+    }
+    for (const c of candidates) {
+      const hit = detectSelfDisclosure(c.text);
+      if (!hit) continue;
+      const personKey = `person:${c.senderId}`;
+      if (countWroteToday(personKey) > 0) continue;   // 这人今天已经记过 → 不唠叨
+      // 只有"她在意的人"才提醒（主人 2026-09-14 定）：
+      //   "每个人都提醒记录会不会太耗费 token…限制只有好感度高了才提醒，其余靠模型自觉，这样才真实"。
+      //   口径 = 好感度占其**范围**的比例 ≥ 20%（即"亲近"档；范围随熟识度变，陌生人 ±1 所以更容易达标）。
+      //   没达标的不提醒 —— 靠她自觉（真在意的人，她本来就会留神）。
+      const dRoot = dataRootOf(config);
+      const att = attitudeOf(dRoot, personKey);
+      const affEntry = getAffinityEntry(dRoot, personKey);
+      const f = affEntry ? memoryStrength(affEntry) : 0;
+      const ratio = (att?.a ?? 0) / attitudeRange(f);
+      if (ratio < 0.2) continue;
+      if (!bumpHint(personKey)) continue;             // 每人每天最多提醒 2 次
+      agentBody = `${agentBody}\n\n${selfDisclosureHint(hit, c.senderName || c.senderId)}`;
+      logger.debug(`[小传提醒] 命中"${hit.matched}": ${c.senderName || c.senderId}`);
+      break;                                          // 一轮最多提醒一条，别刷屏
+    }
+  } catch { /* 提醒失败不影响主链 */ }
+
   // 群聊时间戳(原"群守则"拼接位): 守则已迁 systemPrompt.section(session-manager 装配期注册,
   // 每请求进 system, 不再每轮塞 user 历史); 此处改为注入当前系统时间, 让 AI 每轮知道日期/星期/时刻。
   if (scope === 'group') {
@@ -214,9 +264,28 @@ export async function handleInbound(
       ? (lmCfg.overrides as Record<string, { enabled?: boolean; valueGate?: 'off' | 'log' | 'block'; valueMinScore?: number }>)[ovKey]
       : undefined) || {};
     const gate = ovRaw.valueGate ?? lmCfg?.valueGate ?? 'log';
-    const minScore = typeof ovRaw.valueMinScore === 'number'
+    const baseMin = typeof ovRaw.valueMinScore === 'number'
       ? ovRaw.valueMinScore
       : (typeof lmCfg?.valueMinScore === 'number' ? lmCfg.valueMinScore : 0.5);
+    // ── 好感度怎么影响"叫醒判定"（2026-09-14 主人定稿：**加在分数上，不动门槛**）──
+    //   主人原话："是不是不应该加减门槛，而是加减消息的最终评分数值？"
+    //   对 —— 数学上等价（score+off ≥ min  ⟺  score ≥ min−off），但**语义干净得多**：
+    //     · 门槛 = 主人设的标准，保持纯粹（你设 0.9 就是 0.9，不会被偷偷改）
+    //     · 偏移加在"这句话在她眼里值多少"上：越亲近越值（正分）、越疏远越不值（负分）
+    //     · 原始分不被污染、偏移单独记，审计一目了然
+    //   ⚠️ 符号（2026-09-14 修）：偏移 = **+0.1 × 好感占比** —— 亲近加分、冷淡减分。
+    //      之前照搬"门槛版"的 −0.1×ratio，冷淡反而 [+0.06] 加分（更容易被叫醒），语义全反。
+    //   红线：负档也只是"少理/少主动"，绝不冷落 / 阴阳 / 攻击。开关 ATTITUDE_GATE_ENABLED 可一键回滚。
+    const minScore = baseMin;
+    let attTier: string | undefined;
+    let attOff = 0;
+    if (ATTITUDE_GATE_ENABLED) {
+      try {
+        const g = attitudeGateFor(dataRootOf(config), `person:${msg.senderId}`);
+        attTier = g.tier;
+        attOff = g.offset;
+      } catch { /* 算不出 → 不偏移 */ }
+    }
     const lmOn = (ovRaw.enabled ?? lmCfg?.enabled) !== false;
     if (scope === 'group' && lmOn && gate !== 'off') {
       const mentioned = mwState.mention?.wasMentioned === true;
@@ -323,6 +392,22 @@ export async function handleInbound(
         }
         if (!sc && firstImg) scText = '[图片]';
         let aggCount = 0;
+        /**
+         * ★ 归因跟随（2026-09-14 主人查实"扣错人"后加）：
+         *   聚合窗口里"取最高分那条"时，**被计分的那句话可能不是最后一个人说的**。
+         *   原来 `scText` 换成了别人的话，而下面所有归因（熟识度 / 好感度 / 语气 /
+         *   评分日志的 sender）仍用 `msg.senderId`（窗口里**最后**发言的人）→
+         *   实测把「大肥鱼怎么不插话了」（一只路过的路人甲说的）算到了「愤怒的小鸟」头上，
+         *   还用**那个路人的语气**当他的语气，最后扣了他 −0.12。
+         *   现在：scText 换成谁的话，发送者就跟着换成谁。
+         */
+        let srcSenderId = msg.senderId;
+        let srcSenderName = msg.senderName;
+        let srcFromWindow = false;
+        /** 加权综合分（只在加权模式下有值；含各条自己的好感偏移） */
+        let aggScore: number | undefined;
+        /** 加权明细（进日志，便于事后核对"这个分是怎么平均出来的"） */
+        let aggParts: Array<{ n: string; s: number; r: number; w: number }> | undefined;
         // B) 预检提示: 图片消息附一句 —— ⚠️ **只在真·有信息量时才提示**(2026-09-13 主人定):
         //    候选区(candidate)是插件自动下载的默认状态, 每张图都会落进去 →
         //    提示它纯属噪音, 所以候选区/新图**一律不提示**; 只提示「已收藏过」和「在回收站」。
@@ -368,20 +453,80 @@ export async function handleInbound(
           // ⚠️ 2026-09-13 修: 这里之前直接拿 history 的**原始文本**评分 → 合并转发/引用块的格式元数据
           //    又混进来了(实测记录里 text 是 `[群聊的聊天记录] === 消息 1 ===…`)。统一过清洗。
           const extras = mwState.history
-            .map((h) => cleanTextForScore(String(h.content ?? '')))
-            .filter(Boolean)
+            .map((h) => ({
+              text: cleanTextForScore(String(h.content ?? '')),
+              senderId: h.senderId,
+              senderName: h.senderName,
+            }))
+            .filter((e) => e.text !== '')
             .slice(-5);
           aggCount = extras.length;
-          const others = await Promise.all(extras.map((t) => scorer.score(t)));
-          others.forEach((o, i) => {
-            if (!o) return;
-            if (!sc || o.score > sc.score) { sc = o; scText = extras[i] ?? scText; }
-          });
+          const others = await Promise.all(extras.map((e) => scorer.score(e.text)));
+          // 候选池 = 当前那条 + 窗口里那几条（每条都带着"是谁说的"）
+          const pool = [
+            { text: scText, score: sc?.score, senderId: msg.senderId, senderName: msg.senderName, mention: mentioned, fromWindow: false },
+            ...extras.map((e, i) => ({
+              text: e.text,
+              score: others[i]?.score,
+              senderId: e.senderId,
+              senderName: e.senderName,
+              mention: false,
+              fromWindow: true,
+            })),
+          ].filter((p) => typeof p.score === 'number');
+          if (AGG_SCORE_MODE === 'weighted' && pool.length > 1) {
+            // 每条先补上"说话人的好感占比 / 偏移"（读台账，所以留在外面做），再交给纯函数算加权
+            const cands = pool.map((p) => {
+              let ratio = 0;
+              let offset = 0;
+              let tier: string | undefined;
+              if (ATTITUDE_GATE_ENABLED) {
+                try {
+                  const g = attitudeGateFor(dataRootOf(config), `person:${p.senderId}`);
+                  ratio = g.ratio;
+                  offset = g.offset;
+                  tier = g.tier;
+                } catch { /* 算不出 → 按中立 */ }
+              }
+              return { text: p.text, score: p.score as number, ratio, offset, mention: p.mention, name: p.senderName, tier, senderId: p.senderId, fromWindow: p.fromWindow };
+            });
+            const agg = weightedAggregate(cands);
+            if (agg) {
+              aggScore = agg.score;
+              aggParts = agg.parts;
+              // ★ 主角 = 权重最大那条：文本 / 归因 / 档位全跟着它，绝不"平均出一个不存在的人"
+              const top = cands[agg.topIndex];
+              if (top) {
+                scText = top.text || scText;
+                srcSenderId = top.senderId;
+                srcSenderName = top.name;
+                srcFromWindow = top.fromWindow;
+                attTier = top.tier ?? attTier;
+                attOff = top.offset;   // 只用于日志（分值里已经各自算过偏移，别再加一次）
+              }
+            }
+          } else {
+            // 旧口径：取最高
+            others.forEach((o, i) => {
+              if (!o) return;
+              if (!sc || o.score > sc.score) {
+                sc = o;
+                scText = extras[i]?.text ?? scText;
+                // ★ 文本换人 → 归因也换人（否则就是"用别人的语气、扣别人的分"）
+                srcSenderId = extras[i]?.senderId ?? srcSenderId;
+                srcSenderName = extras[i]?.senderName ?? srcSenderName;
+                srcFromWindow = true;
+              }
+            });
+          }
         }
         // 记录: 有分数→正常记; 纯图片无分数→也记一条(标 img, 让"图片也在观察范围"看得见)
         if (sc || firstImg) {
           // 会话级门槛: 用本会话算出的 minScore 判定(不是 scorer 内部的默认值); 无分(纯图)视作放行
-          const worth = sc ? sc.score >= minScore : true;
+          // 判定分：加权模式用**综合分**（Σ权×有效分 / Σ权，各条的好感偏移已在里面算过）；
+          //   单条模式仍是 原始分 + 好感偏移。⚠️ 别重复加偏移（加权时 attOff 只用于日志）。
+          const effScore = aggScore !== undefined ? aggScore : (sc ? sc.score + attOff : 0);
+          const worth = sc ? effScore >= minScore : true;
           // ① 相关度(观察期, **只记录不参与判定**): 当前消息 ↔ 她上一条发言 / 群里最近 5 条(2026-09-13 主人定)
           const rel = await computeRelevance({
             gid: msg.groupOpenid ?? '',
@@ -390,19 +535,33 @@ export async function handleInbound(
             modelDir: typeof lmCfg?.modelDir === 'string' ? lmCfg.modelDir : undefined,
             logger,
           }).catch(() => undefined);
+          // ③ 情绪粗分类(观察期**只记录**): 暖/冷/中性（2026-09-14 由"夸/骂"改名）—— 同一个本地模型 + 主人给的 60 条例句库
+          const emo = await classifyEmo(scText || plain, {
+            modelDir: typeof lmCfg?.modelDir === 'string' ? lmCfg.modelDir : undefined,
+            logger,
+          }).catch(() => undefined);
           // ② 好感度台账(观察期, **只统计不生效**): 互动 / 被点名 / 接话(相关度≥0.6)
           try {
             // ⚠️ 2026-09-13 修(借主人截图发现): 键原来只到"会话"(scope:peerId), 于是**整群消息累加到一条**、
             //   名字还被最后一个发言人覆盖(截图里"愤怒的小鸟 消息85"其实是整群总数)。改成**按人分键**。
-            touchAffinity(dataRootOf(config), `${scope}:${peerId}|${msg.senderId}`, {
-              name: msg.senderName,
+            touchAffinity(dataRootOf(config), `person:${srcSenderId}`, {
+              name: srcSenderName,
               mention: mentioned,
               reply: (rel?.relReply ?? 0) >= 0.6,
             });
+            // 好感度（A 值）需要知道"这一轮在跟她说话的**是谁**"——出站事件只带会话、不带发送者，
+            // 所以这里记一下最近发言的人，出站时用（键与会话一致：<scope>:<targetId>）。
+            // ⚠️ 用 srcSender*（= 被计分那句话的真正说话人），不是 msg.sender*。
+            noteLastSender(
+              scope === 'group' ? `group:${msg.groupOpenid ?? ''}` : `c2c:${srcSenderId}`,
+              srcSenderId,
+              srcSenderName,
+              confidentEmo(emo),   // 这条消息的语气（暖/冷/中性）→ 好感度"对比放大"要用
+            );
             // 日报台账(2026-09-13 主人要《本周亲密度小报》): 按天分桶, 只记肉眼可核的事实
             if (scope === 'group' && msg.groupOpenid) {
-              touchDaily(dataRootOf(config), msg.groupOpenid, msg.senderId, {
-                name: msg.senderName,
+              touchDaily(dataRootOf(config), msg.groupOpenid, srcSenderId, {
+                name: srcSenderName,
                 mention: mentioned,
                 reply: (rel?.relReply ?? 0) >= 0.6,
                 img: Boolean(firstImg),
@@ -411,17 +570,37 @@ export async function handleInbound(
           } catch { /* ignore */ }
           appendScoreLog(dataRootOf(config), {
             gid: msg.groupOpenid ?? '',
-            sender: msg.senderName || msg.senderId,
+            sender: srcSenderName || srcSenderId,
+            // ★ 记下"sender 是从聚合窗口里挑出来的"（不是窗口最后那个人）—— 排查归因问题必需
+            senderFromWindow: srcFromWindow || undefined,
             mention: mentioned,
             score: sc ? Math.round(sc.score * 1000) / 1000 : undefined,
+            // 判定真正用的分：加权模式=Σ(权×有效分)/Σ权；单条模式=原始分+好感偏移
+            scoreAdj: sc ? Math.round(effScore * 1000) / 1000 : undefined,
             worth,
+            // 被点名 → **必回**（2026-09-14 主人："@不是保证触发吗？"）
+            //   拦截条件三处都写着 `!mentioned`，所以被 @ 时分数再低也放行；
+            //   但 worth 只表示"分数够不够"，日志里会显示成没通过 → 单记一个字段说明白。
+            mentionForced: mentioned || undefined,
             min: minScore,
+            // 好感度档位与偏移（2026-09-14 定稿：偏移**加在分数上**，门槛保持主人设的值不动）
+            //   ⚠️ 加权模式下 attTier/attOff 是**主角那条**的（权重最大的人），分值本身已各算各的
+            attTier,
+            attOff: attOff || undefined,
+            // 加权明细：每条 {n:昵称, s:价值分, r:好感占比, w:权重} —— 事后能复算出综合分
+            aggWeighted: aggParts ? true : undefined,
+            aggParts,
+            minBase: baseMin,
             gate,   // 2026-09-13 加: 记下**当时生效的模式**(排查"为什么低分还回话"必需; 以前只记 min, log/block 分不出来)
             img: firstImg ? true : undefined,
             lib: libItem ? true : undefined,
             conf: sc ? Math.round(sc.confidence * 1000) / 1000 : undefined,
             // 相关度(观察期): relReply=接她的话 / relHist=接群里的话题 / final=期望的融合分(暂不生效)
             relReply: rel?.relReply,
+            // 情绪粗分类(观察期只记录): emo=暖|冷|中性(2026-09-14 从"夸/骂"改名), 分数与差值便于事后核对准不准
+            emo: emo?.label,
+            emoScore: emo?.best,
+            emoMargin: emo?.margin,
             relHist: rel?.relHist,
             final: sc ? Math.round((0.6 * sc.score + 0.25 * (rel?.relReply ?? 0) + 0.15 * (rel?.relHist ?? 0)) * 1000) / 1000 : undefined,
             agg: aggCount || undefined,

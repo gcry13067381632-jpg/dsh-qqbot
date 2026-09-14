@@ -18,6 +18,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { ChatScope, Logger, ReplyTarget } from '../types.js';
 import type { ImQQBotConfig } from '../config.js';
 import { FIXED_CHANNEL_CONTEXT, REFERENCE_CONTEXT } from '../config.js';
+import { takePendingMemoText } from '../features/people-memo.js';
 import { dataRootOf, stickerDirOf } from '../gateway/data-root.js';
 import { SettingsReader } from '../model/settings-reader.js';
 import { ModelResolver } from '../model/model-resolver.js';
@@ -235,8 +236,19 @@ export class SessionManager {
       try { this.modelResolver.setSessionPreset(key, presetId); } catch { /* ignore */ }
     }
 
-    const route = this.modelResolver.getEffectiveRoute(key, record.sessionId);
+    // ⚠️ 2026-09-14 修（主人报「一用 /bot-new，所有会话的模型都变成某个 web 会话的了」）：
+    //   原来这里取 `getEffectiveRoute` —— 它只看「插件 override / 配置默认链」，
+    //   **不读会话实际在用的模型**。会话的模型若是在宿主侧设的（web 上选的，落在 agent.options），
+    //   override 里什么都没有 → fork 时掉进 `resolveDefault()`，
+    //   而 resolveDefault 读的是宿主**当前默认选择**(agentDefaultModel.currentSelection()) ——
+    //   表现就是"所有会话都换成了某一个会话的模型"。改成优先读实际生效模型(getEffectiveModel)。
+    const route = this.getEffectiveModel(scope, peerId)
+      ?? this.modelResolver.getEffectiveRoute(key, record.sessionId);
     await this.forkCurrentSession(key, record, route, inherit);
+    // 顺手记进 override（绑到 fork 后的新 sessionId）—— 不然下次 fork / 重启还会掉回默认
+    if (route) {
+      try { this.modelResolver.setOverride(key, record.sessionId, route); } catch { /* ignore */ }
+    }
     return 'forked';
   }
 
@@ -620,7 +632,10 @@ export class SessionManager {
         this.logger.info(`getOrCreate: cwd 已变更, fork 热迁移(继承历史): key=${key} old=${prevCfg.cwd ?? '(未记录)'} new=${wantCwd}`);
         // forkCurrentSession 内部用 this.config.cwd(新值)建子会话并继承历史 seed;
         // fork 后 active 记录的 sessionId/agent 已被替换为新档, 直接补 target 返回即可。
-        await this.forkCurrentSession(key, active, this.modelResolver.getEffectiveRoute(key, active.sessionId), true);
+        // ⚠️ 2026-09-14 同款修复：模型要跟"会话实际在用的"走，不能取默认链（否则热迁移也会换模型）
+        const route = this.getEffectiveModel(scope, peerId)
+          ?? this.modelResolver.getEffectiveRoute(key, active.sessionId);
+        await this.forkCurrentSession(key, active, route, true);
         active.replyTarget = replyTarget;
         active.lastActivity = Date.now();
         return active;
@@ -910,7 +925,11 @@ export class SessionManager {
         const rules = this.readLiveGroupPromptForNs(ns);
         // 引用消息指令(2026-09-13 主人定): 开关关闭时不注入
         const refCtx = this.config.messageReference === false ? '' : REFERENCE_CONTEXT;
-        const body = [FIXED_CHANNEL_CONTEXT.trim(), refCtx.trim(), rules.trim()].filter(Boolean).join('\n\n');
+        // 群友小传(2026-09-13 主人定): 复用这条**已验证**的 pre-step 注入通道 ——
+        //   ctx.systemPrompt.context() 那条在新宿主上没生效(无日志), 走这里最稳(群守则就是这么注入的)。
+        //   TTL 90s: inbound 算好的那一行过期就自动不再注入。
+        const memoLine = takePendingMemoText().trim();
+        const body = [FIXED_CHANNEL_CONTEXT.trim(), refCtx.trim(), rules.trim(), memoLine].filter(Boolean).join('\n\n');
         if (!body) return decision;
         const text = `<system-reminder>\n${body}\n</system-reminder>`;
         const desired = {

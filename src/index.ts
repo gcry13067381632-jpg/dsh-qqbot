@@ -140,7 +140,7 @@ export async function apply(ctx: Context, config: ImQQBotConfig): Promise<void> 
   try {
     const sp = (ctx as unknown as { systemPrompt?: { context?: (c: { name: string; order: number; text: (a: unknown) => string }) => () => void } }).systemPrompt;
     if (sp && typeof sp.context === 'function') {
-      sp.context({ name: 'qqbot-people-memo', order: 60, text: () => takePendingMemoText() });
+      sp.context({ name: 'qqbot-people-memo', order: 60, text: () => { const txt = takePendingMemoText(); if (txt) logger.info(`[小传] 运行时上下文提供 ${txt.length} 字`); return txt; } });
       logger.info('[im-qqbot] 群友小传已注册为运行时上下文贡献');
     } else {
       logger.warn('[im-qqbot] 宿主未提供 systemPrompt.context —— 小传注入退化为不注入');

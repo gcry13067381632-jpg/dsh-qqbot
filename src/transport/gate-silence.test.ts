@@ -1,0 +1,28 @@
+/**
+ * gate-silence.test.ts — 回复闸门静默后的"干净收场"（2026-09-14 主人要求）
+ *
+ * 现场：她调 `reply_gate{reply:false}` 决定吃瓜，紧接着还想"顺手记一下群友喜好"
+ *   （`people_memo`），但那批调用已被闸门的 `agent.cancel` 连带中止 → 聊天里刷出
+ *   `❌ 工具 people_memo 执行失败 / Error: tool call aborted`。
+ * 主人原话："能把回复闸门、写日记失败改成直接停止 llm 的回合吗，而不是报错"。
+ *
+ * 口径：**闸门一关，本回合剩下的工具一律不展示**（abort 是有意行为，不是故障）。
+ */
+import { describe, expect, it } from 'vitest';
+import { isGateSilence } from './outbound.js';
+
+describe('isGateSilence — 认得出"闸门判定静默"', () => {
+  it('reply:false → 是静默（不管 reason 写什么）', () => {
+    expect(isGateSilence(JSON.stringify({ reason: '群友继续聊重口题材，未@我，静默', reply: false }))).toBe(true);
+  });
+
+  it('reply:true → 不是静默（正常开口，工具结果照常展示）', () => {
+    expect(isGateSilence(JSON.stringify({ reason: '被@需回复', reply: true }))).toBe(false);
+  });
+
+  it('字段缺失 / 坏 JSON / 空 → 一律当"不是静默"（宁可多展示，不可误吞）', () => {
+    expect(isGateSilence(JSON.stringify({ reason: '只写了理由' }))).toBe(false);
+    expect(isGateSilence('not json')).toBe(false);
+    expect(isGateSilence('')).toBe(false);
+  });
+});

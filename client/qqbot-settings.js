@@ -183,7 +183,10 @@ window.__ModuleLoader__.load({
         h('label', { style: labelStyle }, ' 按固定写法匹配文字(高手用,留空=不用): ',
           h('input', { className: 'qqs-inp', style: wideStyle, value: sv(r.conditions.contentRegex), placeholder: '如 ^早安', onChange: (e) => condUpd({ contentRegex: e.target.value }) })),
         h('label', { style: labelStyle }, ' 出现这些词就触发(逗号分隔): ',
-          h('input', { className: 'qqs-inp', style: wideStyle, value: (r.conditions.contentKeywords || []).join(','), onChange: (e) => condUpd({ contentKeywords: e.target.value.split(/[,，]/).map(function (s) { return s.trim() }).filter(Boolean) }) })),
+          // ⚠️ 2026-09-14 修（主人："我输入不了逗号"）：原来是**受控** input（value = 数组 join(',')），
+          //   输入"看不到,"时末尾空项被 filter(Boolean) 丢掉、文本又被重建成没逗号的样子
+          //   → 逗号永远打不进去。改成**非受控**（defaultValue）：输入过程自由，onChange 只把解析结果写进配置。
+          h('input', { className: 'qqs-inp', style: wideStyle, defaultValue: (r.conditions.contentKeywords || []).join(','), onChange: (e) => condUpd({ contentKeywords: e.target.value.split(/[,，]/).map(function (s) { return s.trim() }).filter(Boolean) }) })),
         h('label', { style: labelStyle }, ' 多个条件怎么算: ',
           h('select', { style: inputStyle, value: r.conditions.matchScope || 'any', onChange: (e) => condUpd({ matchScope: e.target.value }) },
             h('option', { value: 'any' }, '满足一个就行'),
@@ -2005,11 +2008,32 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           var col = it.worth ? '#2f9e44' : '#c23131'
           out += '<div style="padding:4px 8px;border-bottom:1px solid #f5f5f5;font-size:12px">'
             + '<span style="color:#999">' + hh + '</span> '
-            + '<b style="color:' + col + '">' + (typeof it.score === 'number' ? it.score.toFixed(2) : (it.img ? '📷' : '-')) + '</b>'
+            + '<b style="color:' + col + '">' + (typeof it.score === 'number' ? Number(typeof it.scoreAdj === 'number' ? it.scoreAdj : it.score).toFixed(2) : (it.img ? '📷' : '-')) + '</b>'
+            // 好感偏移标记（2026-09-14：**偏移加在分数上，门槛不动**）—— 文案给普通用户看，写成"基础评分＋好感偏移"
+            + (it.aggWeighted && Array.isArray(it.aggParts) && it.aggParts.length
+              // 聚合加权（2026-09-14 主人定）：判定分是**加权平均**，这里把每一票摊开给人看，
+              //   不然"1.06 是哪来的"没法核对。格式：昵称 价值分×权重(好感占比)
+              ? ' <span style="color:#e8590c;cursor:help" title="' + esc(
+                  '综合分 ' + Number(it.scoreAdj).toFixed(2) + ' ＝ 窗口里 ' + it.aggParts.length + ' 条消息的加权平均'
+                  + '（价值越高、好感越高，权重越大）\n'
+                  + it.aggParts.map(function (p, i) {
+                      return (i + 1) + '. ' + p.n + '：价值 ' + Number(p.s).toFixed(2)
+                        + ' × 权重 ' + Number(p.w).toFixed(2)
+                        + '（好感占比 ' + (Number(p.r) > 0 ? '+' : '') + Number(p.r).toFixed(2) + '）'
+                    }).join('\n')
+                  + '\n记在谁头上：权重最大的那位（当前是 ' + String(it.sender || '?') + '）'
+                ) + '">[合' + it.aggParts.length + '·加权]</span>'
+              : (it.attOff && typeof it.score === 'number'
+                ? ' <span style="color:#e8590c;cursor:help" title="' + esc('基础评分 ' + Number(it.score).toFixed(2) + ' ＋ 好感偏移 ' + (it.attOff > 0 ? '+' : '−') + Math.abs(Number(it.attOff)).toFixed(2) + ' ＝ 有效分 ' + Number(it.score + it.attOff).toFixed(2) + '（好感档位：' + (it.attTier || '?') + '）') + '">[' + (it.attOff > 0 ? '+' : '−') + Math.abs(Number(it.attOff)).toFixed(2) + ']</span>'
+                : ''))
+            // 门槛（用户设置的基础评分门槛，好感度不改它）
+            + (typeof it.min === 'number'
+              ? ' <span style="color:#888" title="' + esc('基础评分门槛 ' + Number(it.min).toFixed(2) + '（你设置的判定线）；好感度以「好感偏移」加减在消息分数上（亲近加分、冷淡减分），不改动门槛') + '">门槛' + Number(it.min).toFixed(2) + '</span>'
+              : '')
             + (it.img ? ' <span style="color:#999" title="图片消息: ' + (it.lib ? '已在库 → 借它的标签当文字评分' : '无文字, 不可评分(默认不拦)') + '">' + (it.lib ? '[库内]' : '[无文字]') + '</span>' : '')
-            + (it.mention ? ' <span style="color:#1c7ed6" title="被@, 必回">[@]</span>' : '')
+            + (it.mention ? ' <span style="color:#1c7ed6" title="' + esc(it.mentionForced && !it.worth ? '被@ → 必回（分数没到门槛也回）' : '被@, 必回') + '">[@]</span>' : '')
             + (it.conf !== undefined && it.conf < 0.5 ? ' <span style="color:#999" title="低置信: 最近邻居相似度只有 ' + it.conf + ', 地图上没这类样本 —— 仅作补样本提示, 不再影响拦截">[?]</span>' : '')
-            + (it.agg ? ' <span style="color:#e8590c" title="聚合了 ' + it.agg + ' 条消息, 取其中最高分">[合' + it.agg + ']</span>' : '')
+            + (it.agg ? ' <span style="color:#e8590c" title="' + esc(it.aggWeighted ? ('聚合了 ' + it.agg + ' 条消息，**加权平均**综合判断（明细见左边的[合·加权]标记）') : ('聚合了 ' + it.agg + ' 条消息, 取其中最高分')) + '">[合' + it.agg + ']</span>' : '')
             + ' <span style="color:#555">' + esc(String(it.sender || '?')) + ':</span> '
             + esc(String(it.text || '').slice(0, 56))
             + '<div style="color:#bbb;font-size:11px;margin-left:14px">近邻: ' + esc((it.top || []).join(' · ')) + '</div>'
@@ -2020,24 +2044,88 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         return out
       }
       // 局部刷新评分列表(不调 paintBody → 不闪、不打断滚动、不丢输入框焦点)
-      // 好感度(观察期): 只读展示 —— 谁互动最多/被点名最多/最常接她的话
+      // 熟识度 + 好感度(2026-09-14 主人"直接推进"后分两列展示, 两个维度别混)
+      // ── 分列 + 图标(2026-09-14 主人:"好感度的文字太多了, 改成有分列, 图标显示") ──
+      //   列: # ｜ 群友 ｜ 熟识度 ｜ 好感度 ｜ 这次 ｜ 活跃
+      //   原来一行塞着"(内心亲近 +0.5 / 两好相凑 ×1.2)(来过2天/消息65/点名35/接话3 · 3分钟前)"两串中文,
+      //   现在压成图标 + 数字,**全文退进 title 悬浮提示** —— 想细看还看得到, 只是不再堵眼睛。
+      var AFF_TIER_ICON = { '陌生人': '👤', '眼熟': '👋', '熟人': '🤝' };
+      var AFF_TIER_COLOR = { '陌生人': '#868e96', '眼熟': '#1c7ed6', '熟人': '#2f9e44' };
+      var ATT_TIER_ICON = { '很亲近': '💖', '亲近': '💗', '中立': '😐', '冷淡': '🧊', '疏远': '❄️' };
+      var ATT_TIER_COLOR = { '很亲近': '#e64980', '亲近': '#f06595', '中立': '#868e96', '冷淡': '#4c6ef5', '疏远': '#364fc7' };
+      var DELTA_ICON = {
+        'near': ['💗', '内心亲近 +0.5'],
+        'refuse': ['🚫', '内心拒绝 −0.5'],
+        'yield': ['🕊️', '让步(心里不肯仍照顾) +0.8'],
+        'harsh': ['🥶', '又烦又冷(重罚) −0.5'],
+        'amp:cold-praise': ['❗×1.5', '对方夸她还掉好感(不领情) ×1.5'],
+        'amp:flatter': ['🎁×1.5', '对方冷她还涨好感(讨好) ×1.5'],
+        'amp:both-warm': ['➕×1.2', '两好相凑 ×1.2'],
+        'amp:both-cold': ['❄️×1.2', '两冷相叠 ×1.2']
+      };
+      var AFF_COLS = { n: 20, aff: 76, att: 92, why: 104, act: 150 };
+      function affinityHeadHtml() {
+        var s = function (w, t) { return '<span style="flex:0 0 ' + w + 'px">' + t + '</span>' }
+        return '<div style="display:flex;gap:8px;align-items:center;font-size:11px;color:#adb5bd;padding-bottom:3px;border-bottom:1px solid #e9ecef">'
+          + '<span style="flex:0 0 ' + AFF_COLS.n + 'px;text-align:right">#</span>'
+          + '<span style="flex:1 1 auto;min-width:0">群友</span>'
+          + s(AFF_COLS.aff, '熟识度') + s(AFF_COLS.att, '好感度') + s(AFF_COLS.why, '这次') + s(AFF_COLS.act, '活跃')
+          + '</div>'
+      }
+      function affinityRowHtml(i, x, a) {
+        var age = x.lastAt ? Math.round((Date.now() - x.lastAt) / 60000) : 0
+        var tier = x.tier || '陌生人'
+        var color = AFF_TIER_COLOR[tier] || '#868e96'
+        var affTip = '熟识度 ' + (x.score != null ? x.score : '-') + '/100 · 档位: ' + tier
+          + '(来过 ' + (x.reviews || 0) + ' 天 / 消息 ' + x.msgs + ' / 被点名 ' + x.mentions + ' / 接话 ' + x.replies + ')'
+        var affCell = '<span style="flex:0 0 ' + AFF_COLS.aff + 'px" title="' + esc(affTip) + '">'
+          + '<b style="color:' + color + '">' + (x.score != null ? x.score : '-') + '</b> <span>' + (AFF_TIER_ICON[tier] || '👤') + '</span></span>'
+        var at = (a && a.tier) || ''
+        var aNum = a ? (a.a >= 0 ? '+' : '') + Number(a.a).toFixed(2) : '—'
+        var aColor = !a ? '#adb5bd' : (a.a > 0.0001 ? '#2f9e44' : (a.a < -0.0001 ? '#e03131' : '#868e96'))
+        var aTip = a
+          ? ('好感度 ' + a.a + '(占范围 ' + (a.ratio != null ? (a.ratio * 100).toFixed(1) + '%' : '?') + ') · 档位: ' + (at || '中立')
+            + (a.why ? '；最近一次: ' + a.why : ''))
+          : '还没有好感度记录(她还没对他形成态度)'
+        var aCell = '<span style="flex:0 0 ' + AFF_COLS.att + 'px" title="' + esc(aTip) + '">'
+          + '<b style="color:' + aColor + '">' + aNum + '</b> <span style="color:' + (ATT_TIER_COLOR[at] || '#adb5bd') + '">' + (ATT_TIER_ICON[at] || '⚪') + '</span></span>'
+        var codes = (a && a.codes && a.codes.length) ? a.codes : []
+        var marks = codes.map(function (c) {
+          var d = DELTA_ICON[c]
+          return d ? '<span title="' + esc(d[1]) + '">' + d[0] + '</span>' : ''
+        }).filter(Boolean)
+        var whyCell = '<span style="flex:0 0 ' + AFF_COLS.why + 'px" title="' + esc((a && a.why) || '暂无拆解') + '">'
+          + (marks.length ? marks.join(' ') : '<span style="color:#ced4da">—</span>') + '</span>'
+        var actTip = '来过 ' + (x.reviews || 0) + ' 天 · 消息 ' + x.msgs + ' · 被点名 ' + x.mentions + ' 次 · 接她的话 ' + x.replies + ' 次'
+          + (age < 120 ? ' · 最近 ' + age + ' 分钟前' : '')
+        var actCell = '<span style="flex:0 0 ' + AFF_COLS.act + 'px;color:#adb5bd;font-size:11px" title="' + esc(actTip) + '">'
+          + '📅' + (x.reviews || 0) + ' 💬' + x.msgs + ' 📣' + x.mentions + ' ↩' + x.replies
+          + (age < 120 ? ' <span style="color:#868e96">🕐' + age + '分</span>' : '') + '</span>'
+        return '<div style="display:flex;gap:8px;align-items:center;font-size:12px;color:#495057;padding:2px 0;border-bottom:1px dashed #f1f3f5">'
+          + '<span style="flex:0 0 ' + AFF_COLS.n + 'px;text-align:right;color:#adb5bd">' + (i + 1) + '</span>'
+          + '<span style="flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#343a40" title="' + esc(x.key) + '">' + esc(x.name || x.key) + '</span>'
+          + affCell + aCell + whyCell + actCell + '</div>'
+      }
       function loadAffinity() {
         if (state.tab !== 'session') return
         var box = panel ? panel.querySelector('#dk-aff-box') : null
-        fetch('/api/qqbot-settings/affinity' + (state.ns ? '?' + outNsQ() : ''))
-          .then(function (r) { return r.json() })
-          .then(function (d) {
-            var items = (d && d.items) || []
-            if (items.length === 0) { state.affHtml = '还没有数据 —— 群里聊几句就出来了'; }
-            else {
-              state.affHtml = items.map(function (x, i) {
-                var age = x.lastAt ? Math.round((Date.now() - x.lastAt) / 60000) : 0
-                return (i + 1) + '. ' + (x.name || x.key) + '  💗' + (x.score != null ? x.score : '-') + ' [' + (x.tier || '陌生人') + ']  (来过' + (x.reviews || 0) + '天/消息' + x.msgs + '/点名' + x.mentions + '/接话' + x.replies + (age < 120 ? ' · ' + age + '分钟前' : '') + ')'
-              }).join('\n')
-            }
-            if (box) box.textContent = state.affHtml
-          })
-          .catch(function () { if (box) box.textContent = '好感度读取失败' })
+        var q = state.ns ? '?' + outNsQ() : ''
+        Promise.all([
+          fetch('/api/qqbot-settings/affinity' + q).then(function (r) { return r.json() }).catch(function () { return {} }),
+          fetch('/api/qqbot-settings/attitude' + q).then(function (r) { return r.json() }).catch(function () { return {} })
+        ]).then(function (rs) {
+          var aff = (rs[0] && rs[0].items) || []
+          var att = (rs[1] && rs[1].items) || []
+          var attBy = {}
+          att.forEach(function (x) { attBy[x.key] = x })
+          if (aff.length === 0) { state.affHtml = '还没有数据 —— 群里聊几句就出来了'; }
+          else {
+            state.affHtml = affinityHeadHtml() + aff.map(function (x, i) {
+              return affinityRowHtml(i, x, attBy[x.key])
+            }).join('')
+          }
+          if (box) box.innerHTML = state.affHtml
+        }).catch(function () { if (box) box.textContent = '熟识度/好感度读取失败' })
       }
       function refreshScoreList() {
         if (state.tab !== 'session') return
@@ -2241,6 +2329,35 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           box.style.display = state.vsOpen ? 'block' : 'none'
           vsToggle.textContent = state.vsOpen ? '收起' : '展开编辑'
           if (state.vsOpen) loadValueSamplesEditor()
+        }
+        // 📊 最近评分 折叠（2026-09-14 主人要求：这两块默认收起，别占地方）
+        var vsViewToggle = panel.querySelector('#dk-vs-view-toggle')
+        if (vsViewToggle) vsViewToggle.onclick = function () {
+          state.vsViewOpen = !state.vsViewOpen
+          var b = panel.querySelector('#dk-vs-box')
+          if (b) b.style.display = state.vsViewOpen ? 'block' : 'none'
+          vsViewToggle.textContent = state.vsViewOpen ? '收起' : '展开'
+        }
+        // 🧠 熟识度 / 💗 好感度 折叠
+        var affToggle = panel.querySelector('#dk-aff-toggle')
+        if (affToggle) affToggle.onclick = function () {
+          state.affOpen = !state.affOpen
+          var b = panel.querySelector('#dk-aff-box')
+          if (b) b.style.display = state.affOpen ? 'block' : 'none'
+          affToggle.textContent = state.affOpen ? '收起' : '展开'
+        }
+        // 📊 导出 Excel（2026-09-14 主人要"一键导出分享"）—— 直接走 GET，让浏览器下载
+        var affExport = panel.querySelector('#dk-aff-export')
+        if (affExport) affExport.onclick = function () {
+          var url = '/api/qqbot-settings/export.xlsx' + (state.ns ? '?' + outNsQ() : '')
+          var a = document.createElement('a')
+          a.href = url
+          a.download = ''
+          document.body.appendChild(a)
+          a.click()
+          document.body.removeChild(a)
+          affExport.textContent = '📊 已导出'
+          setTimeout(function () { affExport.textContent = '📊 导出 Excel' }, 2500)
         }
         var vsSaveBtn = panel.querySelector('#dk-vs-save')
         if (vsSaveBtn) vsSaveBtn.onclick = function () { saveValueSamplesEditor() }
@@ -3435,14 +3552,21 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             // (只换这个 div 的内容, 不整块 paintBody) → 既不闪, 又能自动更新。
             body += '<div class="dk-row" style="font-weight:700;font-size:13px;margin:10px 0 2px;gap:8px;align-items:center;flex-wrap:wrap">'
               + '<span>📊 最近评分(观察期)</span>'
+              + '<button class="dk-btn" id="dk-vs-view-toggle" style="font-size:12px;padding:1px 8px">' + (state.vsViewOpen ? '收起' : '展开') + '</button>'
               + '<span class="dk-msg" style="font-size:11px;color:#7c6bd6" id="dk-vs-scope">' + esc(curHitLabel()) + '</span>'
               + '<button class="dk-btn" id="dk-vs-reload" style="font-size:12px;padding:1px 8px">🔄 刷新</button>'
               + '<span class="dk-msg" style="font-size:11px;color:#999">每 10 秒自动更新</span>'
               + '</div>'
-            body += '<div id="dk-vs-box">' + scoreListHtml(state.valueScores) + '</div>'
-            // 💗 好感度(观察期, 只统计不生效): 数据源 {dataRoot}/.qqbot/affinity.json
-            body += '<div class="dk-row" style="font-weight:700;font-size:13px;margin:10px 0 2px">💗 好感度(观察期·只统计)</div>'
-            body += '<div class="dk-msg" id="dk-aff-box" style="font-size:12px;color:#666;white-space:pre-wrap">' + (state.affHtml || '加载中…') + '</div>'
+            body += '<div id="dk-vs-box" style="display:' + (state.vsViewOpen ? 'block' : 'none') + '">' + scoreListHtml(state.valueScores) + '</div>'
+            // 💗 熟识度(她记你多牢) + 好感度(她对你什么态度) —— 两个维度分两列, 别混
+            //   熟识度: {dataRoot}/.qqbot/affinity.json ｜ 好感度: {dataRoot}/.qqbot/attitude.json
+            body += '<div class="dk-row" style="font-weight:700;font-size:13px;margin:10px 0 2px;gap:8px;align-items:center;flex-wrap:wrap">'
+              + '<span>🧠 熟识度(记你多牢) ｜ 💗 好感度(对你什么态度)(观察期·只统计)</span>'
+              + '<button class="dk-btn" id="dk-aff-export" style="font-size:12px;padding:1px 8px" title="导成 Excel（三张表：熟识度 / 好感度 / 口径说明），可以直接转发给别人">📊 导出 Excel</button>'
+              + '<button class="dk-btn" id="dk-aff-toggle" style="font-size:12px;padding:1px 8px">' + (state.affOpen ? '收起' : '展开') + '</button>'
+              + '</div>'
+            // 分列 + 图标(2026-09-14): 注意这里**不能**再加 white-space:pre-wrap —— 现在是逐行的 flex 布局 HTML
+            body += '<div class="dk-msg" id="dk-aff-box" style="font-size:12px;color:#666;display:' + (state.affOpen ? 'block' : 'none') + '">' + (state.affHtml || '加载中…') + '</div>'
             // ✍️ 样例库编辑(2026-09-13 主人问"哪里写样本"): 直接改 jsonl, 保存后下一条消息生效
             body += '<div class="dk-row" style="font-weight:700;font-size:13px;margin:12px 0 2px;gap:8px;align-items:center;flex-wrap:wrap">'
               + '<span>✍️ 样例库(决定她的开口标准)</span>'

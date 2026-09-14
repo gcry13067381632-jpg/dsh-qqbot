@@ -982,11 +982,26 @@ export function apply(ctx) {
     const mod = await import('./dist/api/group-admin.js');
     return { bot, client: mod.createGroupAdmin({ appId: bot.appId, appSecret: bot.appSecret }) };
   }
+  /** 已判定「群不存在」的 gid → 判定时刻（死群退避用，24h TTL；内存即可，重启重探一次） */
+  const DEAD_GROUP_CACHE = new Map();
+  /**
+   * 审计日志滚动上限（2026-09-14 补）：原来是纯 append，没有上限 ——
+   *   面板群列表接口每刷一次就要为**每个已死的群**写一条 group.dead（实测 9 天 4.2 万行 / 7.5MB）。
+   *   这里加**大小上限**：超过 2MB 就只保留最近 2000 行，任何一类事件刷屏都挡得住。
+   */
+  const AUDIT_MAX_BYTES = 2 * 1024 * 1024;
+  const AUDIT_KEEP_LINES = 2000;
   function audit(cwd, entry) {
     try {
       mkdirSync(join(cwd, '.qqbot'), { recursive: true });
       const af = join(cwd, '.qqbot', 'group-audit.jsonl');
       writeFileSync(af, JSON.stringify({ ts: new Date().toISOString(), ...entry }) + '\n', { flag: 'a' });
+      try {
+        if (statSync(af).size > AUDIT_MAX_BYTES) {
+          const lines = readFileSync(af, 'utf8').split('\n').filter(Boolean);
+          writeFileSync(af, lines.slice(-AUDIT_KEEP_LINES).join('\n') + '\n', 'utf8');
+        }
+      } catch { /* 压缩失败不影响主链 */ }
     } catch { /* ignore */ }
   }
   function readGroupsJson(cwd) {
@@ -1161,6 +1176,11 @@ export function apply(ctx) {
       const aliveReg = {};
       if (gc) {
         for (const g of [...map.values()].sort((a, b) => (b.lastAt || 0) - (a.lastAt || 0))) {
+          // 死群退避（2026-09-14 补）：已判「群不存在」的 gid 24h 内不再重复校验 ——
+          //   原来这里每次都全量校验，面板每刷一次就为每个死群写一条 group.dead（实测 9 天 4.2 万行）。
+          //   命中缓存直接跳过（**也不写审计**），过 24h 再探一次（万一群复活/又被拉回去）。
+          const deadAt = DEAD_GROUP_CACHE.get(g.gid);
+          if (deadAt && Date.now() - deadAt < 24 * 3600_000) continue;
           try {
             const info = await gc.client.getGroupInfo(g.gid);
             if (info.ok && info.data) {
@@ -1170,6 +1190,7 @@ export function apply(ctx) {
               aliveReg[g.gid] = { name: official || (reg[g.gid] && reg[g.gid].name) || '', lastAt: (reg[g.gid] && reg[g.gid].lastAt) || Date.now() };
             } else {
               // 11255 等 = 群已注销/不存在 → 不返回给 UI(避免选中后调用报错), 仅保留审计
+              DEAD_GROUP_CACHE.set(g.gid, Date.now());
               audit(bot.cwd, { ev: 'group.dead', ns: bot.id, gid: g.gid, code: info.err && info.err.code, human: info.err && info.err.human });
             }
           } catch (e2) {
@@ -1293,6 +1314,95 @@ export function apply(ctx) {
       writeJson(res, 200, { ok: true, done, modelDir: dir });
     } catch (e) { writeJson(res, 500, { ok: false, error: String((e && e.message) || e) }); }
   });
+  // 导出 Excel（2026-09-14 主人："好感度熟识度可以一键导出 excel 表格，i need to share"）
+  //   零依赖：xlsx 由 dist/features/xlsx.js 现场拼（见那个文件头：不为了导出拖进 exceljs）
+  //   三张表：熟识度 / 好感度 / 口径说明（分享给别人时看得懂）
+  route(ctx, 'GET', '/api/qqbot-settings/export.xlsx', async (req, res) => {
+    try {
+      const u = new URL(req.url ?? '/', 'http://x');
+      const bot = nsBot(NSQ(u));
+      const dataRoot = (bot && bot.cfg && typeof bot.cfg.dataRoot === 'string' && bot.cfg.dataRoot) ? bot.cfg.dataRoot : ((bot && bot.cwd) || '');
+      if (!dataRoot) return writeJson(res, 400, { ok: false, error: '找不到数据根目录' });
+      const [{ buildXlsx }, affMod, attMod] = await Promise.all([
+        import('./dist/features/xlsx.js'),
+        import('./dist/features/local-signals.js'),
+        import('./dist/features/attitude.js'),
+      ]);
+      const limit = Math.max(1, Math.min(500, Number(u.searchParams.get('limit')) || 200));
+      const aff = affMod.topAffinity(dataRoot, limit) || [];
+      const att = attMod.topAttitude(dataRoot, limit) || [];
+      const fmt = (ts) => (ts ? new Date(ts).toLocaleString('zh-CN') : '');
+      const shortId = (k) => String(k || '').replace(/^(person|group|c2c):/, '');
+
+      const rows1 = [['#', '昵称', 'openid', '熟识度', '档位', '来过(天)', '消息数', '被点名', '接话', '最近活跃']];
+      aff.forEach((x, i) => rows1.push([i + 1, x.name || '', shortId(x.key), x.score ?? '', x.tier || '', x.reviews ?? 0, x.msgs ?? 0, x.mentions ?? 0, x.replies ?? 0, fmt(x.lastAt)]));
+
+      const rows2 = [['#', '昵称', 'openid', '好感度', '档位', '好感占比', '事件数', '最近一次涨跌原因', '最近活跃']];
+      att.forEach((x, i) => {
+        let tier = '';
+        let ratio = '';
+        try {
+          const g = attMod.attitudeGateFor(dataRoot, x.key);
+          tier = g.tier;
+          ratio = Math.round(g.ratio * 1000) / 1000;
+        } catch { /* 算不出留空 */ }
+        rows2.push([i + 1, x.name || '', shortId(x.key), x.a ?? '', tier, ratio, x.events ?? 0, x.lastWhy || '', fmt(x.lastAt)]);
+      });
+
+      // 总览：两个维度**按人合并成一行**放第一张（2026-09-14 主人打开文件问"好感度呢？"——
+      //   分表藏在底部标签页里容易漏看；分享场景下，一张总表最直观）
+      const attByKey = new Map(att.map((x) => [x.key, x]));
+      const seenKeys = new Set();
+      const merged = [];
+      for (const x of aff) { merged.push({ key: x.key, name: x.name, aff: x, att: attByKey.get(x.key) }); seenKeys.add(x.key); }
+      for (const x of att) { if (!seenKeys.has(x.key)) merged.push({ key: x.key, name: x.name, aff: undefined, att: x }); }
+      merged.sort((a, b) => (b.att?.a ?? -99) - (a.att?.a ?? -99));
+      const rows0 = [['#', '昵称', 'openid', '熟识度', '熟识档位', '好感度', '好感档位', '好感占比', '来过(天)', '消息数', '被点名', '接话', '事件数', '最近一次涨跌原因', '最近活跃']];
+      merged.forEach((m, i) => {
+        let tier = '';
+        let ratio = '';
+        if (m.att) {
+          try {
+            const g = attMod.attitudeGateFor(dataRoot, m.key);
+            tier = g.tier;
+            ratio = Math.round(g.ratio * 1000) / 1000;
+          } catch { /* 算不出留空 */ }
+        }
+        rows0.push([i + 1, m.name || '', shortId(m.key), m.aff?.score ?? '', m.aff?.tier ?? '', m.att?.a ?? '', tier, ratio,
+          m.aff?.reviews ?? '', m.aff?.msgs ?? '', m.aff?.mentions ?? '', m.aff?.replies ?? '', m.att?.events ?? '', m.att?.lastWhy ?? '',
+          fmt(m.att?.lastAt || m.aff?.lastAt)]);
+      });
+
+      const rows3 = [
+        ['一键导出 · 口径说明', ''],        ['生成时间', new Date().toLocaleString('zh-CN')],
+        ['熟识度', '她把你记得多牢 —— 客观计数 + 记忆曲线，慢变（来过几天、说了多少、被点名、接话）'],
+        ['好感度', '她对你什么态度 —— 随事件可升可降（内心倾向判「亲近/拒绝/任务」+ 正文情绪判「暖/冷/中性」）'],
+        ['“最近一次涨跌原因”', '形如「内心亲近 +0.5」「内心拒绝 −0.5 / 又烦又冷(重罚) −0.5」「两好相凑 ×1.2」'],
+        ['判定把握', '本地小模型对不上号时会**弃权**（不给标签、不动分），所以有些格子是空的'],
+        ['红线', '负好感只退礼貌档：少主动，绝不冷落、阴阳、攻击'],
+        ['来源', 'dsh-qqbot 插件 · 数据文件 .qqbot/affinity.json 与 attitude.json'],
+      ];
+
+      const buf = buildXlsx([
+        { name: '总览', rows: rows0, widths: [5, 18, 34, 9, 10, 9, 10, 10, 9, 9, 9, 8, 9, 44, 20] },
+        { name: '熟识度', rows: rows1, widths: [5, 18, 34, 10, 10, 10, 9, 9, 8, 20] },
+        { name: '好感度', rows: rows2, widths: [5, 18, 34, 10, 10, 11, 9, 44, 20] },
+        { name: '说明', rows: rows3, widths: [20, 90] },
+      ]);
+      const when = new Date();
+      const p2 = (n) => String(n).padStart(2, '0');
+      const cn = `熟识度好感度_${when.getFullYear()}${p2(when.getMonth() + 1)}${p2(when.getDate())}_${p2(when.getHours())}${p2(when.getMinutes())}.xlsx`;
+      res.writeHead(200, {
+        'content-type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'content-disposition': `attachment; filename="qqbot-stats.xlsx"; filename*=UTF-8''${encodeURIComponent(cn)}`,
+        'content-length': String(buf.length),
+        'cache-control': 'no-store',
+      });
+      res.end(buf);
+      audit(dataRoot, { ev: 'export.xlsx', ns: bot && bot.id, rows: aff.length + att.length });
+    } catch (e) { writeJson(res, 500, { ok: false, error: String((e && e.message) || e) }); }
+  });
+
   // 好感度台账(2026-09-13 主人定, 观察期): 只读, 供面板显示"谁跟她最熟"
   //   数据源: {dataRoot}/.qqbot/affinity.json (每条群消息累计 互动/被点名/接话; 熟度现算, 公式透明)
   route(ctx, 'GET', '/api/qqbot-settings/affinity', async (req, res) => {
@@ -1306,6 +1416,33 @@ export function apply(ctx) {
       const items = (mod.topAffinity(dataRoot, limit) || []).map((x) => ({
         key: x.key, name: x.name || '', score: x.score, tier: x.tier || '', reviews: x.reviews || 0, msgs: x.msgs, mentions: x.mentions, replies: x.replies, lastAt: x.lastAt,
       }));
+      writeJson(res, 200, { ok: true, items });
+    } catch (e) { writeJson(res, 500, { ok: false, error: String((e && e.message) || e) }); }
+  });
+
+  // 好感度(2026-09-14 主人"直接推进"): A 值台账 —— 与「熟识度」是**两个维度**, 面板分两列
+  //   熟识度 = 她把他记多牢(客观计数+记忆曲线, 慢变) ｜ 好感度 = 她对他什么态度(随事件可升可降)
+  //   数据源: {dataRoot}/.qqbot/attitude.json (内心倾向 + 正文情绪 → Δ → A 值, 见 features/attitude.ts)
+  route(ctx, 'GET', '/api/qqbot-settings/attitude', async (req, res) => {
+    try {
+      const u = new URL(req.url ?? '/', 'http://x');
+      const bot = nsBot(NSQ(u));
+      const dataRoot = (bot && bot.cfg && typeof bot.cfg.dataRoot === 'string' && bot.cfg.dataRoot) ? bot.cfg.dataRoot : ((bot && bot.cwd) || '');
+      if (!dataRoot) return writeJson(res, 200, { ok: true, items: [] });
+      const mod = await import('./dist/features/attitude.js');
+      const limit = Math.max(1, Math.min(50, Math.round(Number(u.searchParams.get('limit'))) || 8));
+      const items = (mod.topAttitude(dataRoot, limit) || []).map((x) => {
+        // 档位名（面板显示用，2026-09-14 主人要求）：按"好感度占其范围的比例"分 很亲近/亲近/中立/冷淡/疏远
+        let tier = '';
+        let ratio = 0;
+        try {
+          const g = mod.attitudeGateFor(dataRoot, x.key);
+          if (g) { tier = g.tier; ratio = Math.round(g.ratio * 1000) / 1000; }
+        } catch { /* 算不出就不显示档位 */ }
+        return {
+          key: x.key, name: x.name || '', a: x.a, events: x.events || 0, lastAt: x.lastAt || 0, why: x.lastWhy || '', codes: x.lastCodes || [], tier, ratio,
+        };
+      });
       writeJson(res, 200, { ok: true, items });
     } catch (e) { writeJson(res, 500, { ok: false, error: String((e && e.message) || e) }); }
   });

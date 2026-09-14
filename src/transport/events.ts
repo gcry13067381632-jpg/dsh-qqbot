@@ -31,6 +31,18 @@ export interface ChunkEvent {
 export interface MessageEvent {
   type: 'assistant/message';
   content: Array<{ type: string; text?: string }>;
+  /**
+   * 本条的思考(reasoning 块拼接; 无思考或空壳块时 undefined)。
+   *
+   * 2026-09-13 加: 观察期**只作留档**, 不参与任何判定, 也绝不出站(详见 features/thinking-log.ts)。
+   */
+  reasoning?: string;
+  /** dsh 回合号(思考与正文配对用: 同一 turn+step 才是"同一时刻格") */
+  turn?: number;
+  /** 回合内步号 */
+  step?: number;
+  /** 模型上报的思考 token 数(usage.reasoningTokens) */
+  reasoningTokens?: number;
 }
 
 /** tool/call 事件 */
@@ -78,9 +90,27 @@ export function parseEvent(raw: RawSessionEvent): OutboundEvent | undefined {
     }
 
     case 'assistant/message': {
-      const message = (raw.data as { message?: { content?: Array<{ type: string; text?: string }> } }).message;
+      const data = raw.data as {
+        turn?: unknown;
+        step?: unknown;
+        message?: { content?: Array<{ type: string; text?: string }> };
+        usage?: { reasoningTokens?: unknown };
+      };
+      const message = data.message;
       if (message === undefined || !Array.isArray(message.content)) return undefined;
-      return { type: 'assistant/message', content: message.content };
+      // 思考(2026-09-13): content 里的 reasoning 块; 空壳块(只有 thinkingSignature)无 text → 判空跳过。
+      const reasoning = message.content
+        .filter((b) => b?.type === 'reasoning' && typeof b.text === 'string' && b.text.trim() !== '')
+        .map((b) => b.text as string)
+        .join('\n');
+      return {
+        type: 'assistant/message',
+        content: message.content,
+        reasoning: reasoning === '' ? undefined : reasoning,
+        turn: typeof data.turn === 'number' ? data.turn : undefined,
+        step: typeof data.step === 'number' ? data.step : undefined,
+        reasoningTokens: typeof data.usage?.reasoningTokens === 'number' ? data.usage.reasoningTokens : undefined,
+      };
     }
 
     case 'tool/call': {

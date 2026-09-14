@@ -731,7 +731,8 @@ export async function apply(ctx: Context): Promise<void> {
   // ⚠️ 描述只讲两个分支的效果, 不给场景规则——选哪个由模型按当前对话氛围自行权衡(写死规则会导致静默率过高)。
   const replyGateTool = defineTool({
     name: 'reply_gate',
-    description: '回复闸门: 开始回复前先调用它, 决定本回合开口还是静默。传 reply:true → 正常继续, 按当前对话决定说什么; 传 reply:false → 本回合立即静默终止, 你不会再输出任何内容(这条消息就像没发生过)。选 true 还是 false 由你根据当前对话自己判断: 觉得该回应就 true, 觉得安静待着更好就 false。',
+    description: '回复闸门: 开始回复前先调用它, 决定本回合开口还是静默。传 reply:true → 正常继续, 按当前对话决定说什么; 传 reply:false → 本回合立即静默终止, 你不会再输出任何内容(这条消息就像没发生过)。选 true 还是 false 由你根据当前对话自己判断: 觉得该回应就 true, 觉得安静待着更好就 false。' +
+      '\n⚠️ 传 reply:false 后**不要再调用任何工具**(包括记笔记、记喜好、发表情包): 本回合已经关闭, 那些调用会被直接中止 —— 想记录的话, 留到下一次开口的回合里做。',
     parameters: {
       reply: { type: 'boolean', required: true, description: 'true=正常开口回复; false=静默终止本回合(不再输出任何内容)' },
       reason: { type: 'string', required: true, description: '简短判定理由, 如"未@不插嘴" / "被@需回复" / "私聊"' },
@@ -1896,7 +1897,7 @@ export async function apply(ctx: Context): Promise<void> {
   //   记一行(同一人一天最多一条) / 查看 / 删除（群里一句"别记人家"就删）。描述刻意写短。
   const peopleMemoTool = defineTool({
     name: 'people_memo',
-    description: '群友小传: 记一行/查看/删除(只写旁人能复述的事实)',
+    description: '群友小传: 记一行/查看/删除。当群友说出自己的喜好/经历/身份等"旁人能复述的事实"时, 顺手记一条(同一人一天最多 3 条); 想归到八栏就带前缀, 如"喜好：最近在玩XX"(不带前缀则进记事区); 只写事实, 不写评价与猜测',
     parameters: {
       who: { type: 'string', required: true, description: '群友昵称或 openid' },
       line: { type: 'string', description: '要记的一行; 不传=只看' },

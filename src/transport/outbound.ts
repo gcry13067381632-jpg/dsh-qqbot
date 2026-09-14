@@ -10,7 +10,30 @@ import type { Logger, ReplyTarget } from '../types.js';
 import { OutboundBuffer, sendRichOutbound, type QQBotSender } from './outbound-buffer.js';
 import { resolveMsgIndex } from './msg-index.js';
 import { dataRootOf } from '../gateway/data-root.js';
+import { noteThinking } from '../features/thinking-log.js';
+import { noteTurnSignals, extractInnerText, applyTurnAttitude } from '../features/four-source.js';
+import { getLastSender } from '../features/attitude.js';
 import { formatToolResult, type ToolsRegistryLike, type ToolResultData } from './tool-presenter.js';
+
+/**
+ * `reply_gate` 的参数里是不是"判定静默"？
+ *
+ * 2026-09-14 主人报的现象：她调 `reply_gate{reply:false}` 决定吃瓜，
+ *   紧接着又想"顺手把群友的喜好记一笔"（`people_memo`），
+ *   但那批工具已经被闸门的 `agent.cancel` 连带中止了 → 聊天里刷出一串
+ *   `❌ 工具 people_memo 执行失败 / Error: tool call aborted`。
+ *
+ * 那些 abort **不是故障，是有意行为**（关闸就是要停），不该当报错展示。
+ * 所以这里只看参数、不解析结果 —— 闸门一关就把整个回合的工具展示全部静音。
+ */
+export function isGateSilence(rawArgs: string): boolean {
+  try {
+    const a = JSON.parse(String(rawArgs ?? '')) as { reply?: unknown };
+    return a?.reply === false;
+  } catch {
+    return false;
+  }
+}
 import {
   parseEvent,
   extractTurnError,
@@ -65,6 +88,41 @@ class OutboundRouter {
   private static readonly TOOL_NOTICE_WINDOW_MS = 1200;
   /** 详细主动: 单条工具提示最多列几个工具(其余折叠成"等 N 个") */
   private static readonly TOOL_NOTICE_MAX = 8;
+  /**
+   * 本回合工具调用参数里的**中文内心话**（sessionKey → 文本数组）。
+   *
+   * 2026-09-14 主人口径："**工具里的判断也是思考里的判断，没有给群友看到的都算是内心活动**"。
+   * 用途：并入四源标量的"内心倾向"判定（有些实例没有 reasoning 块，但它 `reply_gate` 的
+   * reason 里写着真实判断，白丢可惜）。assistant/message 用完即清，turn/end 兜底清。
+   */
+  private readonly innerToolText = new Map<string, string[]>();
+  /**
+   * 本回合已被回复闸门静默的会话（sessionKey）。
+   *   闸门一关 → `agent.cancel` 会连带中止本回合剩余的工具调用，
+   *   那些 "aborted" 是**有意行为**，一律不展示（否则聊天里刷一串假报错）。
+   */
+  private readonly gateSilenced = new Set<string>();
+  /**
+   * 回合级累积 —— 好感度**按回合结算**（2026-09-14 修）。
+   *
+   * 为什么不能在 `assistant/message` 里逐条算：
+   *   · 一个回合常有两三步（step1 思考+调工具 → step2 思考+出正文），
+   *     按步算会把同一份内心**重复加减**（实测 45 分钟里一个人就攒到 83 次"事件"）；
+   *   · 中间步`replyText`是空的 → `replyChars = 0` 落进"又烦又冷(重罚)"分支，
+   *     明明还没说话就先扣一笔。
+   * 所以这里只**攒**（思考 / 工具中文 / 正文 / 这一轮在跟谁说话），
+   * 到 `turn/end` 一次性交给 `applyTurnAttitude` 结算。
+   */
+  private readonly turnAcc = new Map<string, {
+    scope: string;
+    targetId: string;
+    think: string[];
+    tool: string[];
+    reply: string[];
+    senderId?: string;
+    senderName?: string;
+    userEmo?: string;
+  }>();
 
   public constructor(
     private readonly manager: SessionManager,
@@ -174,11 +232,106 @@ class OutboundRouter {
     const record = this.manager.findBySessionId(session.header.id);
     if (record === undefined) return;
 
+    // ── 内部状态留档(观察期, 2026-09-13) ──
+    // 与发送行为**完全无关**: 只写本地数据文件, 不进群、不进面板、不参与任何判定(设计稿 §9/§11 红线)。
+    // 位置刻意放在下面 silent/nothink 的早退**之前** —— "照常思考"本就包括潜水模式。
+    if (event.type === 'assistant/message') {
+      const root = dataRootOf(this.config);
+      const replyText = event.content
+        .filter((b) => b.type === 'text' && typeof b.text === 'string' && b.text.trim() !== '')
+        .map((b) => b.text as string)
+        .join('\n');
+      // 本回合**工具调用参数里的中文**（未给群友看 → 按主人口径也算内心活动）
+      const toolText = (this.innerToolText.get(record.sessionKey) ?? []).join('\n');
+      this.innerToolText.delete(record.sessionKey);
+      // 好感度：这一轮在跟**谁**说话（入站时记下，见 inbound 的 noteLastSender）
+      // 键与入站侧保持一致：`<scope>:<targetId>`（群 openid / 私聊 openid）
+      const sender = getLastSender(`${record.replyTarget.scope}:${record.replyTarget.targetId}`);
+      if (event.reasoning !== undefined) {
+        // ① 思考**原文**留档(隐私: 只落本地; 与标量分开存, 便于单独删)
+        noteThinking(root, {
+          scope: record.replyTarget.scope,
+          peerId: record.replyTarget.targetId,
+          turn: event.turn,
+          step: event.step,
+          tokens: event.reasoningTokens,
+          text: event.reasoning,
+        });
+      }
+      // ② 四源标量(内心倾向 + 正文情绪 + 长度; **只存标量不存原文**) —— 要跑本地小模型, 异步
+      //    ⚠️ 这里只**记录观察数据**（按 step 一行）；好感度不在这里结算，见下面的 turnAcc。
+      void noteTurnSignals(
+        root,
+        {
+          scope: record.replyTarget.scope,
+          peerId: record.replyTarget.targetId,
+          turn: event.turn,
+          step: event.step,
+          thinkChars: event.reasoning?.length,
+          thinkTokens: event.reasoningTokens,
+          toolChars: toolText.length,
+          replyChars: replyText.length,
+          attitudeKey: sender ? `person:${sender.id}` : undefined,
+          attitudeName: sender?.name,
+          userEmo: sender?.emo,
+        },
+        {
+          think: event.reasoning,
+          tool: toolText,
+          reply: replyText,
+          modelDir: this.config.localModel?.modelDir,
+          logger: this.logger,
+        },
+      );
+      // ③ 回合级累积（好感度按回合结算用）—— 只在**本回合第一次**取一次"在跟谁说话"，
+      //    后面即使群里又有人说话把 lastSender 覆盖了，这一轮的对象也不再变。
+      {
+        let acc = this.turnAcc.get(record.sessionKey);
+        if (acc === undefined) {
+          const who = getLastSender(`${record.replyTarget.scope}:${record.replyTarget.targetId}`);
+          acc = {
+            scope: record.replyTarget.scope,
+            targetId: record.replyTarget.targetId,
+            think: [],
+            tool: [],
+            reply: [],
+            senderId: who?.id,
+            senderName: who?.name,
+            userEmo: who?.emo,
+          };
+          this.turnAcc.set(record.sessionKey, acc);
+        }
+        if (event.reasoning) acc.think.push(event.reasoning);
+        if (toolText !== '') acc.tool.push(toolText);
+        if (replyText !== '') acc.reply.push(replyText);
+      }
+    }
+
     // ── 回合活跃标记(消息聚合用, 2026-09-07 主人定) ──
     // LLM 回合进行中(turnActive=true): debounce 见忙就把该会话新消息全攒着;
     // turn/end 复位 false → 攒的消息才批量入站。assistant/tool 事件=回合活跃。
     if (event.type === 'turn/end') {
       record.turnActive = false;
+      // 好感度结算：整个回合算**一次**（放在 silent/nothink 早退之前 —— "照常思考"也包括潜水）
+      const acc = this.turnAcc.get(record.sessionKey);
+      if (acc !== undefined) {
+        this.turnAcc.delete(record.sessionKey);
+        const thinkAll = acc.think.join('\n');
+        const replyAll = acc.reply.join('\n');
+        void applyTurnAttitude(
+          dataRootOf(this.config),
+          {
+            scope: acc.scope,
+            peerId: acc.targetId,
+            thinkChars: thinkAll.length,
+            replyChars: replyAll.length,
+            attitudeKey: acc.senderId ? `person:${acc.senderId}` : undefined,
+            attitudeName: acc.senderName,
+            userEmo: acc.userEmo,
+          },
+          { think: thinkAll, reply: replyAll, modelDir: this.config.localModel?.modelDir, logger: this.logger },
+        );
+      }
     } else if (event.type === 'assistant/chunk' || event.type === 'assistant/message'
       || event.type === 'tool/call' || event.type === 'tool/result') {
       record.turnActive = true;
@@ -307,7 +460,16 @@ class OutboundRouter {
   /** 工具调用：默认仅记录(避免刷屏, 等结果)；详细主动(detail)下额外推一条轻量提示 */
   private onToolCall(record: SessionRecord, event: ToolCallEvent): void {
     this.toolCalls.set(event.callId, { name: event.name, args: event.arguments });
-    if (this.isDetail()) this.queueToolCallNotice(record, event);
+    // 2026-09-14: 工具参数里的中文也算"内心活动"（主人口径），攒着等 assistant/message 一起判
+    try {
+      const inner = extractInnerText(event.arguments);
+      if (inner) {
+        const arr = this.innerToolText.get(record.sessionKey) ?? [];
+        arr.push(inner);
+        this.innerToolText.set(record.sessionKey, arr);
+      }
+    } catch { /* 抽取失败不影响主链 */ }
+    if (this.isDetail() && !this.gateSilenced.has(record.sessionKey)) this.queueToolCallNotice(record, event);
   }
 
   /** 工具结果：错误始终发送；成功结果按开关，详细主动(detail)下强制发送 */
@@ -315,6 +477,16 @@ class OutboundRouter {
     const call = this.toolCalls.get(event.callId);
     this.toolCalls.delete(event.callId);
     if (call === undefined) return;
+
+    // 回复闸门判定静默 → 本回合从这一刻起**所有工具结果都不发**
+    //   （模型常在闸门后还想顺手记点东西，那些调用会被连带 abort；
+    //    主人 2026-09-14："改成直接停止 llm 的回合，而不是报错"）
+    if (call.name === 'reply_gate' && isGateSilence(call.args)) {
+      this.gateSilenced.add(record.sessionKey);
+      this.logger.debug(`im-qqbot: 回复闸门判定静默 → 本回合工具展示全部静音 (${record.sessionKey})`);
+      return;
+    }
+    if (this.gateSilenced.has(record.sessionKey)) return;
 
     if (event.error === undefined && !this.shouldShowToolResults()) return;
 
@@ -332,8 +504,12 @@ class OutboundRouter {
 
   /** 轮次结束：清理 buffer，异常结束时告知用户 */
   private onTurnEnd(sessionId: string, _record: SessionRecord, event: TurnEndEvent): void {
-    // 详细主动: 回合结束前先把聚合中的工具调用提示发出去(别让最后一批工具沉在队列里)
-    this.flushToolNotices(_record.sessionKey);
+    // 闸门静默标记只在**本回合内**有效，清在最后（下面还要用它判断"这个回合本就不该出声"）
+    const silenced = this.gateSilenced.has(_record.sessionKey);
+    // 详细主动: 回合结束前把聚合中的工具调用提示发出去 —— 但静默回合不发
+    if (!silenced) this.flushToolNotices(_record.sessionKey);
+    // 兜底: 回合结束清掉未消费的"工具内心话"（正常在 assistant/message 就用掉了）
+    this.innerToolText.delete(_record.sessionKey);
     const buffer = this.buffers.get(sessionId);
     // 先让残留 buffer flush 完(记账在 flush 里发生), 再判断 passive 收尾补发
     const finish = (): void => this.maybeResendLastBlock(_record.sessionKey, _record);
@@ -350,11 +526,13 @@ class OutboundRouter {
     }
 
     const failure = extractTurnError(event.reason);
-    if (failure !== undefined && !SILENT_TURN_ERROR_CODES.has(failure.code)) {
+    // 闸门静默导致的"取消"不是故障 —— 这个回合本来就不该出声（2026-09-14 主人要求）
+    if (failure !== undefined && !SILENT_TURN_ERROR_CODES.has(failure.code) && !silenced) {
       void this.send(_record, `⚠️ 本轮异常结束\n\`${failure.code}\`: ${failure.message}`, 'sendTurnEndError');
     }
 
-    this.logger.debug(`im-qqbot: turn/end sessionId=${sessionId}`);
+    this.gateSilenced.delete(_record.sessionKey);
+    this.logger.debug(`im-qqbot: turn/end sessionId=${sessionId}${silenced ? ' (闸门静默回合)' : ''}`);
   }
 
   /** 统一发送：逐条自适应目标(适配主动) + 富媒体感知分块；媒体指令([MEDIA:..]/[RECALL])被剔除，失败降级记录 */

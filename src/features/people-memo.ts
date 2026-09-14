@@ -61,19 +61,59 @@ export function listMemos(dataRoot: string): Array<{ key: string; path: string; 
   }
 }
 
-/** 该人今天是否已经记过一条(节流: 同一人一天最多一条) */
-export function wroteToday(dataRoot: string, key: string, now = Date.now()): boolean {
-  try {
-    const st = statSync(memoPathOf(dataRoot, key));
-    const d1 = new Date(st.mtimeMs);
-    const d2 = new Date(now);
-    return d1.toDateString() === d2.toDateString();
-  } catch {
-    return false;
-  }
+/** 每人每天最多记几条（2026-09-14 主人："只记一条怎么记得完" → 由 1 条放宽到 3 条） */
+const MAX_PER_DAY = 3;
+
+/** 今天的写入计数（内存；重启清零 → 最坏一天多记几条，观察期可接受） */
+const writeCount = new Map<string, { day: string; n: number }>();
+
+/** 今天已经记了几条（含栏位条目） */
+export function countWroteToday(key: string, now = Date.now()): number {
+  const day = new Date(now).toDateString();
+  const hit = writeCount.get(key);
+  return hit && hit.day === day ? hit.n : 0;
 }
 
-/** 追加一行(带日期)。已存在则插到"上次聊到"之前；不存在则新建骨架。返回是否成功 */
+/** 兼容旧签名：今天是否已经记过（旧版按文件 mtime 判断，一天一条） */
+export function wroteToday(_dataRoot: string, key: string, now = Date.now()): boolean {
+  return countWroteToday(key, now) > 0;
+}
+
+function bumpWriteCount(key: string, now = Date.now()): void {
+  const day = new Date(now).toDateString();
+  const hit = writeCount.get(key);
+  writeCount.set(key, hit && hit.day === day ? { day, n: hit.n + 1 } : { day, n: 1 });
+}
+
+/** 八栏映射：`line` 以栏名开头（"喜好：最近在玩 XX"）→ 归到该栏；否则进「## 记事」 */
+const SECTIONS: Array<{ title: string; aliases: string[] }> = [
+  { title: '身份', aliases: ['身份', '是谁', '基本信息'] },
+  { title: '本事', aliases: ['本事', '擅长', '技能'] },
+  { title: '经历', aliases: ['经历', '做过'] },
+  { title: '成就', aliases: ['成就', '成绩'] },
+  { title: '喜好与雷区', aliases: ['喜好与雷区', '喜好', '雷区', '喜欢', '讨厌', '口味'] },
+  { title: '价值观', aliases: ['价值观', '信念', '观念'] },
+  { title: '与她的关系', aliases: ['与她的关系', '关系', '跟她的关系'] },
+  { title: '对鲸鱼娘的期望', aliases: ['对鲸鱼娘的期望', '期望', '要求'] },
+];
+
+/** 拆栏目前缀："喜好：最近在玩 XX" → { section:'喜好与雷区', body:'最近在玩 XX' } */
+function splitSection(line: string): { section?: string; body: string } {
+  const m = /^([^：:]{1,12})[：:]\s*(.+)$/.exec(line.trim());
+  if (m) {
+    const head = m[1]!.trim();
+    const hit = SECTIONS.find((s) => s.aliases.includes(head));
+    if (hit) return { section: hit.title, body: m[2]!.trim() };
+  }
+  return { body: line.trim() };
+}
+
+/**
+ * 追加一条。两种落法：
+ *   · 带栏目前缀（"喜好：…"）→ 归到八栏（该栏已有一行 → 行尾用"；"并进去，保持"每栏一行"的摘要形态）
+ *   · 不带前缀 → 进「## 记事」区（带日期，现状不变）
+ * 节流：**同一人一天最多 3 条**（2026-09-14 放宽；原为 1 条，"只记一条怎么记得完"）。
+ */
 export function appendMemoLine(
   dataRoot: string,
   key: string,
@@ -82,28 +122,49 @@ export function appendMemoLine(
 ): { ok: boolean; msg: string } {
   const text = String(line || '').trim().slice(0, 300);
   if (!text) return { ok: false, msg: '内容是空的' };
-  if (!opts.force && wroteToday(dataRoot, key)) return { ok: false, msg: '这个人今天已经记过一条了(一天最多一条, 明天再说)' };
+  const n = countWroteToday(key);
+  if (!opts.force && n >= MAX_PER_DAY) {
+    return { ok: false, msg: `这个人今天已经记过 ${n} 条了(一天最多 ${MAX_PER_DAY} 条, 明天再说)` };
+  }
   const dir = peopleDirOf(dataRoot);
   const p = memoPathOf(dataRoot, key);
   const today = new Date();
   const stamp = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-  const bullet = `- ${stamp} ${text}`;
+  const { section, body } = splitSection(text);
   try {
     mkdirSync(dir, { recursive: true });
-    const cur = existsSync(p) ? readFileSync(p, 'utf8') : undefined;
-    if (!cur) {
-      const head = `# ${opts.name || key}\n\n> 小传（八栏：身份/本事/经历/成就/喜好与雷区/价值观/与该 AI 的关系/对该 AI 的期望）\n> 只写旁人也复述得出来的事实 + AI 当时怎么接的；不写评价与猜测。原文留档不动。\n\n## 记事\n`;
-      writeFileSync(p, `${head}${bullet}\n`, 'utf8');
-      return { ok: true, msg: '已新建小传并记下这条' };
+    let cur = existsSync(p) ? readFileSync(p, 'utf8') : undefined;
+    const created = cur === undefined;
+    if (cur === undefined) {
+      cur = `# ${opts.name || key}\n\n> 小传（八栏：身份/本事/经历/成就/喜好与雷区/价值观/与该 AI 的关系/对该 AI 的期望）\n> 只写旁人也复述得出来的事实 + AI 当时怎么接的；不写评价与猜测。原文留档不动。\n\n## 记事\n`;
     }
-    // 插到「## 记事」区末尾、其它区之前
-    const idx = cur.indexOf('\n## 原始自述');
-    if (idx > 0) {
-      writeFileSync(p, `${cur.slice(0, idx)}\n${bullet}${cur.slice(idx)}`, 'utf8');
-    } else {
-      writeFileSync(p, `${cur.replace(/\s*$/, '')}\n${bullet}\n`, 'utf8');
+
+    if (section) {
+      // ① 归栏：该栏已有 → 行尾并进去；没有 → 插到「## 记事」之前（八栏在上、记事在下）
+      const prefix = `- ${section}：`;
+      const lines = cur.split('\n');
+      const idx = lines.findIndex((l) => l.startsWith(prefix));
+      if (idx >= 0) {
+        // 行尾原有的句号/分号先去干净再并 —— 否则会出现"。；"这种双标点（实测踩到）
+        lines[idx] = `${lines[idx]!.replace(/[\s。；;，,、]+$/, '')}；${body}`;
+        writeFileSync(p, lines.join('\n'), 'utf8');
+      } else {
+        const insert = `- ${section}：${body}`;
+        const anchor = cur.indexOf('\n## 记事');
+        if (anchor > 0) writeFileSync(p, `${cur.slice(0, anchor)}\n${insert}${cur.slice(anchor)}`, 'utf8');
+        else writeFileSync(p, `${cur.replace(/\s*$/, '')}\n${insert}\n`, 'utf8');
+      }
+      bumpWriteCount(key);
+      return { ok: true, msg: (created ? '已新建小传，' : '') + `已记进「${section}」栏` };
     }
-    return { ok: true, msg: '已记下' };
+
+    // ② 无栏目 → 记事区（带日期），插到「## 原始自述」之前
+    const bullet = `- ${stamp} ${text}`;
+    const idx2 = cur.indexOf('\n## 原始自述');
+    if (idx2 > 0) writeFileSync(p, `${cur.slice(0, idx2)}\n${bullet}${cur.slice(idx2)}`, 'utf8');
+    else writeFileSync(p, `${cur.replace(/\s*$/, '')}\n${bullet}\n`, 'utf8');
+    bumpWriteCount(key);
+    return { ok: true, msg: created ? '已新建小传并记下这条' : '已记下' };
   } catch (e) {
     return { ok: false, msg: `写入失败: ${e instanceof Error ? e.message : String(e)}` };
   }
