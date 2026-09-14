@@ -40,7 +40,7 @@ const CONCRETE_MIN_CHARS = 40;
  * 取 **0.01**：打平的挡掉、判对了的留住 —— 观察期先要看得见分布，行为侧一律不接。
  * 设计稿原则："不确定就不动分（判不准时跳过，不给错分）"。
  */
-const TENDENCY_MIN_MARGIN = 0.01;
+const TENDENCY_MIN_MARGIN = 0.02;
 
 /**
  * **把握下限**（2026-09-14 主人要求"重新添加样本测试一下"之后，用 `m1/judge-eval.mjs` 实测定的）。
@@ -59,27 +59,105 @@ const TENDENCY_MIN_MARGIN = 0.01;
  * ⚠️ 改样本库后**必须复跑评测**再动这两个数，别凭感觉调。
  */
 export const TENDENCY_MIN_BEST = 0.44;
+/**
+ * **英文**倾向判定的门槛，比中文更严（2026-09-14 主人拍板"1、2 都做"）。
+ *
+ * 起因：她有一轮**用英文思考**，通篇在"权衡要不要发图、最后决定克制一点"
+ *   （"Should I respond? … to avoid over-doing, I'll respond with a short text … I could send 0"），
+ *   英文库却判成『拒绝』(best 0.613 / margin 0.011) → 配上暖正文走了"让步"（+0.3）。
+ *   那次歪打正着加了分，**但要是正文是冷的就成了"重罚"冤扣** —— 隐患必须堵。
+ *
+ * 两道防线：
+ *   ① 补样本：英文任务档加了 8 条"犹豫 / 克制 / 决定简化"（治本；实测那条的 margin 从 0.011 → 0.001）；
+ *   ② 加严门槛（本条）：英文库样本更少、也没像中文那样被反复校准。
+ *      实测两条误判落在 best 0.617 / 0.645，而正常判定在 0.70+ → 取 **0.65**：
+ *      把误判挡在门外，又不误伤正常判定。拿不准就**弃权、不动分**。
+ * ⚠️ 等英文评测样本攒够了，这个数要重新定标。
+ */
+export const TENDENCY_MIN_BEST_EN = 0.65;
 export const EMO_MIN_BEST = 0.45;
-const EMO_MIN_MARGIN = 0.01;
+const EMO_MIN_MARGIN = 0.025;
 
 /**
- * 工具调用参数要不要参与「内心倾向」（2026-09-14 主人拍板：**不参与**）。
+ * 工具调用参数要不要参与「内心倾向」。
  *
- * 起因：某轮她没有思考块（thinkChars=0），判「拒绝」的依据**全是工具参数**——
- *   `reply_gate` 的 `{"reason":"路人甲点我名说…，需回应"}`，一句"要回应"被判成了"拒绝"，
- *   然后配上正文冷 → 好感度 −0.12 扣在群里另一个人头上（详见 inbound 的归因修复）。
- * 代价（已知）：主人当初特意要的另一种信号会丢 —— 姐姐型那只有些回合**没有 reasoning 块**，
- *   它的内心只写在工具参数里（"…可俏皮接梗"）。
- * 权衡：工具参数里大多是**元信息**（要不要回话、发什么图），跟"她对这个人什么态度"关系弱、噪声大；
- *   真内心还是看 reasoning。想恢复：把这里改成 `true` 即可（其余代码不动）。
+ * 2026-09-14 上午：一度关掉（`false`），原因是 `reply_gate` 的 `{"reason":"…，需回应"}`
+ *   被判成「拒绝」→ 配上正文冷 → 好感度扣在无辜群友头上（那次同时修了归因错位）。
+ * 2026-09-14 晚：主人拍板**恢复**（`true`）—— 理由很硬：
+ *   她**常用英文思考**，英文库弱（门槛高、容易弃权），而**工具参数里往往写着中文实意**
+ *   （`list_stickers · 安心 放心 摸摸 没事`、"可俏皮接梗"、"先记一下这个待办"…），
+ *   把这块丢了等于白白放弃最好的中文素材。
+ * 配合下面的"剔除英文"（judgeTextOf）：**英文思考 + 中文工具参数 → 照样能用中文库判**。
+ * ⚠️ 当初那个误判案例已进评测集（t-12），改样本库/门槛时它会报警。
  */
-export const TENDENCY_INCLUDE_TOOL = false;
+export const TENDENCY_INCLUDE_TOOL = true;
 
-/** 过了把握门槛才给标签；不过门槛只留分数，便于事后调门槛 */
-function confidentLabel(r: { label: string; best: number; margin: number } | undefined): string | undefined {
+/** 判定用文本至少要有这么多汉字，才值得"剔英文后按中文判" */
+const MIN_CN_FOR_JUDGE = 6;
+
+/** 统计汉字数（标点/emoji/数字都不算） */
+function countHan(s: string): number {
+  let n = 0;
+  for (const ch of s) {
+    const c = ch.codePointAt(0) ?? 0;
+    if (c >= 0x4e00 && c <= 0x9fff) n += 1;
+  }
+  return n;
+}
+
+/** 剔掉英文单词，只留中文（拉丁字母序列连同紧邻空格一起去掉） */
+export function stripEnglish(text: string): string {
+  return String(text ?? '')
+    .replace(/[A-Za-z][A-Za-z'’\-]*/g, ' ')
+    .replace(/[ \t]{2,}/g, ' ');
+}
+
+/**
+ * 判定用文本（2026-09-14 主人："可以弄一个剔除全部英文文本的做法？"）。
+ *
+ * 她的思考常中英混杂，甚至整段英文 —— 而英文库样本少、门槛严，动不动就弃权。
+ * 但同一段里**中文部分往往带着实意**（"Let me respond warmly" 之外还有"人家接梗""回应一下"）。
+ * 所以：**能拿出足够汉字就只拿中文去判**（走中文库，它才是被反复校准过的那条线）；
+ * 汉字太少（纯英文思考）才退回原文，按语言走英文库 / 混合则跳过。
+ */
+export function judgeTextOf(inner: string): string {
+  const cn = stripEnglish(inner).trim();
+  return countHan(cn) >= MIN_CN_FOR_JUDGE ? cn : inner;
+}
+
+/** 过了把握门槛才给标签；不过门槛只留分数，便于事后调门槛（英文走更严的那条线） */
+function confidentLabel(r: { label: string; best: number; margin: number; lang?: string } | undefined): string | undefined {
   if (r === undefined) return undefined;
-  if (r.best < TENDENCY_MIN_BEST) return undefined;
+  const minBest = r.lang === 'en' ? TENDENCY_MIN_BEST_EN : TENDENCY_MIN_BEST;
+  if (r.best < minBest) return undefined;
   return r.margin >= TENDENCY_MIN_MARGIN ? r.label : undefined;
+}
+
+/**
+ * 「接梗 = 亲近」的关键词兜底（2026-09-14 主人定）。
+ *
+ * 起因：她那段真实思考 ——
+ *   "亚瑟@我：'偷吃祭品？'…**人家接梗**：对，祭品就是给魔神的，人家吃掉天经地义～
+ *    先 reply_gate…配图？…这轮可以纯文字…人家判断：纯文字俏皮回应即可…"
+ *   被判成『任务』（best 0.534 / margin 0.012）。原因是**篇幅**：整段八成在讲"配不配图、发什么图"，
+ *   接梗只占一句，kNN 取每类最近的几条时被流程句压过去了。
+ *   补了 6 条"接梗"样本后，**单看那句**能判亲近（0.524），但**整段合起来**仍是任务（0.534）——
+ *   样本治不了"篇幅决定论"。
+ * 主人拍板：**接梗这个词应该算亲近**（心思在对方身上，不是流程）→ 这里加一层显式规则盖过 kNN。
+ *
+ * ⚠️ 范围刻意收窄：只收"接梗 / 接住梗 / 玩梗 / 抛梗 / 顺着梗"这类**明确动作**，
+ *    不收泛泛的"梗"字（"这个梗我不懂"不该算亲近）。
+ */
+const AFFINITY_PATTERNS = /接梗|接住.{0,2}梗|接这个梗|玩梗|抛梗|顺着梗|接住了梗|我接了|人家接了|我来帮你|我帮你|帮你搞定|交给人家|人家帮你|我帮你想/;
+
+/** 倾向标签：关键词优先（接梗 = 亲近），否则走 kNN + 把握门槛。
+ *  **导出**是为了让评测脚本走同一套逻辑 —— 不然"评测跑 kNN 原始结果、线上跑关键词+门槛"两边对不上。 */
+export function tendencyLabel(
+  r: { label: string; best: number; margin: number; lang?: string } | undefined,
+  text: string,
+): string | undefined {
+  if (AFFINITY_PATTERNS.test(text)) return '亲近';
+  return confidentLabel(r);
 }
 
 /** 情绪侧同样要过把握门槛（不然低把握的"冷"也会去扣好感度）—— 导出给入站侧一起用 */
@@ -211,7 +289,7 @@ export async function noteTurnSignals(
 
     // ②③ 分工定死：**内心判倾向**（默认只取 reasoning），正文判情绪
     const [innerTen, replyEmo] = await Promise.all([
-      inner ? classifyTendency(inner, opts) : Promise.resolve(undefined),
+      inner ? classifyTendency(judgeTextOf(inner), opts) : Promise.resolve(undefined),
       reply.trim() ? classifyEmo(reply, opts) : Promise.resolve(undefined),
     ]);
 
@@ -227,7 +305,7 @@ export async function noteTurnSignals(
       thinkTokens: entry.thinkTokens,
       toolChars: entry.toolChars ?? tool.length,
       innerChars: inner.length,
-      thinkTen: confidentLabel(innerTen),
+      thinkTen: tendencyLabel(innerTen, inner),
       thinkTenScore: innerTen?.best,
       thinkTenMargin: innerTen?.margin,
       thinkTenLang: innerTen?.lang,
@@ -278,17 +356,23 @@ export async function applyTurnAttitude(
     if (!entry.attitudeKey) return;
     const think = String(text.think ?? '').trim();
     const reply = String(text.reply ?? '').trim();
+    // ⚠️ 2026-09-14 修：结算时原来**只传 think**，把整回合的工具文本丢了 ——
+    //   而按步记录(noteTurnSignals)是 think+tool，两边口径不一致。补上。
+    const toolPart = TENDENCY_INCLUDE_TOOL ? String(text.tool ?? '').trim() : '';
+    // 判定用文本 = 整回合的思考 + 工具中文（与 noteTurnSignals 同口径）
+    const judgeSource = [think, toolPart].filter((s) => s !== '').join('\n');
     if (think === '' && reply === '') return;   // 空回合不留痕（与 noteTurnSignals 同口径）
     const opts = { modelDir: text.modelDir, logger: text.logger };
     const [innerTen, replyEmo] = await Promise.all([
-      think ? classifyTendency(think, opts) : Promise.resolve(undefined),
+      judgeSource ? classifyTendency(judgeTextOf(judgeSource), opts) : Promise.resolve(undefined),
       reply ? classifyEmo(reply, opts) : Promise.resolve(undefined),
     ]);
     applyAttitudeEvent(
       dataRoot,
       entry.attitudeKey,
       {
-        thinkTen: confidentLabel(innerTen),
+        // 关键词兜底要覆盖**整回合**：她说出口的"我帮你 / 这企划人家接了"也是态度（2026-09-14 主人指出）
+        thinkTen: tendencyLabel(innerTen, `${judgeSource}\n${reply}`),
         replyEmo: confidentEmo(replyEmo),
         replyChars: reply.length,
         userEmo: entry.userEmo,

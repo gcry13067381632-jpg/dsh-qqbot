@@ -246,6 +246,38 @@ Invoke-WebRequest "$base/config.json"               -OutFile "$dir\config.json"
 
 > 🔧 新版 Web 面板把群管理单开成「⑥ QQ 群管理」卡片(入群审批/禁言/成员信息/黑名单), 与上方 `groupAdmin.*` 配置同一份数据。
 
+## 数据文件一览（`{dataRoot}/.qqbot/`）
+
+全在本机，**不上传任何地方**。分两类，心里有数就好：
+
+### 功能数据（删了会丢状态，别动）
+
+| 文件 | 内容 | 写入时机 |
+|---|---|---|
+| `affinity.json` | 熟识度台账 | 每条群消息 |
+| `intimacy-daily.json` | 每日互动统计（周报素材） | 每条群消息 |
+| `attitude.json` | 好感度台账 | 每回合结算 |
+| `groups.json` | 群注册表 | 入群/加群时 |
+| `join-pending.json` | 待审入群申请 | 有申请时 |
+| `timers.json` | 定时任务 | 建/删任务 |
+| `broadcast-tasks.json` | 群发任务（2 分钟内可撤回） | 群发时 |
+| `card-callbacks.json` | 卡片按钮回调 | 点按钮时 |
+| `quote-cache.json` | 引用短号 ↔ msg_id 映射 | 引用消息时 |
+| `value-samples.jsonl` | 开口标准样例库 | 手动 / AI 写 |
+| `target-groups.json` | 分组 | 面板 / AI 操作时 |
+
+### 观察 / 诊断数据（**可以放心删**，不影响任何功能）
+
+| 文件 | 里面是什么 | 滚动上限 |
+|---|---|---|
+| `thinking-log.jsonl` | **她的思考原文**（隐私敏感，只落本地） | 400 行 |
+| `four-source.jsonl` | 倾向 / 情绪标量（观察期统计） | 800 行 |
+| `value-scores.jsonl` | 每条消息的价值评分明细（面板「最近评分」读它） | 2 MB / 2000 行 |
+| `group-audit.jsonl` | 事件审计（群列表检查、路由异常等） | 2 MB / 2000 行 |
+
+> 这四个只为「观察与排查」而写：删掉只丢历史记录，插件照常工作。
+> 尤其 `thinking-log.jsonl` —— 里面是她的内心独白，不想留随时删；四个文件都会**自动滚动保留最新**，不会无限膨胀。
+
 ## 内置命令
 
 在 QQ 群里直接发（无需 @ 机器人；走 SDK 直通，不占用 AI 回合）：

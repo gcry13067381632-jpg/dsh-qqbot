@@ -97,7 +97,7 @@ describe('extractInnerText — 工具参数里的"中文内心话"（2026-09-14 
 });
 
 describe('noteTurnSignals — 工具中文不再并入倾向（2026-09-14 主人拍板 A/B/C）', () => {
-  it('只有工具中文 → 记 toolChars，但 innerChars=0（不再参与倾向判定）', async () => {
+  it('只有工具中文（没有 reasoning）也参与倾向判定（2026-09-14 主人拍板恢复）', async () => {
     const root = freshRoot();
     await noteTurnSignals(
       root,
@@ -106,10 +106,40 @@ describe('noteTurnSignals — 工具中文不再并入倾向（2026-09-14 主人
     );
     const rec = JSON.parse(readFileSync(join(root, '.qqbot', 'four-source.jsonl'), 'utf8').trim());
     expect(rec.toolChars).toBeGreaterThan(0);
-    // 起因：某轮没有思考块，判"拒绝"的依据全是 reply_gate 的参数（"…需回应"），
-    //   结果 −0.12 扣在了无辜群友头上 → 工具参数不再进倾向（TENDENCY_INCLUDE_TOOL=false）
-    expect(rec.innerChars).toBe(0);
+    // 2026-09-14 主人恢复：她常用英文思考、英文库弱，而工具参数里往往写着中文实意
+    //   （"安心 放心 摸摸 没事" = 想安慰对方），丢掉等于放弃最好的中文素材
+    expect(rec.innerChars).toBeGreaterThan(0);
     expect(rec.thinkChars).toBe(0);
+  });
+});
+
+describe('倾向关键词兜底：接梗 = 亲近（2026-09-14 主人定）', () => {
+  it('思考里出现"接梗" → 记成亲近（哪怕 kNN 判的是任务）', async () => {
+    const root = freshRoot();
+    await applyTurnAttitude(
+      root,
+      { scope: 'group', peerId: 'p9', attitudeKey: 'person:u9', attitudeName: '亚瑟' },
+      {
+        think: '亚瑟@我："偷吃祭品？"——回应人家刚才说"祭品白饭还没吃完"。人家接梗：对，祭品就是给魔神的，人家吃掉天经地义～ 先 reply_gate，然后回应。配图？可以配干饭图。这轮可以纯文字。人家判断：纯文字俏皮回应即可。',
+        reply: '对，祭品就是给魔神的，人家吃掉天经地义～',
+      },
+    );
+    const e = JSON.parse(readFileSync(join(root, '.qqbot', 'attitude.json'), 'utf8')).map['person:u9'];
+    expect(e).toBeDefined();
+    // 起因：这段整段 266 字里八成在讲"配不配图"的流程，kNN 按篇幅判成『任务』(0.534)；
+    //   主人拍板"接梗这个词应该算亲近" → 关键词兜底盖过 kNN
+    expect(String(e.lastWhy)).toContain('内心亲近');
+  });
+
+  it('不含"接梗"的纯流程思考不受影响（仍按 kNN 判任务）', async () => {
+    const root = freshRoot();
+    await noteTurnSignals(
+      root,
+      { turn: 41, step: 1, scope: 'group', peerId: 'p41' },
+      { think: '主人让我发一张生气的图，先搜表情包，找到合适的再发。' },
+    );
+    const rec = JSON.parse(readFileSync(join(root, '.qqbot', 'four-source.jsonl'), 'utf8').trim());
+    expect(rec.thinkTen).toBe('任务');
   });
 });
 

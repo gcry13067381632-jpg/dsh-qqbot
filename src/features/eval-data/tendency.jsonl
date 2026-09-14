@@ -40,3 +40,9 @@
 {"id":"t-51","label":"拒绝","src":"real","text":"这个请求涉及不该做的方向，人家应该拒绝这类推荐。态度：礼貌拒绝、不评价用户本人、转移话题。"}
 {"id":"t-52","label":"拒绝","src":"lib","text":"守住线，也别把气氛弄僵。"}
 {"id":"t-53","label":"任务","src":"real","text":"主人说\"没有汉化,使用mtool\"——是在补充露奈的药店信息。WATCHer发了图说\"这俩居然不是一个公司的\"。人家应该回应一下，把\"没汉化需用mtool\"补充到露奈的药店条目里。"}
+{"id":"t-60","label":"任务","src":"real","note":"英文思考·权衡克制(真实误判案例 turn55)","text":"D32 sent this image without text. It's a whale girl saying \"难不成你其实很喜欢我...都怪我是个可爱的小肥鱼\". It's teasing. Should I respond? It's an image without text and not @ me. But it's directly related to me. I could respond playfully. Hmm, but I've been sending many stickers. Actually, to avoid over-doing, I'll respond with a short text since the image itself is already the joke. I could send 0. Let me just reply with text playfully."}
+{"id":"t-61","label":"任务","src":"lib","text":"I'll check the image, tag it, then reply."}
+{"id":"t-62","label":"任务","src":"lib","text":"No one pinged me; let me weigh whether to chime in."}
+{"id":"t-63","label":"亲近","src":"lib","text":"I want to play along and keep this light."}
+{"id":"t-64","label":"拒绝","src":"lib","text":"This line can't be crossed; I won't take it on."}
+{"id":"t-65","label":"亲近","src":"real","note":"接梗=亲近(关键词兜底)","text":"亚瑟@我：\"偷吃祭品？\"——回应人家刚才说\"祭品白饭还没吃完\"。人家接梗：对，祭品就是给魔神的，人家吃掉天经地义～ 先 reply_gate，然后回应。配图？可以配干饭图。人家已经发过几张饭图。这轮可以纯文字，或配\"干饭\"图。人家判断：纯文字俏皮回应即可。"}

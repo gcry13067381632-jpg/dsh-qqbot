@@ -576,7 +576,10 @@ export async function handleInbound(
             mention: mentioned,
             score: sc ? Math.round(sc.score * 1000) / 1000 : undefined,
             // 判定真正用的分：加权模式=Σ(权×有效分)/Σ权；单条模式=原始分+好感偏移
-            scoreAdj: sc ? Math.round(effScore * 1000) / 1000 : undefined,
+            // 判定分：有原始分**或**有加权综合分，都要记。
+            //   （2026-09-14 修：原来只在 sc 存在时记 —— 纯图那条自己没分、但窗口里别人有分，
+            //     加权综合分照样成立，结果面板显示成「📷 + [合·加权]」自相矛盾）
+            scoreAdj: (sc || aggScore !== undefined) ? Math.round(effScore * 1000) / 1000 : undefined,
             worth,
             // 被点名 → **必回**（2026-09-14 主人："@不是保证触发吗？"）
             //   拦截条件三处都写着 `!mentioned`，所以被 @ 时分数再低也放行；
@@ -594,6 +597,10 @@ export async function handleInbound(
             gate,   // 2026-09-13 加: 记下**当时生效的模式**(排查"为什么低分还回话"必需; 以前只记 min, log/block 分不出来)
             img: firstImg ? true : undefined,
             lib: libItem ? true : undefined,
+            // 图在库 ≠ 能借它评分：**待整理区（candidate）的图还没打标签/描述**，
+            // 借不到文字 → 评不了分。分开记一个字段，面板好把话说明白
+            // （2026-09-14 主人问"怎么有时候评分变成一个 emoji 了"时发现的）
+            libText: libText ? true : undefined,
             conf: sc ? Math.round(sc.confidence * 1000) / 1000 : undefined,
             // 相关度(观察期): relReply=接她的话 / relHist=接群里的话题 / final=期望的融合分(暂不生效)
             relReply: rel?.relReply,

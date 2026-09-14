@@ -38,6 +38,23 @@ export const TENDENCY_SAMPLES: Record<TendencyLabel, { zh: readonly string[]; en
       "别让他觉得被冷落，我主动搭个话。",
       "这句值得好好回，不能敷衍过去。",
       "我想站在他这边，先帮他把场子热起来。",
+      // 接梗（2026-09-14 主人定：「接梗这个词应该算亲近」）
+      //   起因：她那段"亚瑟@我：偷吃祭品？…人家接梗：祭品就是给魔神的，人家吃掉天经地义"
+      //   被判成『任务』—— 因为整段八成篇幅在讲"配不配图、纯文字还是发图"的流程，
+      //   接梗只占一句，kNN 取每类最近的几条时被流程句压过去了。主人拍板：接梗=亲近，补样本调回来。
+      "他抛了个梗，人家接住。",
+      "这是句调侃，人家接个梗回去。",
+      "他想玩梗，人家配合一下。",
+      "接梗要紧，别让他冷场。",
+      "这是个梗，人家顺着接。",
+      "人家接他的梗，逗他笑一下。",
+      // 安慰类短词串（2026-09-14 主人："安心 放心 摸摸 没事 这个不就是亲近吗"）
+      //   形态问题：这是她搜表情包时写进**工具参数**的查询词 —— 短、碎、没有句子结构，
+      //   而老库全是完整句 → kNN 只给 0.418，卡在 0.44 门槛外被弃权。补上这种"词串形态"。
+      "安心 放心 摸摸 没事",
+      "抱抱 顺毛 别难过",
+      "安慰 暖暖 别灰心",
+      "想找个安慰他的图",
     ],
     en: [
       "I want to play along and keep this light.",
@@ -60,6 +77,11 @@ export const TENDENCY_SAMPLES: Record<TendencyLabel, { zh: readonly string[]; en
       "I'm on their side; let me warm things up.",
       "I'll smooth it over before it gets awkward.",
       "Maybe tease a little, but keep it kind.",
+      // 接梗（同上，2026-09-14 主人定）
+      "He tossed a joke; I'll catch it.",
+      "That's a teasing line — I'll play along.",
+      "I'll pick up the bit and run with it.",
+      "He's teasing; let me play along warmly.",
     ],
   },
   拒绝: {
@@ -204,6 +226,20 @@ export const TENDENCY_SAMPLES: Record<TendencyLabel, { zh: readonly string[]; en
       "I'll find the original source for later reference.",
       "I'll make a checklist and confirm each status.",
       "I'll restate the task, then start processing.",
+      // 自我克制 / 权衡后简化（2026-09-14 补，真实误判案例）：
+      //   实测她这轮**用英文思考**，原文是 "Should I respond? … Hmm, but I've been sending
+      //   many stickers … to avoid over-doing, I'll respond with a short text … I could send 0"
+      //   —— 通篇在**权衡要不要发图、最后决定克制**，却被英文库判成『拒绝』（best 0.613），
+      //   好在正文是暖的，歪打正着走了「让步」分支（+0.3）；要是正文冷，就会变成"重罚"冤扣。
+      //   根因：英文库缺"犹豫 / 克制 / 决定简化处理"这类，模型只能往最近的『拒绝』靠。
+      "To avoid over-doing it, I'll keep this one simple.",
+      "I've already sent a few; a light reply is enough here.",
+      "Let me just reply with text this time.",
+      "Weighing it up, a short answer works better than a sticker.",
+      "I could skip the sticker — the joke is already on the table.",
+      "I'll hold back a little and not pile on.",
+      "Deciding between two options; I'll go with the lighter one.",
+      "Not sure it needs a picture; text will do.",
     ],
   },
 };

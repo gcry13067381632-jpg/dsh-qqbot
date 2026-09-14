@@ -18,7 +18,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { classifyEmo, classifyTendency } from './local-signals.js';
-import { confidentEmo, EMO_MIN_BEST, TENDENCY_MIN_BEST } from './four-source.js';
+import { confidentEmo, tendencyLabel, EMO_MIN_BEST, TENDENCY_MIN_BEST } from './four-source.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -36,9 +36,12 @@ async function run(kind: 'tendency' | 'emo', minBest: number): Promise<Tally> {
   for (const row of load(kind)) {
     t.total += 1;
     const r = kind === 'emo' ? await classifyEmo(row.text) : await classifyTendency(row.text);
-    if (!r || r.best < minBest || r.margin < 0.01) continue;   // 弃权
+    // 判定**直接用插件的函数**（含"剔英文 / 接梗关键词 / 按语言选门槛 / margin 门槛"），
+    //   别再自己拼 best+margin —— 2026-09-14 收紧 margin 后，这里硬编码的 0.01 就与线上脱节了
+    const got = kind === 'emo' ? confidentEmo(r) : tendencyLabel(r, row.text);
+    if (!got) continue;   // 弃权
     t.judged += 1;
-    if (r.label === row.label) t.correct += 1;
+    if (got === row.label) t.correct += 1;
   }
   return t;
 }

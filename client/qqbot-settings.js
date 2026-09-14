@@ -2008,7 +2008,13 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           var col = it.worth ? '#2f9e44' : '#c23131'
           out += '<div style="padding:4px 8px;border-bottom:1px solid #f5f5f5;font-size:12px">'
             + '<span style="color:#999">' + hh + '</span> '
-            + '<b style="color:' + col + '">' + (typeof it.score === 'number' ? Number(typeof it.scoreAdj === 'number' ? it.scoreAdj : it.score).toFixed(2) : (it.img ? '📷' : '-')) + '</b>'
+            // 显示"判定真正用的那个分"：优先 scoreAdj（好感偏移 / 加权综合后的结果），没有才退回原始分；
+            // 两者都没有（纯图、且窗口里也没人说过话）才显示 📷
+            // —— 2026-09-14 修：原来只看 it.score，导致"📷"和"[合·加权]"同时出现
+            + '<b style="color:' + col + '">' + (function () {
+                var shown = typeof it.scoreAdj === 'number' ? it.scoreAdj : (typeof it.score === 'number' ? it.score : undefined)
+                return shown === undefined ? (it.img ? '📷' : '-') : Number(shown).toFixed(2)
+              })() + '</b>'
             // 好感偏移标记（2026-09-14：**偏移加在分数上，门槛不动**）—— 文案给普通用户看，写成"基础评分＋好感偏移"
             + (it.aggWeighted && Array.isArray(it.aggParts) && it.aggParts.length
               // 聚合加权（2026-09-14 主人定）：判定分是**加权平均**，这里把每一票摊开给人看，
@@ -2030,10 +2036,17 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             + (typeof it.min === 'number'
               ? ' <span style="color:#888" title="' + esc('基础评分门槛 ' + Number(it.min).toFixed(2) + '（你设置的判定线）；好感度以「好感偏移」加减在消息分数上（亲近加分、冷淡减分），不改动门槛') + '">门槛' + Number(it.min).toFixed(2) + '</span>'
               : '')
-            + (it.img ? ' <span style="color:#999" title="图片消息: ' + (it.lib ? '已在库 → 借它的标签当文字评分' : '无文字, 不可评分(默认不拦)') + '">' + (it.lib ? '[库内]' : '[无文字]') + '</span>' : '')
+            + (it.img ? ' <span style="color:#999" title="' + esc(it.lib
+                ? (it.libText
+                  ? '图片消息：已在库 → 借它的标签/描述当文字评分'
+                  : '图片消息：在库里但还没打标签（待整理区）→ 借不到文字，所以没有分数（图片消息默认不拦）')
+                : '图片消息：无文字，不可评分（默认不拦）') + '">'
+              + (it.lib ? (it.libText ? '[库内]' : '[库内·未打标]') : '[无文字]') + '</span>' : '')
             + (it.mention ? ' <span style="color:#1c7ed6" title="' + esc(it.mentionForced && !it.worth ? '被@ → 必回（分数没到门槛也回）' : '被@, 必回') + '">[@]</span>' : '')
             + (it.conf !== undefined && it.conf < 0.5 ? ' <span style="color:#999" title="低置信: 最近邻居相似度只有 ' + it.conf + ', 地图上没这类样本 —— 仅作补样本提示, 不再影响拦截">[?]</span>' : '')
-            + (it.agg ? ' <span style="color:#e8590c" title="' + esc(it.aggWeighted ? ('聚合了 ' + it.agg + ' 条消息，**加权平均**综合判断（明细见左边的[合·加权]标记）') : ('聚合了 ' + it.agg + ' 条消息, 取其中最高分')) + '">[合' + it.agg + ']</span>' : '')
+            // 聚合标记：加权模式左边已经有 [合N·加权] 了，这里**不再重复**一个 [合N]
+            //   （2026-09-14 主人截图里两个并排，看着像两条记录）
+            + (it.agg && !it.aggWeighted ? ' <span style="color:#e8590c" title="聚合了 ' + it.agg + ' 条消息, 取其中最高分">[合' + it.agg + ']</span>' : '')
             + ' <span style="color:#555">' + esc(String(it.sender || '?')) + ':</span> '
             + esc(String(it.text || '').slice(0, 56))
             + '<div style="color:#bbb;font-size:11px;margin-left:14px">近邻: ' + esc((it.top || []).join(' · ')) + '</div>'

@@ -8,7 +8,7 @@
  *   log   = 只记录分数(默认, 观察期: 不改变任何行为)
  *   block = 低分不唤醒 AI(消息仍 append 进上下文, 不丢)
  */
-import { appendFileSync, mkdirSync, statSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Logger } from '../types.js';
 import { createLocalEmbedder } from './local-embed.js';
@@ -135,11 +135,40 @@ export function createValueScorer(opts: {
   return scorer;
 }
 
+/**
+ * 评分日志的滚动上限（2026-09-14 加）。
+ *
+ * 起因：主人清点 `.qqbot/` 目录时发现 `value-scores.jsonl` 是**唯一没有上限**的数据文件 ——
+ *   它每条群消息都 append 一行，thinking-log / four-source / group-audit 都有滚动，就它没有。
+ *   跑久了会无界增长（当天已 810 行 / 361 KB）。
+ *
+ * 策略与 group-audit 一致：**超过体积阈值才检查**（不是每次都 stat，省 IO），
+ *   超了就保留最新 N 行 —— 面板「最近评分」只读尾部，排查也只看最近的，砍旧的零损失。
+ */
+const SCORE_LOG_MAX_BYTES = 2 * 1024 * 1024;
+const SCORE_LOG_KEEP_LINES = 2000;
+const SCORE_LOG_CHECK_EVERY = 100;
+let scoreLogSinceCheck = 0;
+
 /** 追加一条评分记录(观察期用): {dataRoot}/.qqbot/value-scores.jsonl —— 一行一条, 可直接翻 */
 export function appendScoreLog(dataRoot: string, rec: Record<string, unknown>): void {
   try {
     const p = join(dataRoot, '.qqbot', 'value-scores.jsonl');
     mkdirSync(dirname(p), { recursive: true });
     appendFileSync(p, `${JSON.stringify({ ts: Date.now(), ...rec })}\n`, 'utf8');
+    // 滚动：每 N 次才 stat 一次；超阈值就保留最新 KEEP 行（原子替换，避免半截文件）
+    if (++scoreLogSinceCheck >= SCORE_LOG_CHECK_EVERY) {
+      scoreLogSinceCheck = 0;
+      try {
+        if (statSync(p).size > SCORE_LOG_MAX_BYTES) {
+          const lines = readFileSync(p, 'utf8').split('\n').filter((l) => l.trim() !== '');
+          if (lines.length > SCORE_LOG_KEEP_LINES) {
+            const tmp = `${p}.tmp`;
+            writeFileSync(tmp, `${lines.slice(-SCORE_LOG_KEEP_LINES).join('\n')}\n`, 'utf8');
+            renameSync(tmp, p);
+          }
+        }
+      } catch { /* 滚动失败不影响记录 */ }
+    }
   } catch { /* 记录失败不影响主流程 */ }
 }

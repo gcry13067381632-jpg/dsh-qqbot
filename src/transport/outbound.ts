@@ -318,6 +318,8 @@ class OutboundRouter {
         this.turnAcc.delete(record.sessionKey);
         const thinkAll = acc.think.join('\n');
         const replyAll = acc.reply.join('\n');
+        // ⚠️ 2026-09-14 修：原来**没把整回合的工具文本传过去** → 结算口径比按步记录少一截
+        const toolAll = acc.tool.join('\n');
         void applyTurnAttitude(
           dataRootOf(this.config),
           {
@@ -329,7 +331,7 @@ class OutboundRouter {
             attitudeName: acc.senderName,
             userEmo: acc.userEmo,
           },
-          { think: thinkAll, reply: replyAll, modelDir: this.config.localModel?.modelDir, logger: this.logger },
+          { think: thinkAll, reply: replyAll, tool: toolAll, modelDir: this.config.localModel?.modelDir, logger: this.logger },
         );
       }
     } else if (event.type === 'assistant/chunk' || event.type === 'assistant/message'
