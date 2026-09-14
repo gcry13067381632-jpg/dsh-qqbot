@@ -183,7 +183,7 @@ Invoke-WebRequest "$base/config.json"               -OutFile "$dir\config.json"
 - **拦截边界**：被 @ 的永远放行；带图一律放行；**只有被拦在唤醒之前**（没花 token）的那次才会**回滚**本群的回复冷却 —— 冷却本来就是用来省 token 的，token 花了就不算白花。
 - **评分记录**：`{dataRoot}/.qqbot/value-scores.jsonl`，一行一条，字段 `score / worth / gate / min / conf / mention / img / lib / agg / top`。面板能直读，也可以让 AI 读它来维护样例库（`{dataRoot}/.qqbot/value-samples.jsonl`：`{"m":"消息文本","y":1|0}`，y=1 表示"她会想接话"）。
 
-## 💗 好感度与熟识度（v1.4.7+）
+## 💗 好感度与熟识度（v1.5.0+）
 
 两个维度**分开算、互不干扰**：
 
