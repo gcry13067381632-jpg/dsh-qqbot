@@ -1032,8 +1032,12 @@ function extractQuotedContent(msg: ProcessedMessage): string {
  * Layer 3: 带发送者标签的用户消息
  * 引用消息功能开启时, 每条入站都带**短消息号**(msgRef, 形如 0913a; 群聊挂发送者标签, 私聊独立一行)
  * —— AI 想引用对方时在正文写 [rf:短号](2026-09-13 主人定: 短号省 token, 台账见 msg-index.ts)。
+ * 群聊标签的形状(2026-09-15 定稿, 与历史行同口径):
+ *   没被 @  → `[昵称 #短号]`            ← 不带 openid(省 token; 32 位 id 每行 20+ token)
+ *   被 @ 了 → `[昵称 (openid) #短号]` + 正文后 ` (@you)`  ← 要回 @ 他/认人才给 id
+ *   短号两边都留(引用标记 + id_lookup 反查 openid 的入口, 不能省)。
  */
-function buildUserMessage(
+export function buildUserMessage(
   userContent: string,
   quotePart: string,
   senderId: string,
@@ -1049,7 +1053,13 @@ function buildUserMessage(
 
   const mentionTag = wasMentioned ? ' (@you)' : '';
   const displayName = senderName ?? shortSenderId(senderId);
-  const senderTag = msgRef ? `[${displayName} (${senderId}) #${msgRef}]` : `[${displayName} (${senderId})]`;
+  // 省 token(2026-09-12 定, 2026-09-15 主人复查"没 @ 的只显示昵称呢?"):
+  //   和**群历史行**一个口径 —— 没被 @ 的消息只给昵称, 32 位 openid 只在"被 @ 了"(要回 @ 他/认人)时才给。
+  //   ⚠️ 短消息号 `#ref` **两边都留**: 那是引用标记([rf:xxxx] 靠它), 也是 id_lookup 反查 openid 的入口 ——
+  //     去掉它引用功能/认人工具就都废了 (主人 2026-09-15 特别强调)。
+  const idPart = wasMentioned ? ` (${senderId})` : '';
+  const refPart = msgRef ? ` #${msgRef}` : '';
+  const senderTag = `[${displayName}${idPart}${refPart}]`;
   return `${quotePart}${senderTag} ${userContent}${mentionTag}`;
 }
 
