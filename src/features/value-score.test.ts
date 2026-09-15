@@ -9,7 +9,7 @@
  *   （否则"前缀=高分"这个伪特征又会从样例侧漏回来）。
  */
 import { describe, expect, it } from 'vitest';
-import { stripMentionForScore, NON_MENTION_PENALTY } from './value-score.js';
+import { stripMentionForScore, OTHER_MENTION_PENALTY } from './value-score.js';
 
 describe('stripMentionForScore — 打分前剥掉 @ 标记', () => {
   it('openid 形式与 @bot 形式都剥掉，只留正文', () => {
@@ -43,9 +43,15 @@ describe('stripMentionForScore — 打分前剥掉 @ 标记', () => {
   });
 });
 
-describe('NON_MENTION_PENALTY — 没被点名就扣分', () => {
+describe('OTHER_MENTION_PENALTY — @了**别人**才扣分', () => {
   it('是个温和的正数（0 < p < 0.1）：够动门槛附近，又不至于把闲聊全掐死', () => {
-    expect(NON_MENTION_PENALTY).toBeGreaterThan(0);
-    expect(NON_MENTION_PENALTY).toBeLessThan(0.1);
+    expect(OTHER_MENTION_PENALTY).toBeGreaterThan(0);
+    expect(OTHER_MENTION_PENALTY).toBeLessThan(0.1);
+  });
+
+  it('语义是"@了别人"，不是"没人@她" —— 别退回第一版那个错理解（主人 2026-09-15 亲口纠正过）', () => {
+    // 这条只是防止有人（包括未来的我）把常量名改回"非点名就扣"：
+    // 没被 @ 恰恰是她该主动接话的常态，扣分会把她变成"等点名才说话"。
+    expect('OTHER_MENTION_PENALTY').toContain('OTHER_MENTION');
   });
 });

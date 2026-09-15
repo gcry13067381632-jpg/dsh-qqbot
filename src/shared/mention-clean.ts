@@ -49,3 +49,21 @@ export function replaceBotMention(
 
   return text;
 }
+
+/**
+ * 这条消息 @ 的是**别人**（不是她）吗？
+ *
+ * 2026-09-15 主人修正过一次语义："**不是**没人@她的时候降低评分, 是**有人@别人**的时候降低评分"。
+ *   · 没被 @ ≠ 不该回话 —— 那恰恰是她该主动挑话插的常态，扣分会把她变成"等点名才说话"；
+ *   · 真正该扣的是"这句 @ 的是别人"：那轮对话的方向是那个人，她基本不该插嘴。
+ *
+ * 为什么用 QQ 的 mentions 元数据而不是正文里的 `@某某` 字样：
+ *   正文里 @ 别人的标记形式不固定，而 mentions 是平台给的权威列表。
+ *   ⚠️ 两个平台细节：① 她被 @ 时（GROUP_AT_MESSAGE_CREATE）QQ 的 mentions **不含 bot 自身**，
+ *   所以要先看 wasMentioned；② 没被 @ 时（GROUP_MESSAGE_CREATE）mentions = 这条 @ 的全部人。
+ */
+export function mentionsOthers(mentions: MentionLike[] | null | undefined, wasMentioned: boolean): boolean {
+  if (wasMentioned) return false;                          // @ 的就是她 → 走"必回"那条路，不扣
+  if (!Array.isArray(mentions) || mentions.length === 0) return false;
+  return mentions.some((m) => m && m.is_you !== true);
+}

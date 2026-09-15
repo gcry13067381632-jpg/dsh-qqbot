@@ -19,11 +19,11 @@ import type { DownloadedFile } from './attachment.js';
 import { clearGroupHistory } from '../features/history-store.js';
 import { applyInjectRules } from './inject-rules.js';
 import { inferMediaKind, mediaKindLabel } from './media-kind.js';
-import { replaceBotMention, type MentionLike } from '../shared/mention-clean.js';
+import { replaceBotMention, mentionsOthers, type MentionLike } from '../shared/mention-clean.js';
 import { MK, QUOTE_BEGIN_ALL, QUOTE_END_ALL, findFirstMarker, findLastMarker, escapeBlockMarkers, stripBlockMarkers } from './markers.js';
 import { dataRootOf, stickerDirOf } from '../gateway/data-root.js';
 import { registerMsgIndex } from './msg-index.js';
-import { createValueScorer, appendScoreLog, NON_MENTION_PENALTY } from '../features/value-score.js';
+import { createValueScorer, appendScoreLog, OTHER_MENTION_PENALTY } from '../features/value-score.js';
 import { getStickerStore, computeDHash } from '../features/sticker-store.js';
 import { lookupImagePath, rememberImagePath } from '../features/image-path-cache.js';
 import { recordImageUrl, lookupStickerIdByUrl } from '../features/image-url-ledger.js';
@@ -291,6 +291,8 @@ export async function handleInbound(
     const lmOn = (ovRaw.enabled ?? lmCfg?.enabled) !== false;
     if (scope === 'group' && lmOn && gate !== 'off') {
       const mentioned = mwState.mention?.wasMentioned === true;
+      // 这条消息 @ 的是**别人**(不是她)吗？—— 2026-09-15 主人修正的扣分依据（判据见 mentionsOthers 的注释）
+      const mentionedOthers = mentionsOthers((msg as { mentions?: MentionLike[] }).mentions, mentioned);
       try {
         const scorer = createValueScorer({
           dataRoot: dataRootOf(config),
@@ -556,9 +558,9 @@ export async function handleInbound(
           // 会话级门槛: 用本会话算出的 minScore 判定(不是 scorer 内部的默认值); 无分(纯图)视作放行
           // 判定分：加权模式用**综合分**（Σ权×有效分 / Σ权，各条的好感偏移已在里面算过）；
           //   单条模式仍是 原始分 + 好感偏移。⚠️ 别重复加偏移（加权时 attOff 只用于日志）。
-          // 再减"没人 @ 她"的惩罚（2026-09-15 主人："把不@bot的给降低评分"）——
-          //   点名是明确的"我要你答"，没点名就该更保守；模型原始分不动，只动判定分。
-          const mentionPen = mentioned ? 0 : NON_MENTION_PENALTY;
+          // 再减"**@了别人**"的惩罚（2026-09-15 主人修正：不是"没人@她"要扣分 ——
+          //   没人@她恰恰是她该主动挑话插的常态；真正该扣的是"这句 @ 的是别人"，那轮对话方向是那个人）。
+          const mentionPen = mentionedOthers ? OTHER_MENTION_PENALTY : 0;
           const effScore = (aggScore !== undefined ? aggScore : (sc ? sc.score + attOff : 0)) - mentionPen;
           // ── 附件唤醒开关（2026-09-15 主人定：图片/视频/语音/文件**分别**决定是否无视分数唤醒）──
           //   现状问题：原来只要是"带图"就一律放行 —— 而"图"里混着视频/语音/文件（收集时不区分格式）。
@@ -636,8 +638,9 @@ export async function handleInbound(
             //   ⚠️ 加权模式下 attTier/attOff 是**主角那条**的（权重最大的人），分值本身已各算各的
             attTier,
             attOff: attOff || undefined,
-            // 没人 @ 她 → 判定分扣了多少（2026-09-15 加；0/undefined = 被点名，没扣）
+            // @了别人 → 判定分扣了多少（2026-09-15 加；0/undefined = 没扣）
             pen: mentionPen || undefined,
+            penWhy: mentionPen ? 'mentionOther' : undefined,
             // 加权明细：每条 {n:昵称, s:价值分, r:好感占比, w:权重} —— 事后能复算出综合分
             aggWeighted: aggParts ? true : undefined,
             aggParts,

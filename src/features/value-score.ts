@@ -29,7 +29,7 @@ const WEIGHT_POW = 8;
  *
  * 做法：**样例与查询都过这个函数** → 相似度只反映正文；
  *   "是否被点名"改由独立特征承担（gate 的 `!mentioned` 放行、加权里的 AGG_MENTION_BOOST、
- *   以及没人 @ 她时的 NON_MENTION_PENALTY）。
+ *   以及"@了别人"时的 OTHER_MENTION_PENALTY）。
  */
 export function stripMentionForScore(raw: string): string {
   return String(raw ?? '')
@@ -41,13 +41,19 @@ export function stripMentionForScore(raw: string): string {
 }
 
 /**
- * 没人 @ 她 → 判定分扣一点（2026-09-15 主人："把不@bot的给降低评分"）。
+ * 这条消息 **@ 了别人**（不是她）→ 判定分扣一点。
+ *
+ * ⚠️ 2026-09-15 主人**修正过一次语义**："不是没人@她的时候降低评分, 是有人@别人的时候降低评分"。
+ *   人家第一版做成了"没被 @ 就扣分"——那是错的：**没被 @ 恰恰是她该主动接话的常态**（群里没人点她，她才会自己挑话插），
+ *   扣分等于把她变成"等点名才说话"。
+ *   真正的信号是"这句话 @ 的是谁"：@ 了别人 = 这轮对话的方向是那个人，她基本不该插嘴。
+ *   （@ 的是她自己时走另一条路：`!mentioned` 的拦截豁免 → 必回。）
  *
  * 为什么用**减法**而不是乘法：门槛附近的高分要更保守（0.90 想越 0.89 的线得真够格），
- *   而本来就很低的分再乘系数没有意义（都是拦）。0.06 ≈ 让"没被点名"多要 6 分。
+ *   而本来就很低的分再乘系数没有意义（都是拦）。0.06 ≈ 让"@别人"这条多要 6 分。
  * 只影响判定分（effScore），**不改**模型原始分（日志里 score/scoreAdj 分开记，能复盘）。
  */
-export const NON_MENTION_PENALTY = 0.06;
+export const OTHER_MENTION_PENALTY = 0.06;
 
 
 export interface ScoreNeighbor {
