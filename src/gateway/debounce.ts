@@ -59,7 +59,27 @@ interface DebounceWindow {
   /** 是否因「LLM 回合中」defer 过(主人定 2026-09-07): 只有这类聚合才带系统时间提示;
    *  原版 debounce 的"等用户连发完综合回"是正常对话, 不加提示。 */
   turnDeferred?: boolean;
+  /**
+   * 首次因「回合忙」被 defer 的时刻（ms）。
+   *
+   * 2026-09-15 主人报「发完语音之后消息全都不进来了」时加的兜底：
+   *   原逻辑是**每 800ms 重查一次、一直等 turn/end**（代码注释原话："无时间上限"）。
+   *   可一旦某个回合**没能正常结束**（语音那轮卡住 / 宿主没发 turn/end / 进程异常），
+   *   `record.turnActive` 就永远是 true → 该会话后面**所有消息被无限攒着、永不派发**，
+   *   表现就是"机器人哑了"。
+   * 现在：等超过 BUSY_MAX_WAIT_MS 就**强制放行**（日志留一条 warn），保证消息永远堵不死。
+   */
+  busySince?: number;
 }
+
+/**
+ * 「回合忙」最多等多久（ms）—— 超时强制放行。
+ *
+ * 3 分钟：正常回合（哪怕连着调十几个工具、跑长命令）都够；超过基本可以认定是异常卡死。
+ * ⚠️ 这条兜底的意义不在"性能"，而在**可用性**：宁可偶尔让两条消息挤进同一个回合，
+ *    也不能让一个卡住的回合把整个会话的消息通道永久堵住。
+ */
+const BUSY_MAX_WAIT_MS = 3 * 60_000;
 
 /** 解析消息服务器时间戳(ISO 字符串或 ms 数字; 解析失败回落"到达时刻"兜底) */
 function msgTs(msg: Record<string, unknown>): number {
@@ -165,12 +185,27 @@ export function debounceLayer(
       if (recPeer) {
         const busyRec = manager.findByPeer(fKind === 'group' ? 'group' : 'c2c', recPeer);
         if (busyRec?.turnActive) {
-          w.turnDeferred = true; // 本次窗口因回合忙被 defer → 派发时带系统时间提示
-          clearTimer(w);
-          w.timer = setTimeout(() => void flush(key, w), 800); // 回合中: 800ms 后重查(一直等到回合结束)
-          w.timer.unref?.();
-          dbg(`flush 回合忙 defer(等 turn/end, 无时间上限) key=${key} n=${pre.length}`);
-          return; // 窗口保留, 不派发
+          // 回合忙：本来"一直等到 turn/end"。2026-09-15 起加**超时兜底** ——
+          //   卡死的回合会把该会话的消息通道永久堵住（主人实测"发完语音后消息全不进"），
+          //   超过 BUSY_MAX_WAIT_MS 就强制放行（warn 留痕），宁可挤一点也不能哑掉。
+          const since = w.busySince ?? (w.busySince = Date.now());
+          const waitedMs = Date.now() - since;
+          if (waitedMs < BUSY_MAX_WAIT_MS) {
+            w.turnDeferred = true; // 本次窗口因回合忙被 defer → 派发时带系统时间提示
+            clearTimer(w);
+            w.timer = setTimeout(() => void flush(key, w), 800); // 回合中: 800ms 后重查(等到回合结束或超时)
+            w.timer.unref?.();
+            dbg(`flush 回合忙 defer(等 turn/end, 已等 ${Math.round(waitedMs / 1000)}s) key=${key} n=${pre.length}`);
+            return; // 窗口保留, 不派发
+          }
+          logger.warn(
+            `[debounce] 回合忙等超时(${Math.round(waitedMs / 1000)}s ≥ ${BUSY_MAX_WAIT_MS / 1000}s) → 强制放行 ` +
+            `key=${key} n=${pre.length}（该会话的回合疑似卡死，消息不能一直堵着）`,
+          );
+          w.busySince = undefined; // 放行后复位，下一轮重新计时
+          // 不 return —— 落到下面照常走冷却/派发链
+        } else {
+          w.busySince = undefined; // 回合已结束 → 复位计时
         }
       }
     }

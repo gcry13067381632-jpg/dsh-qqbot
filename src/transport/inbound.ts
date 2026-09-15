@@ -301,7 +301,15 @@ export async function handleInbound(
         const rawContent = String(msg.content || '');
         const qm = /\[Quoted message begins\]([\s\S]*?)\[Quoted message ends\]/i.exec(rawContent);
         const currentRaw = qm ? rawContent.replace(qm[0], ' ') : rawContent;
-        const plain = cleanTextForScore(currentRaw);
+        // ⚠️ 2026-09-15 修（主人："语音转文字消息没有参与评分吗"）：
+        //   转录文字原来**只进 userContent**（给 AI 看的那份），而评分用的是 msg.content →
+        //   语音消息在评分链里永远是"无文字"（score=无），哪怕它被清清楚楚转成了文字 ✗
+        //   现在把转录并入评分文本：语音里说的话，跟打字说的话**一样参与"值不值得接"的判断**。
+        const voiceForScore = extractVoiceTexts(msg.attachments, mwState.processedAttachments, logger)
+          .map((v) => v.text)
+          .filter((t) => t.trim() !== '')
+          .join(' ');
+        const plain = cleanTextForScore([currentRaw, voiceForScore].filter((s) => s !== '').join(' '));
         const quotedPlain = qm ? cleanTextForScore(qm[1] ?? '') : '';
         // ── 图片消息(2026-09-13 主人定 a+b + B预检) ──
         // 小模型只认文字 → 图片本身没法直接评分。三条路都用上:
@@ -321,20 +329,32 @@ export async function handleInbound(
             if (!imgUrls.includes(u)) imgUrls.push(u);
           }
         };
-        // ① 当前消息的附件
+        /**
+         * 附件按**类型**归类（2026-09-15 主人："视频和文件不算是图片，为什么也默认唤醒了？"）。
+         *
+         * 原来只有 `imgUrls`，收集条件是「content_type 含 image」**或**「URL 长得像 QQ 多媒体下载链接」——
+         * 那个 `||` 让视频/语音/文件全被当成"图"，一起触发了"只要带图就一律不拦" ✗
+         * 现在分工：只有**真图片**进 imgUrls；四种类型各自记一笔，放行时按类型开关走。
+         */
+        const attKinds = { image: false, video: false, voice: false, file: false };
+        // ① 当前消息的附件（分类收集：非图片不进 imgUrls）
         for (const a of (Array.isArray(msg.attachments) ? msg.attachments : [])) {
           const at = a as { url?: string; content_type?: string };
           const u = String(at?.url ?? '').trim();
-          if (u && (/image/i.test(String(at?.content_type ?? '')) || /download\?/.test(u)) && !imgUrls.includes(u)) {
-            imgUrls.push(u);
-          }
+          const ct = String(at?.content_type ?? '').toLowerCase();
+          if (/image/.test(ct)) attKinds.image = true;
+          else if (/video/.test(ct)) attKinds.video = true;
+          else if (/voice|audio|record|amr|silk/.test(ct)) attKinds.voice = true;
+          else if (/file/.test(ct)) attKinds.file = true;
+          if (u && /image/.test(ct) && !imgUrls.includes(u)) imgUrls.push(u);
         }
-        // ② 当前消息正文(合并转发/引用会把图写在文本里)
+        // ② 当前消息正文(合并转发/引用会把图写在文本里) —— 文本里认不出类型，按"图片"处理（历史行为）
         collectImg(String(msg.content || ''));
         // ③ 历史里(聚合把图算进 history 时)
         for (const h of (Array.isArray(mwState.history) ? mwState.history : [])) {
           collectImg(String((h as { content?: string })?.content ?? ''));
         }
+        if (imgUrls.length > 0) attKinds.image = true;
         const firstImg = imgUrls[0] || '';
         let libItem: { tags?: string[]; desc?: string } | undefined;
         if (firstImg) {
@@ -521,12 +541,27 @@ export async function handleInbound(
           }
         }
         // 记录: 有分数→正常记; 纯图片无分数→也记一条(标 img, 让"图片也在观察范围"看得见)
-        if (sc || firstImg) {
+        // ⚠️ 2026-09-15 改：**任何附件**都要进这个块 —— 否则"纯视频 / 纯文件"（既没文字、又不是图）
+        //   会整块跳过"值不值得唤醒"的判断，等于无条件放行，附件开关就形同虚设了。
+        const hasAnyAttachment = attKinds.image || attKinds.video || attKinds.voice || attKinds.file;
+        if (sc || firstImg || hasAnyAttachment) {
           // 会话级门槛: 用本会话算出的 minScore 判定(不是 scorer 内部的默认值); 无分(纯图)视作放行
           // 判定分：加权模式用**综合分**（Σ权×有效分 / Σ权，各条的好感偏移已在里面算过）；
           //   单条模式仍是 原始分 + 好感偏移。⚠️ 别重复加偏移（加权时 attOff 只用于日志）。
           const effScore = aggScore !== undefined ? aggScore : (sc ? sc.score + attOff : 0);
-          const worth = sc ? effScore >= minScore : true;
+          // ── 附件唤醒开关（2026-09-15 主人定：图片/视频/语音/文件**分别**决定是否无视分数唤醒）──
+          //   现状问题：原来只要是"带图"就一律放行 —— 而"图"里混着视频/语音/文件（收集时不区分格式）。
+          //   新规则：
+          //     · 有分数 → 够分 **或** 该类型允许放行
+          //     · 没分数（纯附件、没文字可评）→ **只有该类型允许放行**才唤醒
+          //         ↳ 这条是关键：否则"取消勾选"等于没勾（无分一律放行的话，开关形同虚设）
+          const attP = (config.localModel as { attachmentPassthrough?: Record<string, unknown> } | undefined)?.attachmentPassthrough ?? {};
+          const mediaPass =
+            (attKinds.image && attP.image !== false) ||   // 图片：默认放行（群友发图常是给她看的）
+            (attKinds.video && attP.video === true) ||    // 视频：默认不放行
+            (attKinds.voice && attP.voice === true) ||    // 语音：默认不放行（有转录文字就按文字评）
+            (attKinds.file && attP.file === true);        // 文件：默认不放行
+          const worth = sc ? (effScore >= minScore || mediaPass) : mediaPass;
           // ① 相关度(观察期, **只记录不参与判定**): 当前消息 ↔ 她上一条发言 / 群里最近 5 条(2026-09-13 主人定)
           const rel = await computeRelevance({
             gid: msg.groupOpenid ?? '',
@@ -596,6 +631,10 @@ export async function handleInbound(
             minBase: baseMin,
             gate,   // 2026-09-13 加: 记下**当时生效的模式**(排查"为什么低分还回话"必需; 以前只记 min, log/block 分不出来)
             img: firstImg ? true : undefined,
+            // 附件类型（2026-09-15）：记下这条带的是视频/语音/文件，便于核对"开关到底生没生效"
+            mediaKinds: hasAnyAttachment
+              ? Object.entries(attKinds).filter(([, v]) => v).map(([k]) => k).join('+')
+              : undefined,
             lib: libItem ? true : undefined,
             // 图在库 ≠ 能借它评分：**待整理区（candidate）的图还没打标签/描述**，
             // 借不到文字 → 评不了分。分开记一个字段，面板好把话说明白
@@ -625,7 +664,11 @@ export async function handleInbound(
           //    而且那个分数往往是低分(实测: 【表情: 微笑】+库内图 = 0.022) → 被拦掉。
           //    这跟"群友发图往往是给她看/求接梗"的初衷完全相反 ⇒ 现在**只要带图就一律不拦**
           //    (分数照记, 便于主人观察; 只是不拿它做拦截判定)。
-          if (sc && gate === 'block' && !mentioned && !worth && !firstImg) {
+          // 2026-09-15 改（主人："视频和文件不算是图片，为什么也默认唤醒了？"）：
+          //   入口条件去掉 `sc &&` 与 `!firstImg` —— 无分（纯视频/纯文件）也要能拦，
+          //   "该不该放行"全交给上面的 worth（含**附件类型开关**），这里只负责执行。
+          //   （原来"带图不拦"里那个 firstImg 是**不区分格式**的，视频/文件跟着沾光 ✗）
+          if (gate === 'block' && !mentioned && !worth) {
             const ag = record.agent as unknown as {
               whenIdle?: () => Promise<void>;
               session?: { append?: (type: string, data: unknown, opts?: { surfaceOp?: string }) => unknown };
@@ -646,7 +689,7 @@ export async function handleInbound(
               logger.warn('[价值评分] 低分但会话无 append 能力 —— 仍然不唤醒(这条可能不进上下文)');
             }
             record.lastInboundAt = Date.now();
-            logger.debug(`[价值评分] 低分不唤醒 ${sc.score.toFixed(2)}<${minScore} (gate=block, appended=${appended}): key=${scope}:${peerId} "${plain.slice(0, 30)}"`);
+            logger.debug(`[价值评分] 不唤醒 ${sc ? sc.score.toFixed(2) : `无分`}<${minScore} (gate=block, appended=${appended}): key=${scope}:${peerId} "${plain.slice(0, 30)}"`);
             // ⚠️ 2026-09-13(主人要求"没产生回复就别消耗回复冷却"): 上游派发时戳了一枚群冷却,
             //    既然这次**没唤醒=没回复**, 就把那枚冷却还回去 —— 否则一条低分闲聊会白让群里静默 90 秒。
             const rb = mwState.qqCooldownRollback;
@@ -662,8 +705,10 @@ export async function handleInbound(
             clearGroupHistory(config.appId, msg.groupOpenid ?? msg.senderId);
             return;
           }
-          if (sc && gate === 'block' && !mentioned && !worth && firstImg) {
-            logger.debug(`[价值评分] 带图消息不拦(群友发图常是给她看的) ${sc.score.toFixed(2)}<${minScore}: key=${scope}:${peerId}`);
+          // ② 附件放行（图片默认放行、或主人勾了放行的类型）：只打日志，分数照记
+          if (gate === 'block' && !mentioned && mediaPass && (sc ? sc.score < minScore : true)) {
+            const kinds = Object.entries(attKinds).filter(([, v]) => v).map(([k]) => k).join('+');
+            logger.debug(`[价值评分] 附件放行(${kinds || '未知'})不看分数 ${sc ? sc.score.toFixed(2) : '无分'}<${minScore}: key=${scope}:${peerId}`);
           }
           if (sc && gate !== 'block' && !mentioned && !worth) {
             // ⚠️ 提到 info(2026-09-13): 主人排查"低分为什么还回话"时, 一眼就能在控制台看到

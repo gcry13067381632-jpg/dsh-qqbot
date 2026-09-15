@@ -94,7 +94,7 @@ const SECTIONS: Array<{ title: string; aliases: string[] }> = [
   { title: '喜好与雷区', aliases: ['喜好与雷区', '喜好', '雷区', '喜欢', '讨厌', '口味'] },
   { title: '价值观', aliases: ['价值观', '信念', '观念'] },
   { title: '与她的关系', aliases: ['与她的关系', '关系', '跟她的关系'] },
-  { title: '对鲸鱼娘的期望', aliases: ['对鲸鱼娘的期望', '期望', '要求'] },
+  { title: '对机器人的期望', aliases: ['对机器人的期望', '期望', '要求'] },
 ];
 
 /** 拆栏目前缀："喜好：最近在玩 XX" → { section:'喜好与雷区', body:'最近在玩 XX' } */

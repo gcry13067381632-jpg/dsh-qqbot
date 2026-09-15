@@ -246,6 +246,23 @@ export interface EditableConfig {
   /** 本地小模型(省 token; 2026-09-13 主人定): 开=本地先筛(价值评分/语义搜索), 模型缺失/加载失败则静默关闭 */
   localModel?: {
     enabled?: boolean;
+    /**
+     * **附件唤醒开关**（2026-09-15 主人定）：按附件类型决定"是否无视分数直接唤醒"。
+     *
+     * 起因：主人问「视频和文件不算是图片，为什么也默认唤醒了？」——
+     *   原来收集"图片 URL"时不区分格式（只要是 QQ 多媒体链接就收），视频/文件跟着"带图一律不拦"沾了光。
+     *
+     * `true` = 该类附件无视分数直接唤醒；`false`/缺省 = 走正常评分。
+     *   · `image` 默认 true（群友发图常是给她看的；图片本来也没文字可评）
+     *   · `video`/`voice`/`file` 默认 false（视频/文件没文字就没分；语音有转录文字就用文字评）
+     * ⚠️ 无分数时（纯附件）：**只有该类允许放行才唤醒** —— 否则"取消勾选"等于没勾。
+     */
+    attachmentPassthrough?: {
+      image?: boolean;
+      video?: boolean;
+      voice?: boolean;
+      file?: boolean;
+    };
     /** 模型目录(留空=默认 {DSH_HOME|~/.dsh}/models/bge-small-zh) */
     modelDir?: string;
     /** 价值评分模式(账号默认): off=不评分 / log=只记录(默认) / block=低分不唤醒 */
@@ -310,10 +327,26 @@ const localModelSchema = Schema.object({
   modelDir: Schema.string().default('').description('模型目录(留空=默认 {DSH_HOME|~/.dsh}/models/bge-small-zh)'),
   valueGate: Schema.union(['off', 'log', 'block']).default('log').description('价值评分模式(账号默认): off=不评分 / log=只记录分数 / block=低分不唤醒AI(消息仍进上下文)'),
   valueMinScore: Schema.number().min(0).max(1).default(0.5).description('价值评分门槛(0~1, 越高越安静): 近邻相似度低于此值视为不值得回应'),
+  // 附件唤醒开关（2026-09-15 主人："视频和文件不算是图片，为什么也默认唤醒了"）
+  //   ⚠️ 必须在这里声明 —— settings 走 Schema 校验，**未声明的字段会被直接丢掉**，
+  //      表现就是"面板勾了保存、重载又跳回默认"（跟上次漏返回 valueGate 是同一类坑）。
+  attachmentPassthrough: Schema.object({
+    image: Schema.boolean().default(true).description('图片: 勾上=无视分数直接唤醒(默认开, 群友发图常是给她看的)'),
+    video: Schema.boolean().default(false).description('视频: 勾上=无视分数直接唤醒(默认关, 走评分)'),
+    voice: Schema.boolean().default(false).description('语音: 勾上=无视分数直接唤醒(默认关; 有转录文字就按文字评)'),
+    file: Schema.boolean().default(false).description('文件: 勾上=无视分数直接唤醒(默认关, 走评分)'),
+  }).description('附件唤醒开关: 勾上的类型不管分数都唤醒她; 没勾的交给评分(没文字就没分 → 不唤醒)'),
   // 单会话覆盖(2026-09-13 主人要求: "单会话设置"就得能按会话单独设):
   // key = "group:<群openid>" 或 "c2c:<私聊openid>"; 未覆盖的键自动继承账号级默认。
   overrides: Schema.any().default({}).description('单会话覆盖(dock「单会话设置」保存到这里)'),
-}).default({ enabled: true, modelDir: '', valueGate: 'log', valueMinScore: 0.5, overrides: {} });
+}).default({
+  enabled: true,
+  modelDir: '',
+  valueGate: 'log',
+  valueMinScore: 0.5,
+  attachmentPassthrough: { image: true, video: false, voice: false, file: false },
+  overrides: {},
+});
 
 const debounceSchema = Schema.object({
   enabled: Schema.boolean().default(true).description('延迟聚合总开关(防"连发N句只回第一句": 消息先攒窗口, 人停口或攒够条数才一次综合回)'),
@@ -603,6 +636,23 @@ export interface ImQQBotConfig {
   /** 本地小模型(省 token): 开=本地先筛(价值评分/语义搜索), 模型缺失自动关闭 */
   localModel?: {
     enabled?: boolean;
+    /**
+     * **附件唤醒开关**（2026-09-15 主人定）：按附件类型决定"是否无视分数直接唤醒"。
+     *
+     * 起因：主人问「视频和文件不算是图片，为什么也默认唤醒了？」——
+     *   原来收集"图片 URL"时不区分格式（只要是 QQ 多媒体链接就收），视频/文件跟着"带图一律不拦"沾了光。
+     *
+     * `true` = 该类附件无视分数直接唤醒；`false`/缺省 = 走正常评分。
+     *   · `image` 默认 true（群友发图常是给她看的；图片本来也没文字可评）
+     *   · `video`/`voice`/`file` 默认 false（视频/文件没文字就没分；语音有转录文字就用文字评）
+     * ⚠️ 无分数时（纯附件）：**只有该类允许放行才唤醒** —— 否则"取消勾选"等于没勾。
+     */
+    attachmentPassthrough?: {
+      image?: boolean;
+      video?: boolean;
+      voice?: boolean;
+      file?: boolean;
+    };
     /** 模型目录(留空=默认 {DSH_HOME|~/.dsh}/models/bge-small-zh) */
     modelDir?: string;
     /** 价值评分模式(账号默认): off=不评分 / log=只记录 / block=低分不唤醒 */

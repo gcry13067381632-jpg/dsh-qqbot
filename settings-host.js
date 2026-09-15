@@ -1289,6 +1289,12 @@ export function apply(ctx) {
         //    面板读回 undefined → 一律按默认 'log' 渲染 → 看着像"保存没生效"(其实配置里已是 block)。
         valueGate: cfg.valueGate === 'off' || cfg.valueGate === 'block' ? cfg.valueGate : 'log',
         valueMinScore: typeof cfg.valueMinScore === 'number' ? cfg.valueMinScore : 0.5,
+        // 附件唤醒开关（2026-09-15）：跟 valueGate 一样**必须返回** ——
+        //   否则面板读回 undefined → 勾选框永远按默认渲染，看着像"保存没生效"。
+        attachmentPassthrough:
+          cfg.attachmentPassthrough && typeof cfg.attachmentPassthrough === 'object'
+            ? cfg.attachmentPassthrough
+            : undefined,
       });
     } catch (e) { writeJson(res, 500, { ok: false, error: String((e && e.message) || e) }); }
   });
@@ -1430,7 +1436,12 @@ export function apply(ctx) {
       const dataRoot = (bot && bot.cfg && typeof bot.cfg.dataRoot === 'string' && bot.cfg.dataRoot) ? bot.cfg.dataRoot : ((bot && bot.cwd) || '');
       if (!dataRoot) return writeJson(res, 200, { ok: true, items: [] });
       const mod = await import('./dist/features/attitude.js');
-      const limit = Math.max(1, Math.min(50, Math.round(Number(u.searchParams.get('limit'))) || 8));
+      // ⚠️ 2026-09-15 修(主人反馈"亚瑟不是有好感度吗, 怎么显示 0/—"):
+      //   面板那张熟识度表是**按 key 左连接**好感度的(top N 只够"排行榜", 不够"连接") ——
+      //   原来默认 limit=8, 排第 9 的人(亚瑟 a=0.064 但 events=128)就 join 不到 → 显示 "—"。
+      //   all=1 = 要全量(连接用); 默认仍是 top N 排行语义, 不破坏别处调用。
+      const wantAll = u.searchParams.get('all') === '1';
+      const limit = wantAll ? 100000 : Math.max(1, Math.min(50, Math.round(Number(u.searchParams.get('limit'))) || 8));
       const items = (mod.topAttitude(dataRoot, limit) || []).map((x) => {
         // 档位名（面板显示用，2026-09-14 主人要求）：按"好感度占其范围的比例"分 很亲近/亲近/中立/冷淡/疏远
         let tier = '';

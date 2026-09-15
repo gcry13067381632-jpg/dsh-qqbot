@@ -172,7 +172,7 @@ function loadAff(dataRoot: string): AffinityFile {
     if (raw && typeof raw === 'object' && raw.map && typeof raw.map === 'object') {
       // 2026-09-14 迁移：**只认"按人"键（person:）**。
       //   旧版曾按「群」记（一整个群算成一个人，名字取最后一个发言人）→ 面板上同一个人会显示好几次
-      //   （实测"做早饭"出现 3 次：person: + 两代 group: 键并存）。
+      //   （实测同一个人出现 3 次：person: + 两代 group: 键并存）。
       //   在这里丢弃旧格式键：读进来就干净；下一次 saveAff 会把文件一并写干净 —— 不用手工清文件
       //   （手工清没用：进程内存里的缓存会随后把旧键写回去）。
       const map: Record<string, AffinityEntry> = {};

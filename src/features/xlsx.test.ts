@@ -27,8 +27,8 @@ function readZip(buf: Buffer): Map<string, string> {
 
 describe('buildXlsx — 最小 xlsx 生成', () => {
   const buf = buildXlsx([
-    { name: '熟识度', rows: [['昵称', '熟识度'], ['亚瑟', 52]], widths: [16, 10] },
-    { name: '好感度', rows: [['昵称', '好感度'], ['做早饭', 0.038]] },
+    { name: '熟识度', rows: [['昵称', '熟识度'], ['小明', 52]], widths: [16, 10] },
+    { name: '好感度', rows: [['昵称', '好感度'], ['小红', 0.038]] },
   ]);
 
   it('是合法 zip：本地文件头 + 中央目录 + EOCD 结束记录', () => {
@@ -56,11 +56,11 @@ describe('buildXlsx — 最小 xlsx 生成', () => {
   it('中文与 emoji 原样可读；数字是数字单元格；空值不写', () => {
     const sheet = readZip(buf).get('xl/worksheets/sheet1.xml')!;
     expect(sheet).toContain('<t xml:space="preserve">昵称</t>');
-    expect(sheet).toContain('<t xml:space="preserve">亚瑟</t>');
+    expect(sheet).toContain('<t xml:space="preserve">小明</t>');
     expect(sheet).toContain('<v>52</v>');          // 数字不加引号
     expect(sheet).toContain('width="16"');
-    const emoji = buildXlsx([{ name: 'x', rows: [['古都吹面包⁧🍞', 1, '', null]] }]);
-    expect(readZip(emoji).get('xl/worksheets/sheet1.xml')).toContain('古都吹面包⁧🍞');
+    const emoji = buildXlsx([{ name: 'x', rows: [['贝拉🍞', 1, '', null]] }]);
+    expect(readZip(emoji).get('xl/worksheets/sheet1.xml')).toContain('贝拉🍞');
     expect(readZip(emoji).get('xl/worksheets/sheet1.xml')!.match(/<c r=/g)!.length).toBe(2);   // 空的没写
   });
 

@@ -290,7 +290,7 @@ Please install the local small model used by the dsh qqbot plugin on this machin
 Every inbound message carries a **short message number** (e.g. `#0913a` — month/day + rolling id):
 
 ```
-[做早饭 (E9020753…) #0913a] take a look at this
+[Alice (12AB34…) #0913a] take a look at this
 ```
 
 - To quote a message, the AI writes `[rf:0913a]` in its reply body → the reply is sent as a **quote bubble** (the other side sees "she quoted this message"). The tag itself is never displayed.

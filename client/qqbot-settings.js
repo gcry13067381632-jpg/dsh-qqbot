@@ -2125,7 +2125,9 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         var q = state.ns ? '?' + outNsQ() : ''
         Promise.all([
           fetch('/api/qqbot-settings/affinity' + q).then(function (r) { return r.json() }).catch(function () { return {} }),
-          fetch('/api/qqbot-settings/attitude' + q).then(function (r) { return r.json() }).catch(function () { return {} })
+          // all=1&limit=50: 这张表是"按 key 左连接好感度", 只要 top N 的话排在 N 后面的人永远显示 "—"
+          // (2026-09-15 主人问"亚瑟不是有好感度吗, 怎么显示 0" —— 他 a=0.064 排第 9, 被 top8 截掉)。
+          fetch('/api/qqbot-settings/attitude' + q + (q ? '&' : '?') + 'all=1&limit=50').then(function (r) { return r.json() }).catch(function () { return {} })
         ]).then(function (rs) {
           var aff = (rs[0] && rs[0].items) || []
           var att = (rs[1] && rs[1].items) || []
@@ -2257,11 +2259,21 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           valueGate: gateEl ? gateEl.value : 'log',
           valueMinScore: minEl ? (parseFloat(minEl.value) || 0.5) : 0.5,
         }
+        var apNext = null   // 附件唤醒新值(账号级): 保存成功后立刻写回本地缓存, 不等接口回读
         if (hint) hint.textContent = '保存中…'
         fetch(READ + (state.ns ? '?' + outNsQ() : '')).then(function (r) { return r.json() }).then(function (d) {
           var cur = (d && d.value) || {}
           var lm = Object.assign({}, cur.localModel || {})
           if (dirEl) lm.modelDir = String(dirEl.value || '').trim()      // 账号级
+          // 附件唤醒开关（账号级，2026-09-15）：勾了 = 该类附件无视分数直接唤醒
+          {
+            var apEls = panel ? panel.querySelectorAll('.dk-lm-ap') : []
+            if (apEls.length) {
+              lm.attachmentPassthrough = {}
+              apEls.forEach(function (el) { lm.attachmentPassthrough[el.getAttribute('data-kind')] = !!el.checked })
+              apNext = lm.attachmentPassthrough
+            }
+          }
           lm.overrides = Object.assign({}, (lm.overrides || {}))
           lm.overrides[ovKey] = ovNext                                    // 会话级
           var patch = Object.assign({}, cur, { localModel: lm })
@@ -2277,6 +2289,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             lm2.overrides = Object.assign({}, (lm2.overrides || {}))
             lm2.overrides[ovKey] = ovNext
             if (dirEl) lm2.modelDir = String(dirEl.value || '').trim()
+            if (apNext) lm2.attachmentPassthrough = apNext   // 附件唤醒(账号级): 保存后立刻回填, 否则重绘又跳回默认勾选
             state.lmCfg = lm2
             paintBody()
             setTimeout(function () { loadLocalModel() }, 2000)
@@ -3559,6 +3572,24 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
               + '<span style="font-size:12px;color:#666">门槛:</span>'
               + '<input class="qqs-inp" id="dk-lm-min" type="number" step="0.01" min="0" max="1" style="width:78px" value="' + minV + '">'
               + '</div>'
+            // 🎬 附件唤醒开关（2026-09-15 主人定）：按类型决定"是否**无视分数**直接唤醒"
+            //   勾上 = 该类附件不管分多低都唤醒；没勾 = 交给评分决定（没文字没分 → 不唤醒）
+            {
+              // ⚠️ 2026-09-15 修(主人反馈"关掉图片唤醒, 保存后又跳回勾选"):
+              //   根因=这里只读 status 接口(lm)的字段, 而该接口的 bot.cfg 解析不到实例配置(实测一律
+              //   fallback: valueGate=log / 无 attachmentPassthrough) → 永远按默认渲染 → 看着像没保存。
+              //   实际 settings 里早就是 image:false(读接口 ?ns= 已证实)。所以**以 lmCfg(直读配置)为准**,
+              //   status 只兜底 —— 与 09-13 修 valueGate 同一个教训: 前端别依赖需要重启才对的 host 字段。
+              var apCfg = ((lmCfg && lmCfg.attachmentPassthrough) || lm.attachmentPassthrough || {})
+              var apDef = { image: true, video: false, voice: false, file: false }
+              body += '<div class="dk-row" style="gap:12px;flex-wrap:wrap;align-items:center;margin:4px 0 2px">'
+                + '<span style="font-size:12px;color:#666" title="勾上的类型：不管分数都唤醒她；没勾的按评分判（没文字就没分 → 不唤醒）">附件唤醒:</span>'
+                + [['image', '🖼 图片'], ['video', '🎬 视频'], ['voice', '🎤 语音'], ['file', '📎 文件']].map(function (k) {
+                    var on = apCfg[k[0]] === undefined ? apDef[k[0]] : apCfg[k[0]] === true
+                    return '<label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;cursor:pointer"><input type="checkbox" class="dk-lm-ap" data-kind="' + k[0] + '"' + (on ? ' checked' : '') + '> ' + k[1] + '</label>'
+                  }).join('')
+                + '</div>'
+            }
             body += '<span class="dk-msg" id="dk-lm-hint" style="color:#2f9e44;margin:2px 0"></span>'
             // 📊 最近评分(观察期): 让主人直接看到"她是怎么被叫醒的"
             // 2026-09-13 二次修: 列表抽成 scoreListHtml + 独立 div, 由 refreshScoreList 做**局部刷新**

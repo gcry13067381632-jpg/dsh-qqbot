@@ -10,7 +10,7 @@ import { detectSelfDisclosure, hintCountToday, bumpHint } from './self-disclosur
 describe('detectSelfDisclosure — 该记的自述要抓住', () => {
   it('身份类', () => {
     expect(detectSelfDisclosure('我是福建人，不是胡建人')?.matched).toBe('我是/叫/来自');
-    expect(detectSelfDisclosure('我叫做早饭，做自媒体的')?.matched).toBeTruthy();
+    expect(detectSelfDisclosure('我叫小明，做自媒体的')?.matched).toBeTruthy();
   });
 
   it('经历/本事类', () => {
