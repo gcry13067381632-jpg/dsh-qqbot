@@ -2126,7 +2126,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         Promise.all([
           fetch('/api/qqbot-settings/affinity' + q).then(function (r) { return r.json() }).catch(function () { return {} }),
           // all=1&limit=50: 这张表是"按 key 左连接好感度", 只要 top N 的话排在 N 后面的人永远显示 "—"
-          // (2026-09-15 主人问"亚瑟不是有好感度吗, 怎么显示 0" —— 他 a=0.064 排第 9, 被 top8 截掉)。
+          // (2026-09-15 主人问"小明不是有好感度吗, 怎么显示 0" —— 他 a=0.064 排第 9, 被 top8 截掉)。
           fetch('/api/qqbot-settings/attitude' + q + (q ? '&' : '?') + 'all=1&limit=50').then(function (r) { return r.json() }).catch(function () { return {} })
         ]).then(function (rs) {
           var aff = (rs[0] && rs[0].items) || []

@@ -71,11 +71,11 @@ describe('判定准确率回归（改样本库/打分方式后必须复跑）', 
     // 断言用**过门槛后**的结果：给不出标签（弃权）可以接受，**给出错的标签不行** ——
     // 这正是修 C 时定的规矩：宁可弃权，不可错判。
     const warm = confidentEmo(await classifyEmo(
-      '哎呀，路人甲sama惦记人家啦！😆 人家刚才不是不插话，是在安静听各位sama聊游戏聊汉化聊军训，默默当一只专业的女仆鲸鱼——毕竟"观棋不语真君子"嘛！',
+      '哎呀，路人乙sama惦记人家啦！😆 人家刚才不是不插话，是在安静听各位sama聊游戏聊汉化聊军训，默默当一只专业的女仆鲸鱼——毕竟"观棋不语真君子"嘛！',
     ));
     expect(warm).not.toBe('冷');
 
-    const toolish = await classifyTendency('路人甲点我名说"大肥鱼怎么不插话了"，需回应');
+    const toolish = await classifyTendency('路人乙点我名说"大肥鱼怎么不插话了"，需回应');
     if (toolish && toolish.best >= TENDENCY_MIN_BEST && toolish.margin >= 0.01) {
       expect(toolish.label).not.toBe('拒绝');
     }

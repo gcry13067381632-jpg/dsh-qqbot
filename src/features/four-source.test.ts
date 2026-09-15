@@ -118,9 +118,9 @@ describe('倾向关键词兜底：接梗 = 亲近（2026-09-14 主人定）', ()
     const root = freshRoot();
     await applyTurnAttitude(
       root,
-      { scope: 'group', peerId: 'p9', attitudeKey: 'person:u9', attitudeName: '亚瑟' },
+      { scope: 'group', peerId: 'p9', attitudeKey: 'person:u9', attitudeName: '小明' },
       {
-        think: '亚瑟@我："偷吃祭品？"——回应人家刚才说"祭品白饭还没吃完"。人家接梗：对，祭品就是给魔神的，人家吃掉天经地义～ 先 reply_gate，然后回应。配图？可以配干饭图。这轮可以纯文字。人家判断：纯文字俏皮回应即可。',
+        think: '小明@我："偷吃祭品？"——回应人家刚才说"祭品白饭还没吃完"。人家接梗：对，祭品就是给魔神的，人家吃掉天经地义～ 先 reply_gate，然后回应。配图？可以配干饭图。这轮可以纯文字。人家判断：纯文字俏皮回应即可。',
         reply: '对，祭品就是给魔神的，人家吃掉天经地义～',
       },
     );

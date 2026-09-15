@@ -1436,9 +1436,9 @@ export function apply(ctx) {
       const dataRoot = (bot && bot.cfg && typeof bot.cfg.dataRoot === 'string' && bot.cfg.dataRoot) ? bot.cfg.dataRoot : ((bot && bot.cwd) || '');
       if (!dataRoot) return writeJson(res, 200, { ok: true, items: [] });
       const mod = await import('./dist/features/attitude.js');
-      // ⚠️ 2026-09-15 修(主人反馈"亚瑟不是有好感度吗, 怎么显示 0/—"):
+      // ⚠️ 2026-09-15 修(主人反馈"小明不是有好感度吗, 怎么显示 0/—"):
       //   面板那张熟识度表是**按 key 左连接**好感度的(top N 只够"排行榜", 不够"连接") ——
-      //   原来默认 limit=8, 排第 9 的人(亚瑟 a=0.064 但 events=128)就 join 不到 → 显示 "—"。
+      //   原来默认 limit=8, 排第 9 的人(小明 a=0.064 但 events=128)就 join 不到 → 显示 "—"。
       //   all=1 = 要全量(连接用); 默认仍是 top N 排行语义, 不破坏别处调用。
       const wantAll = u.searchParams.get('all') === '1';
       const limit = wantAll ? 100000 : Math.max(1, Math.min(50, Math.round(Number(u.searchParams.get('limit'))) || 8));

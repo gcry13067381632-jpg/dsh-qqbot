@@ -17,16 +17,16 @@ function freshRoot(): string {
 describe('小传：栏目前缀归栏', () => {
   it('带前缀 → 落进对应栏（新建小传也归栏）', () => {
     const root = freshRoot();
-    const r = appendMemoLine(root, 'test-sec1', '喜好：最近在玩《时间勇者》', { name: '亚瑟' });
+    const r = appendMemoLine(root, 'test-sec1', '喜好：最近在玩《时间勇者》', { name: '小明' });
     expect(r.ok).toBe(true);
     const text = readMemo(root, 'test-sec1') ?? '';
     expect(text).toContain('- 喜好与雷区：最近在玩《时间勇者》');
-    expect(text).toContain('# 亚瑟');
+    expect(text).toContain('# 小明');
   });
 
   it('同栏再记 → 用"；"并进同一行（不新起一行）', () => {
     const root = freshRoot();
-    appendMemoLine(root, 'test-sec2', '喜好：喜欢剧情向', { name: '亚瑟', force: true });
+    appendMemoLine(root, 'test-sec2', '喜好：喜欢剧情向', { name: '小明', force: true });
     appendMemoLine(root, 'test-sec2', '喜好：不吃虐', { force: true });
     const text = readMemo(root, 'test-sec2') ?? '';
     const hits = text.split('\n').filter((l) => l.startsWith('- 喜好与雷区：'));
