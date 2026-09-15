@@ -2014,8 +2014,38 @@ export async function apply(ctx: Context): Promise<void> {
       || process.cwd();
     const defs = await loadExtensionTools(extRoot, (ctx.logger ?? console) as Parameters<typeof loadExtensionTools>[1]);
     extDiag(`apply extRoot=${extRoot} defs=${defs.length} qqCh=${!!qqCh} bridge=${!!bridgeCh}`);
+    // ── 同名扩展工具「热替换」(2026-09-15 主人踩坑后加) ──────────────────────
+    //  症状: 改**已有**扩展工具的逻辑 → tools_reload 报"完成"，但跑的还是旧实现
+    //        （dsh 的 registry 对重名直接抛 'already registered'，这里只能 catch 跳过）。
+    //  根因: 上一版只"新增"，没有回收入口。而 `ctx.tools.register()` 其实**返回 disposer**
+    //        （dsh-tools 的 `register(definition): () => void`）→ 先 dispose 旧的再注册新的即可。
+    //  ⚠️ disposer 不能存在模块变量里: 热刷是用 `?hot=<ts>` 重新 import 本模块的，
+    //     新模块的模块级 Map 是空的、认不出上次注册的东西 → 必须存在 **globalThis 上的
+    //     WeakMap(ctx)** 才跨模块实例可见（也顺带不污染 ctx 对象）。
+    //  安全边界: 只 dispose"我们自己注册过、且名字对得上"的工具；别人注册的同名工具照旧走
+    //     原来的 catch 跳过分支（行为不变）。
+    const disposeStore = (() => {
+      const g = globalThis as unknown as Record<symbol, WeakMap<object, Map<string, () => void>> | undefined>;
+      const KEY = Symbol.for('im-qqbot.extToolDisposers');
+      let store = g[KEY];
+      if (!store) { store = new WeakMap(); g[KEY] = store; }
+      return store;
+    })();
+    const myDisposers = ((): Map<string, () => void> => {
+      const k = ctx as unknown as object;
+      let m = disposeStore.get(k);
+      if (!m) { m = new Map(); disposeStore.set(k, m); }
+      return m;
+    })();
     for (const def of defs) {
       try {
+        // 同一个 ctx 再来一遍（热刷）= 更新已有工具：先摘掉我们自己上次注册的那份
+        const prev = myDisposers.get(def.name);
+        if (prev) {
+          try { prev(); } catch { /* 旧句柄已失效，忽略 */ }
+          myDisposers.delete(def.name);
+          extDiag(`热替换: 先注销旧 ${def.name}`);
+        }
         const tool = defineTool({
           name: def.name,
           description: def.description + ' (用户扩展工具)',
@@ -2045,7 +2075,9 @@ export async function apply(ctx: Context): Promise<void> {
             }
           },
         });
-        ctx.tools.register(tool as never);
+        const dispose = ctx.tools.register(tool as never) as unknown;
+        // 收下 disposer —— 下次(热刷/重装配)靠它做同名替换，不然只能重启宿主
+        if (typeof dispose === 'function') myDisposers.set(def.name, dispose as () => void);
         ctx.logger?.info?.(`[channel-tools] 已注册扩展工具: ${def.name}`);
         diag(`扩展工具注册成功: ${def.name}`);
         extDiag(`注册成功: ${def.name}`);
