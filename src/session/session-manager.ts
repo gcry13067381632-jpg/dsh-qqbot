@@ -40,8 +40,9 @@ import type { QQBotSender } from '../transport/outbound-buffer.js';
 import { apply as mountChannelTools } from '../channel-tools.js';
 import { createGroupAdmin } from '../api/group-admin.js';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { attachSessionToWorkspace, unarchiveSession } from './workspace-attach.js';
 
 /** 通道工具注册诊断: 默认关闭; 设环境变量 QQBOT_DIAG_FILE 启用 */
@@ -823,7 +824,16 @@ export class SessionManager {
 
   async hotReloadChannelTools(agentCtx: Context): Promise<void> {
     const url = new URL('../channel-tools.js', import.meta.url);
-    url.searchParams.set('hot', String(Date.now())); // 绕 ESM 模块缓存
+    // 2026-09-15 修复内存泄漏: 原用 hot=Date.now() 每次生成全新 URL,
+    // channel-tools 及其整条依赖链会永久留在 ESM 模块注册表(强引用, 永不 GC)。
+    // 改为按文件 mtime: dist 未更新 → URL 不变 → 复用缓存模块; 升级后 mtime 变化自动加载新代码。
+    let hotVer = '';
+    try {
+      hotVer = String(Math.floor(statSync(fileURLToPath(url)).mtimeMs));
+    } catch {
+      hotVer = String(Date.now());
+    }
+    url.searchParams.set('hot', hotVer);
     const mod = (await import(url.href)) as { apply?: (c: Context) => unknown };
     const applyFn = (mod.apply ?? mountChannelTools) as (c: Context) => unknown;
     await applyFn(agentCtx);

@@ -126,6 +126,9 @@ export async function setupMiddlewares(
     },
     // 斜杠命令不入 AI 历史(命令由下方命令层执行, 无需当聊天喂给 AI)
     skipWhen: (ctx) => knownCmdName((ctx.message as { content?: string }).content) !== null,
+    // 2026-09-15: 本中间件在 mentionGate **之前**, 读不到 ctx.state.mention(那正是 mentionGate 赋的值)
+    //   → 改由本中间件自己判定"这条 @ 了她", appId 用于内容兜底扫描 <@{appId}>。见 media-history.ts。
+    appId: config.appId,
   }));
 
   // 4.5. 表情包自动收藏（P0）：群图片 → 本地图库（fire-and-forget，不阻塞主链）

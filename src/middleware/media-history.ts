@@ -25,6 +25,8 @@ export interface MediaHistoryOptions {
   groupKey: (ctx: MiddlewareContext) => string | undefined;
   /** 命中此条件的消息不进群历史(但仍放行下游)。用于斜杠命令——命令无需喂给 AI */
   skipWhen?: (ctx: MiddlewareContext) => boolean;
+  /** bot 自身 appId —— 判定"这条 @ 了她"时做内容兜底扫描用 */
+  appId?: string;
 }
 
 /** 消息最小形状（只读所需字段，避免依赖 SDK 完整类型） */
@@ -34,6 +36,8 @@ interface FoldableMsg {
   /** QQ mentions 数组(含 is_you 标记 bot 自身), 用于入站 @bot 长 id 清洗 */
   mentions?: MentionLike[];
   wasMentioned?: boolean;
+  /** 平台事件类型: GROUP_AT_MESSAGE_CREATE = 有人 @ 了 bot(平台权威信号) */
+  rawEventType?: string;
 }
 
 /** 文本 + 带 URL 附件折叠为一行段。
@@ -69,13 +73,39 @@ function foldMedia(msg: FoldableMsg): string {
   return parts.join('\n');
 }
 
+/** 内容里是否含 `<@{appId}>` / `<@!{appId}>`（与 SDK mention-gate 同款兜底扫描） */
+function detectMentionInContent(content: string | undefined, appId: string | undefined): boolean {
+  if (!content || !appId) return false;
+  const safe = appId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return content.includes(`<@${safe}>`) || content.includes(`<@!${safe}>`);
+}
+
+/**
+ * 这条消息是否 @ 了 bot。
+ *
+ * ⚠️ 2026-09-15 修（主人实测「历史消息里 @ 了她也不回话」）：
+ *   原来读 `ctx.state.mention.wasMentioned` —— 但本中间件挂在 **mentionGate 之前**
+ *   （链上第 4 步 vs 第 5 步），而 `ctx.state.mention` 恰恰是由 SDK 的 mentionGate 赋值的
+ *   ⇒ 这里永远读到 undefined，历史条目上的 `mentioned` 标记从来没写对过
+ *   ⇒ 聚合派发时"窗口历史里 @ 了她"识别不出来 ⇒ 点名豁免失效 ⇒ 低分被拦。
+ *   判据与 SDK mention-gate.js 完全一致（三选一）：
+ *     ① rawEventType === 'GROUP_AT_MESSAGE_CREATE'（平台权威信号）
+ *     ② mentions[].is_you === true
+ *     ③ content 含 <@{appId}> / <@!{appId}>
+ */
+function detectWasMentioned(msg: FoldableMsg, appId: string | undefined): boolean {
+  if (msg.rawEventType === 'GROUP_AT_MESSAGE_CREATE') return true;
+  if (Array.isArray(msg.mentions) && msg.mentions.some((m) => m?.is_you === true)) return true;
+  return detectMentionInContent(msg.content, appId);
+}
+
 /**
  * 构建增强版群历史缓冲中间件（API 对齐 SDK historyBuffer）：
  *   1. 把当前群消息(媒体 URL 折叠进 content)记入 store（去重按 messageId）；
  *   2. 向下游暴露 ctx.state.history = 已缓冲历史（不含当前消息，旧→新）。
  */
 export function mediaHistoryBuffer(options: MediaHistoryOptions): Middleware {
-  const { limit, store, recordOnSkip, groupKey, skipWhen } = options;
+  const { limit, store, recordOnSkip, groupKey, skipWhen, appId } = options;
   return async (ctx: MiddlewareContext, next: () => Promise<void>) => {
     const key = groupKey(ctx);
     if (!key) {
@@ -90,7 +120,9 @@ export function mediaHistoryBuffer(options: MediaHistoryOptions): Middleware {
       return;
     }
     const raw = ctx.message as unknown as FoldableMsg;
-    raw.wasMentioned = (ctx.state as { mention?: { wasMentioned?: boolean } })?.mention?.wasMentioned === true;
+    // 2026-09-15 修: 自己判(见 detectWasMentioned 注释), 不再读这个阶段读不到的 ctx.state.mention
+    const wasMentioned = detectWasMentioned(raw, appId);
+    raw.wasMentioned = wasMentioned;
     // 2026-09-12: 顺带记一个"这条 @ 过 bot"的标志 —— 打包进上下文时**只有这种行才带 openid**
     // (主人要求: 其余历史行一律只给昵称, 每行省 20+ token)。SDK 的 HistoryEntry 无此字段, 用交叉类型塞进去。
     const entry: HistoryEntry & { mentioned?: boolean } = {
@@ -99,7 +131,7 @@ export function mediaHistoryBuffer(options: MediaHistoryOptions): Middleware {
       content: foldMedia(raw),
       timestamp: Date.parse(ctx.message.timestamp) || Date.now(),
       messageId: ctx.message.messageId,
-      ...(raw.wasMentioned === true ? { mentioned: true } : {}),
+      ...(wasMentioned ? { mentioned: true } : {}),
     };
     try {
       await store.append(key, entry, limit);

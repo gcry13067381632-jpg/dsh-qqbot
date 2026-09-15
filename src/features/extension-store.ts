@@ -18,7 +18,7 @@
  * 群聊前置解析 cmdMap + SDK slash 都覆盖 → /命令 重启后即用(宿主有 /bot-restart 一键重启)。
  * 热刷(不重启)留给 P4.2 dock 管理 UI。
  */
-import { readdirSync } from 'node:fs';
+import { readdirSync, statSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { SlashCommand } from '@tencent-connect/qqbot-nodejs';
@@ -31,6 +31,21 @@ export const EXT_TOOLS_SUBDIR = join('.qqbot-extensions', 'tools');
 
 /** 扩展文件允许的扩展名 */
 const ALLOWED_EXT = new Set(['.js', '.mjs', '.cjs']);
+
+/**
+ * 扩展文件版本号(取文件 mtime)。
+ * 2026-09-15 修复内存泄漏: 原用时间戳 query 做 cache-bust, 每次调用都生成全新 URL,
+ * Node 的 ESM 模块注册表(ModuleMap)对每个 URL 永久强引用, 旧模块实例无法被 GC ——
+ * 长时间运行(每次消息 mount / hotReload)会持续吃内存直至 OOM。
+ * 改为按 mtime: 文件未改动 → URL 相同 → 复用缓存模块; 改动后自动加载新版本。
+ */
+function fileVersion(p: string): string {
+  try {
+    return String(Math.floor(statSync(p).mtimeMs));
+  } catch {
+    return String(Date.now());
+  }
+}
 
 /** 归一化为 SDK SlashCommand: 支持 default 导出 或 具名 name/handler */
 function normalizeModule(mod: unknown, file: string, logger: Logger): SlashCommand | null {
@@ -85,8 +100,8 @@ export async function loadExtensionCommands(cwd: string | undefined, logger: Log
   for (const f of files.sort()) {
     const abs = join(dir, f);
     try {
-      // Windows 绝对路径必须转 file:// URL 再动态 import(带时间戳防模块缓存)
-      const url = pathToFileURL(abs).href + `?t=${Date.now()}`;
+      // Windows 绝对路径必须转 file:// URL 再动态 import(版本号=mtime, 见 fileVersion)
+      const url = pathToFileURL(abs).href + `?v=${fileVersion(abs)}`;
       const mod = await import(url);
       const cmd = normalizeModule(mod, f, logger);
       if (cmd) {
@@ -173,7 +188,7 @@ export async function loadExtensionTools(cwd: string | undefined, logger: Logger
   for (const f of files.sort()) {
     const abs = join(dir, f);
     try {
-      const url = pathToFileURL(abs).href + `?t=${Date.now()}`;
+      const url = pathToFileURL(abs).href + `?v=${fileVersion(abs)}`;
       const mod = await import(url);
       const def = normalizeToolModule(mod, f, logger);
       if (def) {

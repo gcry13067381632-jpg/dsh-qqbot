@@ -273,6 +273,9 @@ export function debounceLayer(
           content: h.content,
           senderId: h.senderId,
           senderName: h.senderName,
+          // 2026-09-15 修: store 条目上的[@过bot]标记要接过来(media-history 写入的 mentioned),
+          //   否则只有[当前还在窗口里]的那条能靠 entries 循环补上, store 来源的会丢。
+          wasMentioned: (h as { mentioned?: boolean }).mentioned === true,
         }));
         for (const e of entries) {
           const id = String(e.msg.messageId ?? '');
@@ -303,7 +306,15 @@ export function debounceLayer(
         // 忠实还原 store 原文进 history; 窗口内曾 @ 机器人的消息(时间上早于 current)
         // 补 " (@you)" 标注 —— 与 current 的 (@you) 同款格式, 还原"这条@了bot"的事实,
         // 由 AI 按自身守则决定是否开口(插件不注入回复指令, 保持通用)。
-        const hist: HistoryEntry[] = merged
+        // 忠实还原 store 原文进 history; 窗口内曾 @ 机器人的消息(时间上早于 current)
+        // 补 " (@you)" 标注 —— 与 current 的 (@you) 同款格式, 还原"这条@了bot"的事实,
+        // 由 AI 按自身守则决定是否开口(插件不注入回复指令, 保持通用)。
+        //
+        // ⚠️ 2026-09-15 修(主人实测「聚合里 @ 了她也不回话」):
+        //   "这条 @ 了 bot" 不能只打成文本 (@you) 给 AI 看, **还得作为结构化标记 mentioned 随条目传下去** ——
+        //   inbound 的聚合加权(AGG_MENTION_BOOST)与点名豁免(!aggMentioned)读的就是它。
+        //   此前只打文本没带标记 ⇒ 评分链路里"窗口里 @ 了她"认不出来 ⇒ 低分被拦、点名不回。
+        const hist: Array<HistoryEntry & { mentioned?: boolean }> = merged
           .filter(m => m !== cur) // 用引用比较: 空 messageId 的合成消息彼此相等, 按 id 比会把它们全滤掉
           .map(m => {
             const baseContent = m.content ?? String(m.msg?.content ?? '');
@@ -313,6 +324,7 @@ export function debounceLayer(
               content: m.wasMentioned ? `${baseContent} (@you)` : baseContent,
               timestamp: m.ts,
               messageId: m.messageId,
+              ...(m.wasMentioned ? { mentioned: true } : {}),
             };
           });
 

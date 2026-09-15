@@ -69,6 +69,8 @@ interface HistoryEntry {
   content: string;
   timestamp: number;
   messageId: string;
+  /** 这条 @ 过 bot(media-history 写入, SDK 类型无此字段) —— 供点名豁免与聚合加权用 */
+  mentioned?: boolean;
 }
 
 /** 小传注入节流(同一人 24h 内不重复): uid → 上次注入时间 */
@@ -436,6 +438,9 @@ export async function handleInbound(
         let srcFromWindow = false;
         /** 加权综合分（只在加权模式下有值；含各条自己的好感偏移） */
         let aggScore: number | undefined;
+        /** 2026-09-15 修回归 bug: 聚合窗口历史里任一条 @ 了她也算本轮被点名 ——
+         *  原来豁免只看当前那条(mwState.mention), 历史里 @ 了而当前那条没 @ 时会被低估拦下。 */
+        let aggMentioned = false;
         /** 加权明细（进日志，便于事后核对"这个分是怎么平均出来的"） */
         let aggParts: Array<{ n: string; s: number; r: number; w: number }> | undefined;
         // B) 预检提示: 图片消息附一句 —— ⚠️ **只在真·有信息量时才提示**(2026-09-13 主人定):
@@ -487,10 +492,13 @@ export async function handleInbound(
               text: cleanTextForScore(String(h.content ?? '')),
               senderId: h.senderId,
               senderName: h.senderName,
+              mentioned: h.mentioned === true,
             }))
             .filter((e) => e.text !== '')
             .slice(-5);
           aggCount = extras.length;
+          // 2026-09-15: 窗口里任一条 @ 过她 → 本轮算被点名(供下面 !mentioned 豁免与面板标记共用)
+          if (extras.some((e) => e.mentioned)) aggMentioned = true;
           const others = await Promise.all(extras.map((e) => scorer.score(e.text)));
           // 候选池 = 当前那条 + 窗口里那几条（每条都带着"是谁说的"）
           const pool = [
@@ -500,7 +508,7 @@ export async function handleInbound(
               score: others[i]?.score,
               senderId: e.senderId,
               senderName: e.senderName,
-              mention: false,
+              mention: e.mentioned,
               fromWindow: true,
             })),
           ].filter((p) => typeof p.score === 'number');
@@ -621,7 +629,7 @@ export async function handleInbound(
             sender: srcSenderName || srcSenderId,
             // ★ 记下"sender 是从聚合窗口里挑出来的"（不是窗口最后那个人）—— 排查归因问题必需
             senderFromWindow: srcFromWindow || undefined,
-            mention: mentioned,
+            mention: mentioned || aggMentioned || undefined,
             score: sc ? Math.round(sc.score * 1000) / 1000 : undefined,
             // 判定真正用的分：加权模式=Σ(权×有效分)/Σ权；单条模式=原始分+好感偏移
             // 判定分：有原始分**或**有加权综合分，都要记。
@@ -632,7 +640,7 @@ export async function handleInbound(
             // 被点名 → **必回**（2026-09-14 主人："@不是保证触发吗？"）
             //   拦截条件三处都写着 `!mentioned`，所以被 @ 时分数再低也放行；
             //   但 worth 只表示"分数够不够"，日志里会显示成没通过 → 单记一个字段说明白。
-            mentionForced: mentioned || undefined,
+            mentionForced: (mentioned || aggMentioned) || undefined,
             min: minScore,
             // 好感度档位与偏移（2026-09-14 定稿：偏移**加在分数上**，门槛保持主人设的值不动）
             //   ⚠️ 加权模式下 attTier/attOff 是**主角那条**的（权重最大的人），分值本身已各算各的
@@ -684,7 +692,7 @@ export async function handleInbound(
           //   入口条件去掉 `sc &&` 与 `!firstImg` —— 无分（纯视频/纯文件）也要能拦，
           //   "该不该放行"全交给上面的 worth（含**附件类型开关**），这里只负责执行。
           //   （原来"带图不拦"里那个 firstImg 是**不区分格式**的，视频/文件跟着沾光 ✗）
-          if (gate === 'block' && !mentioned && !worth) {
+          if (gate === 'block' && !mentioned && !aggMentioned && !worth) {
             const ag = record.agent as unknown as {
               whenIdle?: () => Promise<void>;
               session?: { append?: (type: string, data: unknown, opts?: { surfaceOp?: string }) => unknown };

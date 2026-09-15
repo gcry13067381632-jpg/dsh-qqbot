@@ -4,6 +4,13 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [1.5.4] - 2026-09-15
+
+### 修复
+- **长时间运行内存持续增长直至崩溃（严重）**：扩展工具加载器用「时间戳 query」绕 ESM 模块缓存（`pathToFileURL(abs).href + '?t=' + Date.now()`），**每次调用都生成全新 URL**。Node 的 ESM 模块注册表对每个 URL 是永久强引用，旧模块实例**永远无法被 GC**；而通道工具是**每条消息都全量注册**一次 → 实测累计触发近 3000 次、单进程 1.5 小时涨到 4GB，触发 `FATAL ERROR: Reached heap limit`（GC 日志里 Mark-Compact 一次只能回收 7MB，全是模块强引用）。现改为按**文件 mtime** 取版本号：文件未改动 → URL 相同 → 复用已缓存模块；改动后 mtime 变化 → 自动加载新版本，热刷语义不变。`hotReloadChannelTools()` 里同一手法一并修掉。实测同运行时长（14 分钟）内存 **1277MB → 711MB**。
+
+- **聚合消息里「历史中 @ 了 bot」不算点名**：延迟聚合时 `state.history` 由 debounce 自行构造，条目上只补了文本标注 `(@you)`，**没有携带结构化的「这条 @ 过 bot」标记**，下游评分链路识别不出"窗口里有人 @ 了她" → 低分时照样被拦，表现为「明明 @ 了却不回话」。现在 `mentioned` 标记随条目一路贯通（debounce → inbound），**被点名者一律豁免分数门控，@ 必回**。
+
 ## [1.5.3] - 2026-09-15
 
 ### 变更（省 token）
