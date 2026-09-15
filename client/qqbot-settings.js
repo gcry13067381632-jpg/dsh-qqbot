@@ -4297,11 +4297,11 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         if (keepScrollOffset == null) box.scrollTop = box.scrollHeight
         else box.scrollTop = box.scrollHeight - keepScrollOffset
       }
-      // 聊天文本渲染(2026-09-13 引用消息功能): 把 [Quoted message begins]…[Quoted message ends] 块
-      // 渲染成"引用样式"气泡(左边框+灰底), 其余正文照常显示。没有引用块则整段照常。
+      // 聊天文本渲染(2026-09-13 引用消息功能): 把引用块渲染成"引用样式"气泡(左边框+灰底), 其余正文照常。
+      //   2026-09-15 标记改短([引]…[/引][当前]) —— **新旧都认**, 否则老会话里的英文标记会显示成裸文本。
       function chatRenderText(t) {
-        var src = String(t || '')
-        var re = /\[Quoted message begins\]([\s\S]*?)\[Quoted message ends\]/g
+        var src = String(t || '').replace(/\[(?:当前|Current message)\]\s*/g, '')
+        var re = /\[(?:引|Quoted message begins)\]([\s\S]*?)\[\/(?:引|Quoted message ends)\]/g
         var parts = []
         var m, last = 0
         while ((m = re.exec(src)) !== null) {

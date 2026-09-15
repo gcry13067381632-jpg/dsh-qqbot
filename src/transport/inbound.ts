@@ -20,6 +20,7 @@ import { clearGroupHistory } from '../features/history-store.js';
 import { applyInjectRules } from './inject-rules.js';
 import { inferMediaKind, mediaKindLabel } from './media-kind.js';
 import { replaceBotMention, type MentionLike } from '../shared/mention-clean.js';
+import { MK, QUOTE_BEGIN_ALL, QUOTE_END_ALL, findFirstMarker, findLastMarker, escapeBlockMarkers, stripBlockMarkers } from './markers.js';
 import { dataRootOf, stickerDirOf } from '../gateway/data-root.js';
 import { registerMsgIndex } from './msg-index.js';
 import { createValueScorer, appendScoreLog, NON_MENTION_PENALTY } from '../features/value-score.js';
@@ -205,11 +206,12 @@ export async function handleInbound(
 
   // 群聊时间戳(原"群守则"拼接位): 守则已迁 systemPrompt.section(session-manager 装配期注册,
   // 每请求进 system, 不再每轮塞 user 历史); 此处改为注入当前系统时间, 让 AI 每轮知道日期/星期/时刻。
+  // 2026-09-15 省 token: 去掉"当前时间"四个字(上下文里一看就懂), 一条省 ~4 token。
   if (scope === 'group') {
     const _now = new Date();
     const _p = (n: number): string => String(n).padStart(2, '0');
     const _wd = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][_now.getDay()];
-    agentBody = `[当前时间 ${_now.getFullYear()}-${_p(_now.getMonth() + 1)}-${_p(_now.getDate())} ${_wd} ${_p(_now.getHours())}:${_p(_now.getMinutes())}]\n\n${agentBody}`;
+    agentBody = `[${_now.getFullYear()}-${_p(_now.getMonth() + 1)}-${_p(_now.getDate())} ${_wd} ${_p(_now.getHours())}:${_p(_now.getMinutes())}]\n\n${agentBody}`;
   }
 
   logger.debug(`Processing: scope=${scope} peerId=${peerId} body="${agentBody.slice(0, 200)}"`);
@@ -299,8 +301,14 @@ export async function handleInbound(
         // 评分输入清洗(2026-09-13 主人定): 剥掉合并转发/引用块的结构标记, 只留真实语义。
         // 引用消息的**被引用原文**单独算一次分, 与当前消息取较高者(她在回应那句话 → 往往也需要她参与)。
         const rawContent = String(msg.content || '');
-        const qm = /\[Quoted message begins\]([\s\S]*?)\[Quoted message ends\]/i.exec(rawContent);
-        const currentRaw = qm ? rawContent.replace(qm[0], ' ') : rawContent;
+        // 引用块切分(认新旧标记: 新 [引]…[/引], 老 [Quoted message begins]…[ends])
+        // ⚠️ 用"第一个 begin + 最后一个 end"(不用非贪婪) —— 否则原文里自带标记时会截错(2026-09-13 踩过)
+        const _qb = findFirstMarker(rawContent, QUOTE_BEGIN_ALL);
+        const _qe = findLastMarker(rawContent, QUOTE_END_ALL);
+        const _quoteOk = Boolean(_qb && _qe && _qe.idx > _qb.idx);
+        const quotedInner = _quoteOk ? rawContent.slice(_qb!.idx + _qb!.len, _qe!.idx) : undefined;
+        const quotedFull = _quoteOk ? rawContent.slice(_qb!.idx, _qe!.idx + _qe!.len) : undefined;
+        const currentRaw = quotedFull ? rawContent.replace(quotedFull, ' ') : rawContent;
         // ⚠️ 2026-09-15 修（主人："语音转文字消息没有参与评分吗"）：
         //   转录文字原来**只进 userContent**（给 AI 看的那份），而评分用的是 msg.content →
         //   语音消息在评分链里永远是"无文字"（score=无），哪怕它被清清楚楚转成了文字 ✗
@@ -310,7 +318,7 @@ export async function handleInbound(
           .filter((t) => t.trim() !== '')
           .join(' ');
         const plain = cleanTextForScore([currentRaw, voiceForScore].filter((s) => s !== '').join(' '));
-        const quotedPlain = qm ? cleanTextForScore(qm[1] ?? '') : '';
+        const quotedPlain = quotedInner !== undefined ? cleanTextForScore(quotedInner) : '';
         // ── 图片消息(2026-09-13 主人定 a+b + B预检) ──
         // 小模型只认文字 → 图片本身没法直接评分。三条路都用上:
         //   a) 纯图片也**记一条**(标 📷, 不可评分, 默认不拦)
@@ -804,7 +812,7 @@ function assembleAgentBody(
   // 引用消息(2026-09-13): SDK 中间件没解析出 quote 时, 自己从 103/msg_elements 提取被引用原文
   if (!quotePart && enableRef) {
     const quoted = extractQuotedContent(msg);
-    if (quoted) quotePart = `[Quoted message begins]\n${escapeQuoteMarkers(quoted)}\n[Quoted message ends]\n[Current message]\n`;
+    if (quoted) quotePart = `${MK.QUOTE_BEGIN}\n${escapeBlockMarkers(quoted)}\n${MK.QUOTE_END}\n${MK.CURRENT}\n`;
   }
   // ⚠️ 2026-09-13 主人要求(省 token): 引用原文只给**前 QUOTE_KEEP 字**,
   //   完整原文进本地缓存(每会话最多 10 条) → AI 需要时用 `quote_view` 工具取。
@@ -900,16 +908,14 @@ async function fetchImageBuffer(url: string, maxBytes = 5 * 1024 * 1024): Promis
  * 这里只剥"结构与标记", 保留真正的消息正文。
  */
 function cleanTextForScore(raw: string): string {
-  let s = String(raw || '');
+  // 块标记(新旧两套)统一交给 markers.ts 剥 —— 别在这里再写一遍字面量
+  let s = stripBlockMarkers(String(raw || ''));
   s = s
     // @ 标记一律剥掉（2026-09-15）：`<@openid>` / `@bot` 留在打分文本里会让"这条 @ 了她"
     //   变成最大共同特征 → 实测「<@xx> 不知道」拿到 1.00 分。语义交给正文，点名交给 mention 特征。
     .replace(/<@[!&]?\d+>/g, ' ')
     .replace(/<@[0-9A-Za-z_-]{6,}>/g, ' ')
     .replace(/@bot\b/gi, ' ')
-    .replace(/\[Quoted message begins\]/gi, ' ')
-    .replace(/\[Quoted message ends\]/gi, ' ')
-    .replace(/\[Current message\]/gi, ' ')
     .replace(/\[群聊的聊天记录\]/g, ' ')
     .replace(/={2,}\s*消息\s*\d+\s*={2,}/g, ' ')      // === 消息 1 ===
     .replace(/---\s*第\s*\d+\s*条\s*---/g, ' ')        // --- 第1条 ---
@@ -920,9 +926,9 @@ function cleanTextForScore(raw: string): string {
     .replace(/\[附件\d*\][^\n]*/g, ' ')                 // [附件1] 类型:图片 文件名:… URL:…
     .replace(/\[图片:\s*https?:\/\/[^\]]*\]/g, ' ')      // [图片: URL]
     .replace(/\[表情:\s*[^\]]*\]/g, ' ')
-    .replace(/\[当前时间[^\]]*\]/g, ' ')
+    .replace(/\[当前时间[^\]]*\]/g, ' ')                 // 旧时间行
+    .replace(/\[\d{4}-\d{2}-\d{2}[^\]]*\]/g, ' ')        // 新时间行(2026-09-15 起不再带"当前时间"标签)
     .replace(/\[系统提示\][^\n]*/g, ' ')
-    .replace(/\[Chat history begins\]|\[Chat history ends\]/gi, ' ')
     .replace(/^\s*[-·]\s*Image:[^\n]*/gim, ' ')          // - Image: xxx.jpg (550×550) → URL
     .replace(/^\s*\[[\u4e00-\u9fa5A-Za-z]{1,8}\]\s*$/gm, ' '); // 独占一行的 [标签]
   return s.replace(/[ \t]+/g, ' ').replace(/\n{2,}/g, '\n').trim();
@@ -934,22 +940,15 @@ function cleanTextForScore(raw: string): string {
 function buildQuotePart(quote?: ResolvedQuote): string {
   if (!quote?.text && !quote?.entry?.content) return '';
 
-  const quoteText = escapeQuoteMarkers(quote.text || quote.entry?.content || 'Original content unavailable');
+  const quoteText = escapeBlockMarkers(quote.text || quote.entry?.content || 'Original content unavailable');
 
-  return `[Quoted message begins]\n${quoteText}\n[Quoted message ends]\n[Current message]\n`;
+  // 短标记(2026-09-15 省 token): [引]…[/引][当前] —— 见 markers.ts
+  return `${MK.QUOTE_BEGIN}\n${quoteText}\n${MK.QUOTE_END}\n${MK.CURRENT}\n`;
 }
 
 /**
- * 引用原文里的**块标记转义**(2026-09-13 主人实测抓到的坑):
- *   AI 可能在代码块里示范 `[Quoted message begins]` 这段字面量, 被引用后它会混进引用块,
- *   让"第一个 begin + 第一个 end"这种匹配切错位置。把内层的方括号退化成圆括号:
- *   语义照旧看得懂, 但不再参与结构匹配。
+ * (转义实现已搬到 `markers.ts` 的 `escapeBlockMarkers` —— 新旧两套标记一起转义, 见那里的注释)
  */
-function escapeQuoteMarkers(text: string): string {
-  return String(text || '')
-    .replace(/\[Quoted message begins\]/gi, '(Quoted message begins)')
-    .replace(/\[Quoted message ends\]/gi, '(Quoted message ends)');
-}
 
 /** 引用原文保留字数: 超出部分只进本地缓存(2026-09-13 主人定, 短引用就别折腾了) */
 const QUOTE_KEEP = 60;
@@ -996,19 +995,18 @@ function localizeHistoryImages(text: string, stickerDir: string): string {
  */
 function trimQuoteBlock(quotePart: string, dataRoot: string, msg: ProcessedMessage, logger: Logger): string {
   if (!quotePart) return quotePart;
-  const B = '[Quoted message begins]';
-  const E = '[Quoted message ends]';
-  const b = quotePart.indexOf(B);
-  const e = quotePart.lastIndexOf(E);
-  if (b < 0 || e < 0 || e <= b) return quotePart;
-  const full = quotePart.slice(b + B.length, e).trim();
+  // 认**新旧两套**标记(老会话里还留着英文长标记), 取"第一个 begin + 最后一个 end"
+  const b = findFirstMarker(quotePart, QUOTE_BEGIN_ALL);
+  const e = findLastMarker(quotePart, QUOTE_END_ALL);
+  if (!b || !e || e.idx <= b.idx) return quotePart;
+  const full = quotePart.slice(b.idx + b.len, e.idx).trim();
   if (full.length <= QUOTE_KEEP) return quotePart;
   const key = `${msg.kind === 'group' ? 'group' : 'c2c'}:${(msg.kind === 'group' ? msg.groupOpenid : undefined) ?? msg.senderId}`;
   try {
     const hit = pushQuote(dataRoot, key, full, msg.senderName);
     const head = full.slice(0, QUOTE_KEEP).replace(/\s+/g, ' ');
     logger.debug(`[引用] 原文 ${full.length} 字 → 只给前 ${QUOTE_KEEP} 字(缓存 #${hit.id})`);
-    return `${quotePart.slice(0, b)}${B}\n${head}…[引用#${hit.id}: 全文 ${full.length} 字已缓存, 需要时用 quote_view 查]\n${E}${quotePart.slice(e + E.length)}`;
+    return `${quotePart.slice(0, b.idx)}${quotePart.slice(b.idx, b.idx + b.len)}\n${head}…[引用#${hit.id}: 全文 ${full.length} 字已缓存, 需要时用 quote_view 查]\n${quotePart.slice(e.idx)}`;
   } catch {
     return quotePart;
   }
@@ -1154,12 +1152,12 @@ function buildAgentBody(
   });
 
   return [
-    aggregated ? '[系统提示] 以下历史与当前消息发生在你上一次回复之前(你思考/输出期间群友所发, 非对你的回应), 请通读后综合回应。' : '',
-    '[Chat history begins]',
+    aggregated ? '[系统提示] 以下是上次回复前群友所发(非对你的回应), 通读后综合回应。' : '',
+    MK.HISTORY_BEGIN,
     ...historyLines,
     '',
-    '[Chat history ends]',
-    '[Current message]',
+    MK.HISTORY_END,
+    MK.CURRENT,
     base,
   ].filter(Boolean).join('\n');
 }

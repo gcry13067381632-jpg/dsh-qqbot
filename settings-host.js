@@ -2002,9 +2002,22 @@ export function apply(ctx) {
     for (const b of blocks) if (b && b.type === 'text' && typeof b.text === 'string' && b.text) parts.push(b.text);
     return parts.join('\n').trim();
   }
+  // ── 入站"块标记"在 dock 聊天视图里的解析（2026-09-15 起标记改短, 见插件 src/transport/markers.ts）──
+  //   新标记: [引]…[/引] [当前] [历史]…[/历史] + 时间行 "[2026-09-15 周二 11:06]"（不再带"当前时间"四字）
+  //   老标记: [Quoted message begins]…[ends] [Current message] [Chat history begins]/[ends] + "[当前时间 …]"
+  //   ⚠️ **两套都要认**: 老会话里的历史消息是渲染时解析的, 只认新标记会让旧记录显示成一堆裸标记。
+  const RE_TIME_HEAD = /^\s*\[(?:\d{4}-\d{2}-\d{2}\s[^\]]*|当前时间[^\]]*)\]\s*\r?\n?/;
+  const isTimeHeadLine = (s) => /^\[(?:\d{4}-\d{2}-\d{2}\s|当前时间)/.test(s);
+  const RE_HIST_BEGIN_LINE = /^\[(?:历史|Chat history begins)\]$/;
+  const RE_HIST_END_LINE = /^\[\/(?:历史|Chat history ends)\]$/;   // 老标记没有斜杠
+  const RE_CURRENT_LINE = /^\[(?:当前|Current message)\]$/;
+  const RE_QUOTE_BEGIN = /\[(?:引|Quoted message begins)\]/i;
+  const RE_QUOTE_END = /\[\/(?:引|Quoted message ends)\]/i;
+  const RE_CURRENT_ANY = /\[(?:当前|Current message)\]\s*/g;
+  const hasHistoryBlock = (s) => RE_HIST_BEGIN_LINE.test(String(s || '').trim()) || String(s || '').indexOf('[Chat history begins]') >= 0;
   function chatPeelTimeHead(text) {
-    // QQ 入站文本头形如 "[当前时间 2026-09-05 周六 19:08]\n\n"(可能 \r\n), 整体剥掉
-    return String(text || '').replace(/^\s*\[当前时间[^\]]*\]\s*\r?\n?/, '');
+    // QQ 入站文本头形如 "[2026-09-15 周二 11:06]\n\n"（老版是 "[当前时间 2026-09-05 周六 19:08]"）, 整体剥掉
+    return String(text || '').replace(RE_TIME_HEAD, '');
   }
   function chatDisplayClean(text, nameByMid) {
     let s = String(text || '');
@@ -2346,7 +2359,7 @@ export function apply(ctx) {
     for (const line of String(body || '').split('\n')) {
       const s = line.trim();
       if (!s) continue;
-      if (/^\[Chat history begins\]$/.test(s) || /^\[Chat history ends\]$/.test(s) || /^\[Current message\]$/.test(s) || /^\[当前时间/.test(s)) continue;
+      if (RE_HIST_BEGIN_LINE.test(s) || RE_HIST_END_LINE.test(s) || RE_CURRENT_LINE.test(s) || isTimeHeadLine(s)) continue;
       if (/^\[系统提示\]/.test(s)) { flush(); return out; } // 系统注入段, 之后都不属于群聊内容
       // 媒体元数据行: 暂存, 等归属给下面那条带昵称的消息
       // (Layer 4 现输出 `- Image:/- Video:/- Voice:/- File:` 单数前缀, 此处一并覆盖)
@@ -2365,8 +2378,8 @@ export function apply(ctx) {
   function chatPolishOne(body, fallbackSender, nameByMid) {
     let sender = fallbackSender;
     let b = String(body || '');
-    b = b.replace(/\[Current message\]\s*/g, '');
-    b = b.replace(/\[Quoted message begins\]\s*[\s\S]*?\[Quoted message ends\]\s*/g, '[引用]');
+    b = b.replace(RE_CURRENT_ANY, '');
+    b = b.replace(new RegExp(`${RE_QUOTE_BEGIN.source}\\s*[\\s\\S]*?${RE_QUOTE_END.source}\\s*`, 'g'), '[引用]');
     // 2026-09-12 适配: 同上 —— "[昵称]" 与 "[昵称 (openid)]" 都认; 排除含冒号的方括号(附件标记)
     const tagM = b.match(/\[([^\]\n:]*?)(?:\s*\([A-Za-z0-9_-]{6,}\))?\]/);
     if (tagM) { if (tagM[1].trim()) sender = tagM[1].trim(); b = b.replace(tagM[0], ''); }
@@ -2399,8 +2412,8 @@ export function apply(ctx) {
       const isRelay = /^用户代你发送: /.test(raw);
       // 后台任务/面板大文件完成通知([系统] 后台任务…)→ 显示为 bot 侧气泡并打来源标; 其余系统注入滤掉
       const isBg = /^\[系统\]\s*后台任务/.test(raw0);
-      // 伪造/系统注入(无 [当前时间 头且非 web 直聊): 入群申请/定时 → 滤(QQ 里并没有这句话)
-      if (!/^\[当前时间 /.test(raw0) && !src.rpcId) {
+      // 伪造/系统注入(无时间头且非 web 直聊): 入群申请/定时 → 滤(QQ 里并没有这句话)
+      if (!isTimeHeadLine(raw0) && !src.rpcId) {
         if (/^\[(入群申请|定时|到点)/.test(raw0)) return null;
         if (/^\[系统\]/.test(raw0) && !isBg) return null;
       }
@@ -2409,9 +2422,9 @@ export function apply(ctx) {
       let body = raw;
       if (isRelay) body = body.replace(/^用户代你发送:\s*/, '');
       if (isBg) body = body.replace(/^\[系统\]\s*/, '');
-      // 群延迟/冷却历史打包: [Chat history begins]…[Chat history ends] + [Current message]
+      // 群延迟/冷却历史打包: [历史]…[/历史] + [当前]（老标记 [Chat history begins]…[ends] + [Current message]）
       // 历史段里每条都是真实发生过的群消息 → 逐条拆成独立气泡(不裁不丢), 返回多条
-      if (body.indexOf('[Chat history begins]') >= 0) {
+      if (hasHistoryBlock(body)) {
         const parts = chatSplitHistoryBlock(body);
         const out = [];
         for (const p of parts) {

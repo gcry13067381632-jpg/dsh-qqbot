@@ -35,7 +35,7 @@ describe('buildUserMessage — 群聊发送者标签', () => {
   });
 
   it('引用块照样拼在最前面', () => {
-    const quote = '[Quoted message begins]\n原来那句\n[Quoted message ends]\n[Current message]\n';
+    const quote = '[引]\n原来那句\n[/引]\n[当前]\n';
     expect(buildUserMessage('这句是回的', quote, ID, '亚瑟', true, false, '0915u4'))
       .toBe(`${quote}[亚瑟 #0915u4] 这句是回的`);
   });
