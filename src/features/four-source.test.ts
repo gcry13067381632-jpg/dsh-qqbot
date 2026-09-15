@@ -72,8 +72,8 @@ describe('noteTurnSignals — 正文侧不再记倾向（2026-09-14 主人定）
 
 describe('extractInnerText — 工具参数里的"中文内心话"（2026-09-14 主人口径）', () => {
   it('reply_gate 的中文 reason 会被抽出来', () => {
-    const args = JSON.stringify({ reason: '古都吹面包调侃我傲娇，可俏皮接梗', reply: true });
-    expect(extractInnerText(args)).toBe('古都吹面包调侃我傲娇，可俏皮接梗');
+    const args = JSON.stringify({ reason: '面包乙调侃我傲娇，可俏皮接梗', reply: true });
+    expect(extractInnerText(args)).toBe('面包乙调侃我傲娇，可俏皮接梗');
   });
 
   it('链接 / 路径 / 代码 / 英文参数一律不收（汉字占比不够）', () => {
@@ -102,7 +102,7 @@ describe('noteTurnSignals — 工具中文不再并入倾向（2026-09-14 主人
     await noteTurnSignals(
       root,
       { turn: 12, step: 1, scope: 'group', peerId: 'p12' },
-      { tool: '古都吹面包调侃我傲娇，可俏皮接梗', reply: '人家才不是傲娇呢' },
+      { tool: '面包乙调侃我傲娇，可俏皮接梗', reply: '人家才不是傲娇呢' },
     );
     const rec = JSON.parse(readFileSync(join(root, '.qqbot', 'four-source.jsonl'), 'utf8').trim());
     expect(rec.toolChars).toBeGreaterThan(0);
