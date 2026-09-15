@@ -19,6 +19,37 @@ const K = 5;
 /** 相似度加权指数: 把近邻的相似度差距拉开(实测区分度更好) */
 const WEIGHT_POW = 8;
 
+/**
+ * 打分文本的 mention 归一化（2026-09-15 主人实测后加）。
+ *
+ * 症状：样例带 `@bot …` 前缀、入站文本带 `<@openid> …` →
+ *   两者的**最大共同特征**变成"这条 @ 了她"，语义被前缀淹没：
+ *   实测「<@xx> 不知道」拿到 **1.00**（近邻全是 `@bot …`：这个bug你修一下 / 继续找 / 大不大），
+ *   而它其实只是群里一句"不知道"。
+ *
+ * 做法：**样例与查询都过这个函数** → 相似度只反映正文；
+ *   "是否被点名"改由独立特征承担（gate 的 `!mentioned` 放行、加权里的 AGG_MENTION_BOOST、
+ *   以及没人 @ 她时的 NON_MENTION_PENALTY）。
+ */
+export function stripMentionForScore(raw: string): string {
+  return String(raw ?? '')
+    .replace(/<@[!&]?\d+>/g, ' ')                 // QQ 原生 <@!1234567890>
+    .replace(/<@[0-9A-Za-z_-]{6,}>/g, ' ')        // openid 形式 <@49C7A1D43E0018DF6F5E9DAB9C823E28>
+    .replace(/@bot\b/gi, ' ')                     // 预设/样例里手写的 @bot
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * 没人 @ 她 → 判定分扣一点（2026-09-15 主人："把不@bot的给降低评分"）。
+ *
+ * 为什么用**减法**而不是乘法：门槛附近的高分要更保守（0.90 想越 0.89 的线得真够格），
+ *   而本来就很低的分再乘系数没有意义（都是拦）。0.06 ≈ 让"没被点名"多要 6 分。
+ * 只影响判定分（effScore），**不改**模型原始分（日志里 score/scoreAdj 分开记，能复盘）。
+ */
+export const NON_MENTION_PENALTY = 0.06;
+
+
 export interface ScoreNeighbor {
   m: string;
   y: 0 | 1;
@@ -63,6 +94,8 @@ export function createValueScorer(opts: {
   const minScore = typeof opts.minScore === 'number' ? opts.minScore : 0.5;
   const embedder = createLocalEmbedder({ modelDir: opts.modelDir, logger: opts.logger });
   let samples: ValueSample[] = [];
+  /** 样例文本的 mention 归一化版本（与 sampleTexts[i] 对应; 供近邻展示用干净文本） */
+  let sampleTexts: string[] = [];
   let vecs: number[][] = [];
   let initing: Promise<boolean> | undefined;
   let inited = false;
@@ -81,7 +114,9 @@ export function createValueScorer(opts: {
       try {
         samples = loadValueSamples(opts.dataRoot);
         if (samples.length === 0) return false;
-        const v = await embedder.embedPassages(samples.map((s) => s.m));
+        // mention 归一化: 剥掉 `@bot`/`<@openid>` 再嵌入 —— 否则"这条 @ 了她"会淹掉语义(见 stripMentionForScore)
+        sampleTexts = samples.map((s) => stripMentionForScore(s.m) || s.m);
+        const v = await embedder.embedPassages(sampleTexts);
         if (!v || v.length !== samples.length) return false;
         vecs = v;
         inited = true;
@@ -108,13 +143,14 @@ export function createValueScorer(opts: {
     ready: () => inited,
     warmup: () => { void init(); },
     async score(text: string): Promise<ScoreResult | undefined> {
-      const t = String(text || '').trim();
+      // 查询侧也剥 mention —— 与样例侧(init 里的 sampleTexts)保持一致
+      const t = stripMentionForScore(String(text || '')) || String(text || '').trim();
       if (!t) return undefined;
       if (!(await init())) return undefined;
       const qv = await embedder.embedQuery(t);
       if (!qv) return undefined;
       const scored: ScoreNeighbor[] = samples
-        .map((s, i) => ({ m: s.m, y: s.y, s: dot(qv, vecs[i] ?? []) }))
+        .map((s, i) => ({ m: sampleTexts[i] ?? s.m, y: s.y, s: dot(qv, vecs[i] ?? []) }))
         .sort((a, b) => b.s - a.s);
       const top = scored.slice(0, K);
       let w1 = 0;
