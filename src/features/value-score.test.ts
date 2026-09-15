@@ -26,6 +26,15 @@ describe('stripMentionForScore — 打分前剥掉 @ 标记', () => {
   it('不误伤正文里的普通 @ 与邮箱', () => {
     expect(stripMentionForScore('@某某 你看这个')).toBe('@某某 你看这个');   // 短昵称(非 openid 形态)不动
     expect(stripMentionForScore('a@b.com')).toBe('a@b.com');
+    expect(stripMentionForScore('@botanic 是什么')).toBe('@botanic 是什么');  // `@bot\b` 不该咬到 @botanic
+  });
+
+  it('@ 在中间/结尾/无空格 —— 一样要剥干净（主人 2026-09-15 追问"如果@在中间呢"）', () => {
+    expect(stripMentionForScore('如果 @bot 在中间呢')).toBe('如果 在中间呢');
+    expect(stripMentionForScore('所以@bot又如何')).toBe('所以 又如何');
+    expect(stripMentionForScore('你觉得呢 @bot')).toBe('你觉得呢');
+    expect(stripMentionForScore('@bot又如何')).toBe('又如何');
+    expect(stripMentionForScore('大佬 <@ABC123DEF456> 这个怎么弄')).toBe('大佬 这个怎么弄');
   });
 
   it('纯 @ 标记归一化后为空（调用方会退回原文兜底）', () => {
