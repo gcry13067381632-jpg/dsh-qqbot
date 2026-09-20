@@ -65,7 +65,7 @@ export function modelCommand({ manager, config }: CommandDeps): SlashCommand {
       }
 
       if (!provider || !model) {
-        return '用法: /bot-model provider/model\n示例: /bot-model deepseek-official/deepseek-v4-flash';
+        return '用法: /bot-model provider/model\n示例: /bot-model deepseek-official/deepseek-flash';
       }
 
       await manager.setModelOverride(scope, peerId, { provider, model });

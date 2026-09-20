@@ -4,6 +4,20 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [1.5.5] - 2026-09-18
+
+### 变更（适配 dsh 0.1.6）
+
+- **逐条核对 dsh 0.1.6-alpha.1 / alpha.2 的破坏性变更**，结论是本插件**无需结构性改造**：插件实际使用的宿主接口在新版中全部保留且签名一致 —— `ctx.on('session/event')`、`ctx.on('agent/pre-step')`、`ctx.tools.register(def): () => void`、`session.surface.nodes`、`ctx.inject(...)`、`ctx.systemPrompt.context()`。官方新增的 `agent/created` 仅用于替代 `agent/session-start`（本插件未订阅后者），故不受影响。
+
+- **默认模型兜底更新**：0.1.6 把 `deepseek-v4-flash` / `deepseek-v4-flash-vision` 移出了**默认模型列表**。插件最后一层兜底由 `deepseek-official/deepseek-v4-flash` 改为 `deepseek-official/deepseek-flash`（与 `settings.yaml` 里 `agent-default-model` 同值）；用户显式配置的 provider/model 优先级不变，仅"什么都没配"时的保险值变化。`/bot-model` 帮助文案与用户手册示例同步更新。
+
+- **弃用接口标注**：`session-manager` 中「群守则去重」的会话历史只读遍历，按官方措辞标注 `eventAt / snapshotEvents / ownEvents` 自 0.1.6 起 `@deprecated`（"既有逻辑可暂不迁移，禁止新增调用"），保留实现并注释后续迁移方向（surface 投影 / 异步事件流）。判空写法保证旧宿主上同样安全。
+
+- **运行时卸载（reload）复核**：0.1.6 新增插件管理页，支持实时启用/禁用与运行时卸载，官方要求插件自查加载/卸载逻辑。已复核本插件三条路径均干净：① `bootstrapGateway` 经 `ctx.effect(..., 'im-qqbot.lifecycle')` 注册清理（停 schedule ticker、停 botplay 清扫器、dispose 审批/提问控制器、`manager.disposeAll()`、`bot.stop()`）；② 设置 host 桥的路由走 `ctx.effect(() => ctx.webServer.register(...))`；③ 通道工具用 `ctx.tools.register` 的 disposer（挂在插件 ctx 上随销毁回收，模块级 WeakMap 仅用于热刷时的同名替换）。
+
+- **客户端兼容**：设置页对宿主 `sessions` / `slots` 一直是多层防御式读取（`ctx.sessions` → `ctx.get('sessions')` → `localStorage['dsh.sessions.current']` 兜底；`slots` 缺失只告警不抛错），0.1.6 的客户端 Session / slot 调整不会让面板崩溃。
+
 ## [1.5.4] - 2026-09-15
 
 ### 修复

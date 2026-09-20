@@ -752,7 +752,7 @@ export function apply(ctx) {
     return dir;
   }
   function presetWritable(id) {
-    // 安全规则(主人定): 仅"复制出来带 QQ 工具标记"的预设可改写(liangshen 等底层/实验预设保持只读)。
+    // 安全规则: 仅"复制出来带 QQ 工具标记"的预设可改写(底层/实验预设保持只读)。
     const p = scanPresets().find((x) => x.id === id);
     return !!(p && p.hasChannelTools);
   }
@@ -777,7 +777,7 @@ export function apply(ctx) {
       if (!dir || !PRESET_EDIT_EXT.test(name)) return writeJson(res, 400, { error: '参数不合法' });
       const p = join(dir, name);
       if (!existsSync(p) || !resolve(p).startsWith(resolve(dir) + sep)) return writeJson(res, 404, { error: '文件不存在' });
-      if (!presetWritable(id)) return writeJson(res, 403, { error: '安全限制: 仅"带QQ工具标记"的复制预设可改写(liangshen 等底层预设只读)' });
+      if (!presetWritable(id)) return writeJson(res, 403, { error: '安全限制: 仅"带QQ工具标记"的复制预设可改写(底层预设只读)' });
       const content = String(body?.content ?? '');
       if (Buffer.byteLength(content, 'utf8') > PRESET_EDIT_MAX) return writeJson(res, 400, { error: '内容过大(上限 200KB)' });
       try {

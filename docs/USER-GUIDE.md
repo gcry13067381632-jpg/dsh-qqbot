@@ -292,7 +292,7 @@ Invoke-WebRequest "$base/config.json"               -OutFile "$dir\config.json"
 | `/outmode nothink` | 切到 **完全不思考**: QQ入站不唤醒AI, 消息只记录(逃生通道, 可随时切回) |
 | `/bot-reset` | 重置当前会话（清除上下文） |
 | `/bot-new` | 开启新会话（保留旧会话历史）；若旧档已损坏/无法加载，自动另起新档（可在 QQ 上直接弃掉炸掉的会话） |
-| `/bot-model` / `/model` | 查看或切换模型（如 `/bot-model deepseek-official/deepseek-v4-flash`） |
+| `/bot-model` / `/model` | 查看或切换模型（如 `/bot-model deepseek-official/deepseek-flash`） |
 | `/bot-status` | 查看当前会话状态 |
 | `/bot-ping` | 连通性测试 |
 | `/bot-version` | 查看版本与当前模型 |

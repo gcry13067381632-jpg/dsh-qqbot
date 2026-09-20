@@ -146,7 +146,7 @@ export class ModelResolver {
    * 解析默认模型路由（不含 per-peer 偏好）
    *
    * 优先级：config 显式指定 > settings.yaml（只读） > 宿主 agentDefaultModel
-   * 最终兜底 deepseek-official/deepseek-v4-flash，确保 {{model}} 变量始终有值。
+   * 最终兜底 deepseek-official/deepseek-flash，确保 {{model}} 变量始终有值。
    */
   resolveDefault(): ModelRoute {
     if (this.config.provider && this.config.model) {
@@ -159,7 +159,10 @@ export class ModelResolver {
     const fromHost = this.readFromHost();
     if (fromHost) return fromHost;
 
-    return { provider: 'deepseek-official', model: 'deepseek-v4-flash' };
+    // ⚠️ 2026-09-18 适配 dsh 0.1.6：官方默认模型列表已移除 V4 Flash / V4 Flash Vision Exp，
+    //    兜底改用现行默认 `deepseek-flash`（与 settings.yaml 的 agent-default-model 同值），
+    //    避免兜底指向一个已不在默认目录里的模型（真人配置优先，此处仅最后一层保险）。
+    return { provider: 'deepseek-official', model: 'deepseek-flash' };
   }
 
   /**

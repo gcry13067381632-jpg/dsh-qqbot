@@ -953,6 +953,10 @@ export class SessionManager {
           const mm = m as { source?: { kind?: string; ns?: string }; content?: { type?: string; text?: string }[] };
           return mm?.source?.kind === 'qqbot:group-rules' && mm.source.ns === ns && mm.content?.[0]?.text === text;
         });
+        // ⚠️ dsh 0.1.6 起 `eventAt / snapshotEvents / ownEvents` 被标记 @deprecated（官方措辞：
+        //    "既有逻辑可暂不迁移，但不允许新增调用"）。此处是 2026-09 就存在的**既有只读遍历**，
+        //    故按官方说明保留；后续若要迁移，方向是 surface 投影 / 异步事件流。
+        //    判空写法保证在旧宿主(无 eventAt)上也安全降级。
         if (!inBatch && agent?.session?.surface?.nodes && agent.session.eventAt) {
           // 会话 surface 历史已有同 ns+同内容 → 靠 KV cache, 不重复注入
           for (const seq of agent.session.surface.nodes) {
