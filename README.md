@@ -149,6 +149,51 @@ npm install --legacy-peer-deps     # 仅安装期解析策略, 不改运行行�
 
 > 💡 更省事：机器人建好即可，首次启动直接**扫码绑定**，不用手抄凭据。
 
+## 常见问题
+
+### 升级 dsh 0.1.6 后，恢复会话报 `workflow-worker-thread ... cannot be resolved`？
+
+dsh **0.1.6** 把工作流执行器插件**改了名，且不保留别名**：
+
+```
+@deepseek-ai/dsh-workflow-worker-thread   →   @deepseek-ai/dsh-workflow-ptc
+```
+
+- **用官方预设的人不受影响** —— 官方预设文件随 dsh 升级一起更新（0.1.6 里已是 `workflow-ptc`）。
+- **从旧版官方预设「复制」出来的自定义预设会挂** —— 副本不会跟着升级走，仍写着旧名，于是报：
+
+```
+preset "xxx" failed to mount: row "workflow-worker-thread"
+names a plugin that cannot be resolved: @deepseek-ai/dsh-workflow-worker-thread
+```
+
+**修复**：把预设目录 `~/.dsh/.agent-presets/<预设名>/agent.cordis.yml` 里的旧名改成新名（`id` 与 `name` 各一处），或直接跑仓库里的一键脚本：
+
+```powershell
+# 先检查（不改任何文件）
+pwsh -File scripts/fix-dsh-016-presets.ps1
+
+# 确认后修复（自动备份为 *.bak-dsh016-<时间戳>）
+pwsh -File scripts/fix-dsh-016-presets.ps1 -Apply
+```
+
+改完重启 dsh 让预设重新挂载。
+
+> 同一批变更里还有几个已改名/移除的包，脚本会一并检测：
+>
+> | 旧名 | 处理 |
+> |---|---|
+> | `@deepseek-ai/dsh-code-runtime` | 改名为 `@deepseek-ai/dsh-ptc-runtime` |
+> | `dsh-code-runtime-worker-thread` | 已移除，需删行 |
+> | `dsh-tool-subagent-report` | 已移除，需删行 |
+> | `dsh-agent-spine-demo` | 已移除，需删行 |
+>
+> ⚠️ 注意：**注释里**提到旧名字不会导致挂载失败（脚本也只检查非注释行）。
+
+### 默认模型是哪个？
+
+dsh 0.1.6 起默认模型为 `deepseek-official/deepseek-flash`（旧的 `deepseek-v4-flash` 已移出默认模型列表）。插件在「什么都没配」时的兜底也已同步为该值；你在设置里显式指定的 provider/model 优先级更高。
+
 ## 支持这个项目
 
 如果这个插件帮你省了 token、或者让你家的鲸鱼更活蹦乱跳 —— **给个 ⭐ Star** 就是最实在的支持；有 bug / 想要的功能，欢迎开 [Issue](https://github.com/gcry13067381632-jpg/dsh-qqbot/issues)。

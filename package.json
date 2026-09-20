@@ -65,7 +65,8 @@
     "README_EN.md",
     "LICENSE",
     "voice-convert.mjs",
-    "scripts/download-model.mjs"
+    "scripts/download-model.mjs",
+    "scripts/fix-dsh-016-presets.ps1"
   ],
   "dsh": {
     "bundle": {
