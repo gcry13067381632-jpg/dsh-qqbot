@@ -682,7 +682,7 @@ export interface ImQQBotConfig {
   botplayEvents: BotplayEventConfig[];
 }
 
-export const ConfigSchema: Schema<ImQQBotConfig> = Schema.object({
+const ConfigSchemaRaw: Schema<ImQQBotConfig> = Schema.object({
   appId: Schema.string().default('').description('QQ Bot AppID'),
   appSecret: Schema.string().default('').description('QQ Bot AppSecret'),
   provider: Schema.string().description('LLM provider name'),
@@ -749,3 +749,33 @@ export const ConfigSchema: Schema<ImQQBotConfig> = Schema.object({
   outboundMode: Schema.union(['adaptive', 'detail', 'active', 'passive', 'silent', 'nothink']).default('adaptive').description('出站模式: 适配主动(默认)=收到新消息后前5次带msg_id被动回复, 超出/无新消息自动转主动(连发不受限); 详细主动=同适配主动 + 额外推送工具调用/工具结果到QQ(看进度, 消息更多); 被动=携带msg_id回复(连发受QQ回复同一消息上限); 完全不出站=思考但不发(静默); 完全不思考=QQ入站不唤醒LLM, 仅记录上下文(仅设置页可配, 防机器人自锁)'),
   botplayEvents: Schema.array(botplayEventSchema).default(DEMO_BOTPLAY_EVENTS as never).description('botplay 互动事件(装配器编辑; /botplay 触发发卡)'),
 });
+
+/**
+ * 递归给 schema 所有字段标 volatile（2026-09-24，适配 dsh 0.1.7）。
+ *
+ * 为什么：0.1.7 的 `settings.update()` 只接受 **schema 里声明为 volatile** 的字段
+ * （dsh-settings 源码：`const form = volatileForm(schema); if (!form) throw new Error('Plugin entry "x" has no volatile fields')`）。
+ * 本插件原先一个都没标 → 保存必被拒，只能退化成"自己改 profile patch"，
+ * 于是踩出一连串类型写坏/密钥被覆盖的坑。标上之后宿主的正道写回就能用了。
+ *
+ * 旧版 schemastery（<3.18.4）没有 `.volatile()` → 自动跳过，两代通吃。
+ */
+/**
+ * ⚠️ 故意**不标 volatile** 的字段：改它们需要"重新挂载插件"（重建 bot / 重连）。
+ * 不标 volatile → loader 在配置变化时走 remount（plugin 重新 apply → bootstrap 重建 bot），
+ * 这正是我们想要的"改密钥自动重连"，比自己写重连逻辑可靠。
+ */
+
+/**
+
+/** 顶层 appId/appSecret 不标 volatile：改它们走 remount（重建 bot 连接）。 */
+
+/** 插件导出的 Config：宿主用它推导设置表单、校验并写回。 */
+export const ConfigSchema = ConfigSchemaRaw;
+
+/* ⚠️ 2026-09-24 事故回退：不要在这里标 volatile！
+ * 曾用 ConfigSchemaRaw.volatile() 让整份 Config 可热改（绕开 "no volatile fields"），
+ * 结果把配置写入变成自反馈闭环：插件写 profile patch → 宿主当 volatile 变更热提交
+ * → 插件重读配置 → 凭据仍无效就再写/再扫码 → 无限循环（dsh 启动卡死刷二维码）。
+ * 结论：volatile 只适合"改了不需要插件做副作用"的字段；本插件配置几乎都与 bot 生命周期相关。
+ * 设置页保存改由插件自己读写 profile 配置处理（见 settings-host.js）。 */

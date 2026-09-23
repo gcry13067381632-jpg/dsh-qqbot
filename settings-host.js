@@ -128,25 +128,66 @@ function readEntryConfigFromPatch(entryId) {
     if (ci < 0) return null;
     const cfgIndent = (block[ci].match(/^\s*/) || [''])[0].length;
     const out = {};
-    for (let i = ci + 1; i < block.length; i++) {
-      const raw = block[i];
-      if (!raw.trim()) continue;
-      const ind = (raw.match(/^\s*/) || [''])[0].length;
-      if (ind <= cfgIndent) break;          // config 子树结束
-      if (ind > cfgIndent + 2) continue;    // 嵌套子块/数组项 → 跳过
-      const m = /^\s*([A-Za-z0-9_-]+):\s*(.*)$/.exec(raw);
-      if (!m) continue;
-      let v = m[2].trim();
-      if (v === '' || v.startsWith('!!js')) continue;   // 空值 / 表达式 → 跳过
-      v = v.replace(/^['"]|['"]$/g, '');
-      if (v === 'true') v = true;
-      else if (v === 'false') v = false;
-      else if (/^-?\d+$/.test(v)) v = Number(v);
-      out[m[1]] = v;
-    }
-    for (const k of Object.keys(out)) {
-      if (/secret|token|password|_key$/i.test(k)) out[k] = '__REDACTED__';
-    }
+    const parseScalar = (v) => {
+      const s = String(v).trim().replace(/^['"]|['"]$/g, '');
+      if (s === 'true') return true;
+      if (s === 'false') return false;
+      if (s === 'null' || s === '~') return null;
+      if (/^-?\d+$/.test(s)) return Number(s);
+      return s;
+    };
+    // 递归解析（2026-09-24：之前只取一层，groupAdmin 这类嵌套对象的子字段全被跳过 →
+    // 前端读回来是 undefined，勾选后"保存了却跳回去"）
+    const parseBlock = (from, to, indent) => {
+      const obj = {};
+      for (let i = from; i < to; i++) {
+        const raw = block[i];
+        if (!raw.trim() || /^\s*#/.test(raw)) continue;
+        if (((raw.match(/^\s*/) || [''])[0]).length !== indent) continue;
+        const m = /^\s*([A-Za-z0-9_-]+):\s*(.*)$/.exec(raw);
+        if (!m) continue;
+        const key = m[1];
+        const rest = m[2].trim();
+        let subEnd = i + 1;
+        while (subEnd < to) {
+          const l = block[subEnd];
+          if (l.trim() && ((l.match(/^\s*/) || [''])[0]).length <= indent) break;
+          subEnd++;
+        }
+        if (rest === '') {
+          const inner = block.slice(i + 1, subEnd);
+          if (inner.some((l) => /^\s*-\s/.test(l))) {
+            const arr = [];
+            for (const l of inner) {
+              const am = /^\s*-\s*(.*)$/.exec(l);
+              if (am && am[1].trim()) arr.push(parseScalar(am[1]));
+            }
+            obj[key] = arr;
+          } else {
+            obj[key] = parseBlock(i + 1, subEnd, indent + 2);
+          }
+        } else if (rest === '[]') {
+          obj[key] = [];
+        } else if (rest.startsWith('!!js')) {
+          obj[key] = rest;                                  // 表达式：原样返回（前端只读展示）
+        } else {
+          obj[key] = parseScalar(rest);
+        }
+        i = subEnd - 1;
+      }
+      return obj;
+    };
+    const parsed = parseBlock(ci + 1, block.length, cfgIndent + 2);
+    const redact = (o) => {
+      if (!o || typeof o !== 'object') return o;
+      for (const k of Object.keys(o)) {
+        if (/secret|token|password|_key$/i.test(k)) o[k] = '__REDACTED__';
+        else if (o[k] && typeof o[k] === 'object') redact(o[k]);
+      }
+      return o;
+    };
+    redact(parsed);
+    for (const [k, v] of Object.entries(parsed)) out[k] = v;
     return Object.keys(out).length ? out : null;
   } catch { return null; }
 }
@@ -161,6 +202,75 @@ function viewOf(settings, ns) {
   // revision 用 -1 标记"兜底视图、没有乐观锁基线"（/update 见负数就跳过 expectedRevision）
   if (fb) return { value: fb, revision: -1 };
   return { value: undefined, revision: undefined };
+}
+
+/**
+ * ── 插件自有设置存储（2026-09-24）──
+ *
+ * 为什么不再写 profile 的 `cordis.patch.yml`：
+ *   ① 0.1.7 下写 patch 会被宿主当**热更新**提交 → 插件重新 apply → 本插件启动时若凭据无效会再写
+ *      → 自反馈闭环（实测把 dsh 启动刷死、无限弹二维码）；
+ *   ② 手拼 YAML 保不住字段类型（实测 appId 写成裸数字、owners 空数组写成空串 → 宿主 schema 校验失败）；
+ *   ③ 不支持"新增键"（groupAdmin.pollJoinRequests 这类写不进去）。
+ *
+ * 改用插件自己的 JSON 存储：不触发任何热更新、JSON 天生有类型、随便加键，
+ * 而且**用户不需要手改任何配置文件**（可视化的初衷）。
+ * 位置：{DSH_HOME}/qqbot-settings/<instanceNs>.json
+ */
+const OWN_SETTINGS_DIR = join(DSH_HOME_DIR, 'qqbot-settings');
+function ownSettingsPath(ns) {
+  const safe = String(ns || NS).replace(/[^A-Za-z0-9_-]/g, '_');
+  return join(OWN_SETTINGS_DIR, safe + '.json');
+}
+function readOwnSettings(ns) {
+  try {
+    const p = ownSettingsPath(ns);
+    if (!existsSync(p)) return {};
+    const o = JSON.parse(readFileSync(p, 'utf8'));
+    return o && typeof o === 'object' ? o : {};
+  } catch { return {}; }
+}
+function writeOwnSettings(ns, obj) {
+  const p = ownSettingsPath(ns);
+  try { mkdirSync(OWN_SETTINGS_DIR, { recursive: true }); } catch { /* ignore */ }
+  try { if (existsSync(p)) writeFileSync(p + '.bak-' + Date.now(), readFileSync(p)); } catch { /* 备份失败不阻塞 */ }
+  writeFileSync(p, JSON.stringify(obj, null, 2), 'utf8');
+  return p;
+}
+/** 深合并一层（够用：本插件嵌套只到 groupAdmin / sticker.gates 这一层）。 */
+function mergeDeepOne(cur, patch) {
+  const out = Object.assign({}, cur);
+  for (const [k, v] of Object.entries(patch || {})) {
+    if (v === undefined) continue;
+    if (v === '__REDACTED__') continue;   // 脱敏占位符绝不写回
+    if (v && typeof v === 'object' && !Array.isArray(v) && out[k] && typeof out[k] === 'object' && !Array.isArray(out[k])) {
+      out[k] = Object.assign({}, out[k], v);
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+/** 按 (条目, 缩进层级, 键名) 去掉重复键，保留**最后一次**出现（YAML 语义）。
+ *  2026-09-24 兜底：写 patch 前必跑。重复键会让宿主的 YAML 严格解析直接抛错
+ *  （YAMLException: duplicated mapping key）→ dsh 完全启动不了。 */
+function dedupeYamlKeys(text) {
+  const lines = String(text).split(/\r?\n/);
+  const scope = ['']; const seen = new Map(); const keep = new Array(lines.length).fill(true);
+  let cur = '';
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (!l.trim() || l.trimStart().startsWith('#')) continue;
+    const mId = /^(\s*)-\s*id:\s*(\S+)\s*$/.exec(l);
+    if (mId) { cur = mId[2]; seen.clear(); continue; }
+    const mK = /^(\s*)([A-Za-z0-9_-]+):/.exec(l);
+    if (!mK) continue;
+    const sig = cur + '|' + mK[1].length + '|' + mK[2];
+    if (seen.has(sig)) keep[seen.get(sig)] = false;
+    seen.set(sig, i);
+  }
+  return lines.filter((_, i) => keep[i]).join('\n');
 }
 
 /** 请求里的目录参数(dataDir 显式传; 空=primary 主账号) */
@@ -232,22 +342,37 @@ export function apply(ctx) {
   // ── 设置面板读写桥(多账号: ?ns= 选实例命名空间; 缺省 im-qqbot 主账号) ──
   route(ctx, 'GET', '/api/qqbot-settings/read', async (req, res) => {
     const u = new URL(req.url ?? '/', 'http://x');
-    writeJson(res, 200, viewOf(ctx.settings, u.searchParams.get('ns') || undefined));
+    const ns = u.searchParams.get('ns') || NS;
+    const base = viewOf(ctx.settings, ns) || {};
+    const own = readOwnSettings(ns);
+    // 自有存储优先：它就是用户在设置页保存的那份
+    const value = Object.assign({}, base.value || {}, own);
+    writeJson(res, 200, { value, revision: base.revision, source: Object.keys(own).length ? 'own' : 'patch' });
   });
   route(ctx, 'POST', '/api/qqbot-settings/update', async (req, res) => {
     const body = await readJsonBody(req);
     if (!body || typeof body !== 'object') return writeJson(res, 400, { error: 'body must be JSON object' });
     const ns = typeof body.ns === 'string' && body.ns ? body.ns : NS;
+    // ⚠️ 2026-09-24 起：保存一律写**插件自有存储**（{DSH_HOME}/qqbot-settings/<ns>.json），
+    //    绝不写 profile 的 cordis.patch.yml —— 写 patch 会被宿主当热更新提交，本插件启动时
+    //    若凭据无效会再写配置，形成自反馈闭环（实测把 dsh 启动刷死、无限弹二维码）。
+    //    自有存储还让「用户不必手改任何配置文件」（可视化的初衷）。
     try {
-      // revision = -1 是"兜底视图"标记（宿主 describe 里没有本 ns，如 dsh 0.1.7）
-      // → 没有可信基线，跳过乐观锁，否则保存必报 SETTINGS_CONFLICT
-      const exp = typeof body.expectedRevision === 'number' && body.expectedRevision >= 0 ? body.expectedRevision : undefined;
-      await ctx.settings.update(ns, body.patch ?? {}, exp);
-      writeJson(res, 200, viewOf(ctx.settings, ns));
+      const cur = readOwnSettings(ns);
+      const merged = mergeDeepOne(cur, body.patch ?? {});
+      const file = writeOwnSettings(ns, merged);
+      // 通知插件实例重新读取（桥与插件同进程；不写宿主配置 → 不触发任何热更新）
+      try { ctx.emit('qqbot/settings-changed', ns); } catch { /* 无监听者也无妨 */ }
+      const base = viewOf(ctx.settings, ns) || {};
+      writeJson(res, 200, {
+        value: Object.assign({}, base.value || {}, merged),
+        revision: base.revision,
+        mode: 'own',
+        file,
+        note: '已保存（插件自有存储，热生效）',
+      });
     } catch (e) {
-      const code = e?.code ?? '';
-      if (code === 'SETTINGS_CONFLICT' || code === 'SettingsConflictError') return writeJson(res, 409, { error: e.message });
-      writeJson(res, 400, { error: String(e?.message ?? e) });
+      writeJson(res, 500, { error: '保存失败：' + String(e?.message ?? e) });
     }
   });
 
@@ -577,11 +702,22 @@ export function apply(ctx) {
 
       if (orig) {
         const kv = {};
-        if (inst.appId !== undefined) kv.appId = yq(String(inst.appId));
-        if (secret) kv.appSecret = ysec(secret);
-        if (inst.preset !== undefined && String(inst.preset) !== '') kv.preset = yq(String(inst.preset));
-        if (inst.cwd !== undefined && String(inst.cwd) !== '') kv.cwd = yq(String(inst.cwd));
+        // ✅ 2026-09-24：已有账号的 appId/appSecret/preset/cwd 只写**自有存储**，不再写 patch。
+        //    原因：patch 里 - insert: 下挂多条目时，updateKeysInBlock 的块边界会跨到隔壁条目，
+        //    实测把 im-qqbot-2 的凭据写进了 mcp-chrome、并给 im-qqbot-3 追加重复键。
+        //    插件启动时自有存储会覆盖 patch 值，所以只写自有存储完全等效，且绝不会写歪。
+        //    disabled 例外：它是宿主的 entry 属性、不在 config 里，必须继续写 patch。
+        const ownKv = {};
+        if (inst.appId !== undefined) ownKv.appId = String(inst.appId);
+        if (secret) ownKv.appSecret = String(secret);
+        if (inst.preset !== undefined && String(inst.preset) !== '') ownKv.preset = String(inst.preset);
+        if (inst.cwd !== undefined && String(inst.cwd) !== '') ownKv.cwd = String(inst.cwd);
+        try {
+          const nsKey = String(inst.settingsNs || inst.id);
+          writeOwnSettings(nsKey, Object.assign(readOwnSettings(nsKey), ownKv));
+        } catch { /* 自有存储失败 → 退化到写 patch（下面仍会处理 disabled） */ }
         if (inst.disabled !== undefined) kv.disabled = inst.disabled ? 'true' : 'false';
+        if (Object.keys(kv).length) updates.push({ id: String(inst.id), kv });
         updates.push({ id: String(inst.id), kv });
       } else {
         appends.push(renderBotBlock({ ...inst, appSecret: secret, dataRoot }));
@@ -603,6 +739,27 @@ export function apply(ctx) {
     let out = lines.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
     if (appends.length) out += (out.trimEnd() ? '\n' : '') + appends.join('\n') + '\n';
     writeFileSync(`${PATCH_FILE}.bak`, raw, 'utf8');
+    // ✅ 2026-09-24 兜底①：写前按 (条目,缩进,键) 去重。
+    //    起因：`- insert:` 下挂多条目时块边界会跨到隔壁条目，曾把凭据写进 mcp-chrome、
+    //    并给 im-qqbot-3 追加重复键；重复键会让宿主 YAML 解析抛错、dsh 完全起不来。
+    out = dedupeYamlKeys(out);
+    // ✅ 2026-09-24 兜底②：把凭据同步写进插件自有存储。
+    //    插件启动时自有存储**覆盖** patch 的值，所以即便 patch 被写歪，机器人照样用正确凭据连上。
+    try {
+      for (const inst of instances) {
+        if (inst.remove) continue;
+        const nsKey = String(inst.settingsNs || inst.id);
+        const cur = readOwnSettings(nsKey);
+        let sec = String(inst.appSecret ?? '');
+        if (!sec || sec === SECRET_MASK) sec = cur.appSecret ? String(cur.appSecret) : '';
+        if (inst.appId !== undefined) cur.appId = inst.appId;
+        if (sec) cur.appSecret = sec;
+        if (inst.preset) cur.preset = String(inst.preset);
+        if (inst.cwd) cur.cwd = String(inst.cwd);
+        if (inst.disabled !== undefined) cur.disabled = !!inst.disabled;
+        writeOwnSettings(nsKey, cur);
+      }
+    } catch { /* 自有存储失败不阻塞 patch 写入 */ }
     writeFileSync(PATCH_FILE, out, 'utf8');
     return { ok: true, file: PATCH_FILE, needRestart: true };
   }
@@ -1087,6 +1244,124 @@ export function apply(ctx) {
     try { writeFileSync(bak, raw, 'utf8'); } catch { /* 备份失败不阻塞 */ }
     writeFileSync(PATCH_FILE, text, 'utf8');
     return { ok: true, backup: bak, newId, from: 'document' };
+  }
+
+  /** YAML 标量序列化。forceQuote=true 时强制加引号（保留原字段的字符串类型 —— 例如 appId
+   *  的 schema 是 string，裸写数字会被 YAML 解析成 number → 宿主 schema 校验失败）。 */
+  function yScalar(v, forceQuote) {
+    if (v === null || v === undefined) return "''";
+    if (typeof v === 'boolean') return String(v);
+    const s = String(v);
+    if (typeof v === 'number' && !forceQuote) return s;       // 真正的数字字段（historyLimit 等）保持数字
+    if (forceQuote) return "'" + s.replace(/'/g, "''") + "'";
+    if (typeof v === 'string') {
+      if (s === '' || /[:#'"\[\]{}&*!|>%@`,]/.test(s) || /^\s|\s$/.test(s) || /^(true|false|null|~|-?\d)/i.test(s)) {
+        return "'" + s.replace(/'/g, "''") + "'";
+      }
+    }
+    return s;
+  }
+  /** 把值序列化成"一行 YAML"（数组走流式，避免多行插入）。keepType 提示按原字段类型保真。 */
+  function yValue(v, keepQuoted, origWasArray) {
+    if (Array.isArray(v)) {
+      if (!v.length) return '[]';
+      return '[' + v.map((it) => yScalar(it, typeof it === 'string')).join(', ') + ']';
+    }
+    if (v === '' || v === null || v === undefined) {
+      // ⚠️ 空值必须看原字段类型：原本是数组的（owners）写成 `''` 会让宿主 schema 校验失败
+      return origWasArray ? '[]' : "''";
+    }
+    return yScalar(v, keepQuoted || typeof v === 'string');
+  }
+
+  /**
+   * 把一批字段合并进 profile patch 里某个 entry 的 `config`（dsh 0.1.7 路径，2026-09-24）。
+   *
+   * 为什么需要：0.1.7 的 `settings.update()` 只接受 **schema 里声明为 volatile** 的字段
+   * （源码：`const form = volatileForm(schema); if (!form) throw new Error('Plugin entry "x" has no volatile fields')`），
+   * 本插件用自定义 config、没有 schemastery schema → 保存必被拒。这里改为直接改 profile patch：
+   * **已存在的字段就地替换值**；patch 里没有的字段记入 `missing` 返回给前端（不擅自新增结构）。
+   * 支持一层嵌套对象。写前自动备份，换行逐行保真。
+   */
+  function mergeEntryConfigInPatch(entryId, patch) {
+    try {
+      if (!existsSync(PATCH_FILE)) return { ok: false, error: 'profile patch 不存在' };
+      if (!patch || typeof patch !== 'object') return { ok: false, error: 'patch 必须是对象' };
+      const raw = readFileSync(PATCH_FILE, 'utf8');
+      const parts = raw.split(/(\r\n|\n)/);
+      const lineTexts = [];
+      const eols = [];
+      for (let i = 0; i < parts.length; i++) {
+        if (i % 2 === 0) lineTexts.push(parts[i]);
+        else eols.push(parts[i]);
+      }
+      const esc = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const headRe = new RegExp('^\\s*-\\s*id:\\s*[\'"]?' + esc(entryId) + '[\'"]?\\s*$');
+      const start = lineTexts.findIndex((l) => headRe.test(l));
+      if (start < 0) return { ok: false, error: '在 profile patch 里找不到 entry ' + entryId };
+      const headIndent = (lineTexts[start].match(/^\s*/) || [''])[0].length;
+      let end = lineTexts.length;
+      for (let i = start + 1; i < lineTexts.length; i++) {
+        const ind = (lineTexts[i].match(/^\s*/) || [''])[0].length;
+        if (/- /.test(lineTexts[i]) && ind <= headIndent) { end = i; break; }
+      }
+      let ci = -1;
+      for (let i = start + 1; i < end; i++) {
+        if (/^\s*config:\s*$/.test(lineTexts[i])) { ci = i; break; }
+      }
+      if (ci < 0) return { ok: false, error: 'entry ' + entryId + ' 在 profile patch 里没有 config: 段' };
+      const cfgIndent = (lineTexts[ci].match(/^\s*/) || [''])[0].length;
+      const keyIndent = cfgIndent + 2;
+      let cEnd = ci + 1;
+      for (let i = ci + 1; i < end; i++) {
+        if (lineTexts[i].trim() && ((lineTexts[i].match(/^\s*/) || [''])[0]).length <= cfgIndent) break;
+        cEnd = i + 1;
+      }
+      const missing = [];
+      const setKey = (key, value, from, to, indent) => {
+        // ⚠️ 脱敏占位符绝不写回（2026-09-24 实测事故）：设置页读到的是 viewOf 打码过的
+        //    `__REDACTED__`，若原样写入就会把真密钥覆盖掉。这个值一律视为"未修改"。
+        if (value === '__REDACTED__') return true;
+        const re = new RegExp('^\\s{' + indent + '}' + esc(key) + ':\\s*(.*)$');
+        for (let i = from; i < to; i++) {
+          if (!re.test(lineTexts[i])) continue;
+          if (value && typeof value === 'object' && !Array.isArray(value)) {
+            let subEnd = i + 1;
+            for (let j = i + 1; j < to; j++) {
+              if (lineTexts[j].trim() && ((lineTexts[j].match(/^\s*/) || [''])[0]).length <= indent) break;
+              subEnd = j + 1;
+            }
+            for (const [k, v] of Object.entries(value)) {
+              if (v === undefined) continue;
+              if (!setKey(k, v, i + 1, subEnd, indent + 2)) missing.push(key + '.' + k);
+            }
+            return true;
+          }
+          // 按**原字段类型**保真写入（引号风格 / 数组 / 空值），避免写坏宿主 schema：
+          // 实测踩坑：appId 裸写数字 → "expected string"；owners 空值写成 '' → "expected array"
+          const origRaw = String(lineTexts[i] || '');
+          const origVal = ((origRaw.match(/:\s*(.*)$/) || [])[1] || '').trim();
+          const origWasArray = origVal === '[]' || origVal.startsWith('- ');
+          const keepQuoted = /^['"]/.test(origVal);
+          lineTexts[i] = ' '.repeat(indent) + key + ': ' + yValue(value, keepQuoted, origWasArray);
+          return true;
+        }
+        return false;
+      };
+      for (const [k, v] of Object.entries(patch)) {
+        if (v === undefined) continue;
+        if (!setKey(k, v, ci + 1, cEnd, keyIndent)) missing.push(k);
+      }
+      let out = '';
+      for (let i = 0; i < lineTexts.length; i++) {
+        out += lineTexts[i];
+        if (i < eols.length) out += eols[i];
+      }
+      const bak = PATCH_FILE + '.bak-cfg-' + Date.now();
+      try { writeFileSync(bak, raw, 'utf8'); } catch { /* 备份失败不阻塞 */ }
+      writeFileSync(PATCH_FILE, out, 'utf8');
+      return { ok: true, backup: bak, missing };
+    } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
   }
 
   /** 写回人设正文（只替换那段块标量，写前自动备份整个 patch）。

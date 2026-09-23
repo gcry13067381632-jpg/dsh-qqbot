@@ -2703,6 +2703,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             return isNaN(v) || v < 1 ? dft : v
           }
           state.gaEnabled = read('#dk-ga-enabled')
+    state.gaWatch = read('#dk-ga-watch')
           state.gaPoll = read('#dk-ga-poll')
           state.gaPollWake = read('#dk-ga-pollwake')
           state.gaHubNotify = read('#dk-ga-hubnotify')
@@ -2737,6 +2738,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           // ⚙ 群组设置: 载入轮询/开关当前值
           var poll = ga.pollJoinRequests || {}
           state.gaEnabled = ga.enabled === true
+      state.gaWatch = ga.watchJoinRequests === true   // 实时入群事件（需平台开通，重启生效）
           state.gaPoll = poll.enabled === true
           state.gaPollWake = poll.wakeLlm !== false
           state.gaHubNotify = poll.hubNotify !== false
@@ -2745,6 +2747,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           state.gaInterval = poll.intervalMin || 5
           state.gaMinCount = poll.minCount || 1
           var e1 = panel && panel.querySelector('#dk-ga-enabled'); if (e1) e1.checked = state.gaEnabled
+      var ew = panel && panel.querySelector('#dk-ga-watch'); if (ew) ew.checked = state.gaWatch
           var e2 = panel && panel.querySelector('#dk-ga-poll'); if (e2) e2.checked = state.gaPoll
           var e3 = panel && panel.querySelector('#dk-ga-pollwake'); if (e3) e3.checked = state.gaPollWake
           var e4 = panel && panel.querySelector('#dk-ga-hubnotify'); if (e4) e4.checked = state.gaHubNotify
@@ -2766,6 +2769,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             var patch = Object.assign({}, cur || {})
             var ga = Object.assign({}, (cur && cur.groupAdmin) || {}, {
               enabled: state.gaEnabled,
+          watchJoinRequests: state.gaWatch === true,
               pollJoinRequests: {
                 enabled: state.gaPoll,
                 intervalMin: state.gaInterval,
@@ -3452,6 +3456,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             + '<span class="dk-msg" style="flex:1" id="dk-ga-hint"></span></div>'
             + '<div class="dk-row" style="gap:8px;flex-wrap:wrap">'
             + '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px"><input type="checkbox" id="dk-ga-enabled"' + (state.gaEnabled ? ' checked' : '') + '> 群管理</label>'
+  + '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px" title="实时接收入群申请事件(GROUP_JOIN_REQUEST)；需先在 QQ 开放平台开通该事件，否则机器人会连不上；打开后需重启生效"><input type="checkbox" id="dk-ga-watch"' + (state.gaWatch ? ' checked' : '') + '>实时入群事件(需平台开通·重启生效)</label>'
             + '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px"><input type="checkbox" id="dk-ga-poll"' + (state.gaPoll ? ' checked' : '') + '> 轮询审批</label>'
             + '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px"><input type="checkbox" id="dk-ga-pollwake"' + (state.gaPollWake ? ' checked' : '') + '> 唤醒AI</label>'
             + '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px"><input type="checkbox" id="dk-ga-hubnotify"' + (state.gaHubNotify ? ' checked' : '') + '> 注入群管会话</label>'

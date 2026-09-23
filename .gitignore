@@ -7,3 +7,7 @@ dist/
 deploy.ps1
 deploy.bat
 install-local.ps1
+
+# 本地手动备份（改动前留档，不入库）
+*.bak-*
+*.bak

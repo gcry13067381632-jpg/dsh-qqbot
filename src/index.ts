@@ -4,13 +4,20 @@
  * Cordis 插件入口。将 QQ 消息平台作为 dsh 的前端协议驱动。
  * 网关组装（中间件编排 + 事件 + 出站 + 生命周期）见 src/gateway/。
  */
+import { existsSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import type { Context } from '@deepseek-ai/cordis';
 import { ConfigSchema, EditableConfigSchema, type EditableConfig, type ImQQBotConfig } from './config.js';
 import { bootstrapGateway } from './gateway/index.js';
 import { takePendingMemoText } from './features/people-memo.js';
 import type { DshAgentRegistry } from './session/index.js';
 import { getProfileDir, resolveEnv } from './shared/index.js';
+void getProfileDir;
 import { runQrSetup, persistCredentialsToProfile } from './setup.js';
+
+// 2026-09-24 关闭"启动自动扫码"后，这些符号保留给设置页路径使用；此处显式引用避免 TS 未使用报错。
+void runQrSetup; void persistCredentialsToProfile;
 import type { Logger } from './types.js';
 import { setOutboundModeWriter } from './features/outbound-mode-switch.js';
 
@@ -40,6 +47,7 @@ export async function apply(ctx: Context, config: ImQQBotConfig): Promise<void> 
   // 多账号实例身份: settingsNs 承担"实例 id"(账号页保存时写入, 默认 im-qqbot=主账号)。
   const ns = (config.settingsNs ?? '').trim() || 'im-qqbot';
   const isMain = ns === 'im-qqbot';
+  void isMain;
 
   // ── 账号实例化: appId/appSecret/cwd/preset 都做 env 兜底(2026-09-08, 响应上游 issue #43) ──
   // 背景: cordis.patch.yml 的 im-qqbot config 里 cwd/preset 可能未被 dsh 框架完整传入 apply()
@@ -53,35 +61,12 @@ export async function apply(ctx: Context, config: ImQQBotConfig): Promise<void> 
 
   // ── 凭据缺失 ──
   if (!appId || !appSecret) {
-    // 非主实例: 绝不触发扫码/env 覆写(防把凭据写进主账号或污染全局 env)——
-    // 去 Web「账号与预设」用"扫码绑定"或手动填好 appId/appSecret 后保存, 重启生效。
-    if (!isMain) {
-      logger.error(`实例 ${ns}: 未配置 appId/appSecret——请在 Web「账号与预设」为该账号完成扫码绑定或填写凭据后保存(重启生效), 本实例本次不启动。`);
-      return;
-    }
-    logger.info('凭据未配置，尝试扫码绑定...');
-    const credentials = await runQrSetup();
-
-    if (!credentials) {
-      logger.error('无法获取 QQ Bot 凭据，插件未启动');
-      return;
-    }
-
-    // 写入环境变量（供热更新后的下次 apply 或本次直接启动读取）
-    process.env.QQBOT_APPID = credentials.appId;
-    process.env.QQBOT_SECRET = credentials.appSecret;
-    appId = credentials.appId;
-    appSecret = credentials.appSecret;
-
-    // 持久化到 profile：成功则等待热更新重载，失败则用 env 凭据直接启动
-    const persisted = persistCredentialsToProfile(credentials, getProfileDir() ?? undefined, logger);
-    if (persisted) {
-      // 写入 cordis.patch.yml 会触发 dsh 热更新，自动重新加载本插件。
-      // 直接返回，避免与热更新产生竞态。
-      logger.info('配置已保存，等待热更新重新加载...');
-      return;
-    }
-    logger.warn('凭据未能持久化，本次进程将使用环境变量凭据启动（重启后需重新绑定）');
+    // ⚠️ 2026-09-24 主人要求：**启动时不再自动弹二维码**。
+    //    原因：自动扫码会 persistCredentialsToProfile() 写 profile patch → 触发 dsh 热更新
+    //    → 插件重新 apply → 凭据仍缺失 → 再扫码，形成死循环（实测把宿主启动刷死）。
+    //    现在一律只提示；需要扫码时去 Web「账号与预设」点「扫码绑定」（那条路径是交互式的，不会自转）。
+    logger.error(`实例 ${ns}: 未配置 appId/appSecret——请在 Web「账号与预设」填写凭据（或在那里点「扫码绑定」）后保存，本实例本次不启动。`);
+    return;
   }
 
   const resolvedConfig: ImQQBotConfig = {
@@ -92,6 +77,37 @@ export async function apply(ctx: Context, config: ImQQBotConfig): Promise<void> 
     ...(cwdOverride ? { cwd: cwdOverride } : {}),
     ...(presetOverride ? { preset: presetOverride } : {}),
   };
+
+  // ── 插件自有设置存储（2026-09-24）──
+  // 设置页保存**不再写 profile 的 cordis.patch.yml**：写 patch 会被宿主当热更新提交 →
+  // 插件重新 apply → 凭据无效时再写 → 自反馈闭环（实测把 dsh 启动刷死、无限弹二维码）。
+  // 现在写到 {DSH_HOME}/qqbot-settings/<ns>.json；插件在此读取并覆盖 patch 值，
+  // 并监听桥发出的变更事件实现**热生效**（不写宿主配置 → 不触发任何热更新）。
+  const ownSettingsFile = join(
+    process.env.DSH_HOME || join(homedir(), '.dsh'),
+    'qqbot-settings',
+    String(ns).replace(/[^A-Za-z0-9_-]/g, '_') + '.json',
+  );
+  const readOwnSettings = (): Record<string, unknown> => {
+    try {
+      if (!existsSync(ownSettingsFile)) return {};
+      const o = JSON.parse(readFileSync(ownSettingsFile, 'utf8'));
+      return o && typeof o === 'object' ? o : {};
+    } catch { return {}; }
+  };
+  const ownSettings = readOwnSettings();
+  if (Object.keys(ownSettings).length) {
+    Object.assign(resolvedConfig as unknown as Record<string, unknown>, ownSettings);
+    logger.info(`已加载插件自有设置(${Object.keys(ownSettings).length} 项): ${ownSettingsFile}`);
+  }
+  try {
+    (ctx as unknown as { on: (ev: string, fn: (ns?: string) => void) => void }).on('qqbot/settings-changed', (changedNs?: string) => {
+      if (changedNs && changedNs !== ns) return;
+      const next = readOwnSettings();
+      Object.assign(resolvedConfig as unknown as Record<string, unknown>, next);
+      logger.info(`设置已热更新(${ns}): ${Object.keys(next).length} 项`);
+    });
+  } catch { /* 事件系统不可用 → 退化为重启生效 */ }
 
   // ── Web 可视化设置: 注册 im-qqbot settings 命名空间(可编辑子集, live 生效) ──
   // 用户层存 ~/.dsh/settings.yaml; 变更经 watch 原地覆盖 resolvedConfig 对应字段,

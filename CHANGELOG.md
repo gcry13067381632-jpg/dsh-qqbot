@@ -4,6 +4,37 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [1.5.8] - 2026-09-24
+
+> 这一版把「设置页保存」从**改写 profile 的 `cordis.patch.yml`** 整体搬到**插件自有存储**，
+> 顺手修掉了 0.1.7 适配期暴露的一连串问题。
+
+### 重构
+- **设置保存在插件自有存储**：`{DSH_HOME}/qqbot-settings/<实例>.json`，**不再写 `cordis.patch.yml`**。
+  - 不会再触发宿主热更新（曾因「写 patch → 宿主热提交 → 插件重新 apply → 再写配置」形成**自反馈死循环**，把 dsh 启动刷死、无限弹二维码）
+  - JSON 天生保类型（不再出现 `appId` 被写成裸数字、`owners` 空数组被写成空串导致 schema 校验失败）
+  - 支持新增键（`groupAdmin.pollJoinRequests` 这类嵌套新字段以前写不进去）
+  - **用户无需再手改任何配置文件**（可视化的初衷）
+- 读取路径：profile patch 的值 + 自有存储覆盖；插件启动时同样以自有存储为准，
+  保存后桥 `emit('qqbot/settings-changed')` → 插件热更新内存配置。
+
+### 修复
+- **去掉启动自动扫码**：凭据缺失时只打印提示。自动扫码会「写配置文件 → 触发宿主热更新 → 重新 apply → 凭据仍缺失 → 再扫码」形成死循环；
+  需要扫码请到 Web「账号与预设」走交互式流程（可随时取消，不会自转）。
+- **修 `accounts/save` 写错条目**：`- insert:` 下挂多个条目时块边界会跨到隔壁——曾把机器人凭据写进 `mcp-chrome`、
+  并给其他条目追加重复键。现在已有账号的 `appId/appSecret/preset/cwd` **只写自有存储**（`disabled` 是宿主 entry 属性，仍写 patch）。
+- **新增写前去重 `dedupeYamlKeys()`**：杜绝重复键把宿主 YAML 严格解析写崩
+  （`YAMLException: duplicated mapping key` → dsh 完全启动不了）。
+- **设置页读取兜底改为递归解析** profile patch（支持嵌套对象 / 数组 / `!!js`），
+  修复 `groupAdmin` 等嵌套配置读不回来、导致「勾选保存后又跳回去」。
+- **脱敏占位符不再回写**：`__REDACTED__` 一律视为「未修改」，修掉「保存时把真 `appSecret` 覆盖成打码值」的事故。
+
+### 新增
+- dock「群组设置」面板新增 **「实时入群事件(需平台开通·重启生效)」** 开关（对应 `groupAdmin.watchJoinRequests`），
+  不必再去主设置区的「群管理基础设置」里找。
+  - ⚠️ 该事件需先在 QQ 开放平台开通；未开通时打开会导致机器人连不上（Identify 被拒 4914/4915）。
+- `scripts/dedupe-patch.ps1`：一键清理 `cordis.patch.yml` 里的重复键（默认 dry-run，`-Apply` 才写，自动备份）。
+- README FAQ：0.1.6 → 0.1.7 升级后**自定义群守则可能被默认值顶掉**的排查与找回方法。
 ## [1.5.7] - 2026-09-24
 
 ### 修复（在 dsh 0.1.7 下恢复设置页与预设管理）
@@ -463,3 +494,4 @@ dsh **0.1.7** 把 Agent 预设从「目录里的 yml 文件」换成了「profil
 ### 问题修复
 
 - 修复配置解析问题。
+
