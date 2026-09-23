@@ -55,8 +55,12 @@ function resolveProfileRoot() {
 const PROFILE_ROOT = resolveProfileRoot();
 /** cordis.patch.yml = 宿主插件装配文件(账号实例声明处; 改它需重启 dsh 生效) */
 const PATCH_FILE = join(PROFILE_ROOT, 'cordis.patch.yml');
-/** agent 预设根目录(用户可写; 每预设一个子目录, 目录名=预设 id) */
-const PRESET_ROOT = join(homedir(), '.dsh', '.agent-presets');
+/** dsh 家目录(与宿主保持一致: 优先环境变量 DSH_HOME, 否则回落 ~/.dsh) */
+const DSH_HOME_DIR = ((process.env.DSH_HOME ?? '').trim()) || join(homedir(), '.dsh');
+/** agent 预设根目录 —— ⚠️ 仅 ≤0.1.6 的**旧机制**(每预设一个子目录, 目录名=预设 id)。
+ *  dsh 0.1.7 起预设改为「profile 配置里的声明行」(@deepseek-ai/dsh-agent-preset),
+ *  既没有目录、也没有写接口, 所以这里只作为旧版回落路径保留。 */
+const PRESET_ROOT = join(DSH_HOME_DIR, '.agent-presets');
 /** 复制预设时排除的备份/压缩类文件(不把主人的隐私压缩包带进新预设) */
 const COPY_SKIP = /\.(rar|zip|7z|bak|tmp|log|diag)$/i;
 /** 预设 id 校验: 文件夹命名规范(字母数字开头, 允许 - _) */
@@ -137,7 +141,9 @@ export function apply(ctx) {
   // ── 桥装载诊断(2026-09-10 排查路由全 404): 落 ~/.dsh/qqbot-bridge-diag.log ──
   // 用途: 宿主重启后可确认 apply 是否真的被 cordis 调用(以及当时 ctx 上有哪些服务)。
   try {
-    const services = ['settings', 'webServer', 'agentPresets'].map((s) => s + '=' + (ctx && ctx[s] ? 'Y' : 'N')).join(' ');
+    // ⚠️ 未在 inject 声明的服务裸访问会抛 "without inject"（0.1.7 实测）→ 逐个 try 探测
+    const probe = (n) => { try { return (ctx && ctx[n]) ? 'Y' : 'N'; } catch { return 'NO-INJECT'; } };
+    const services = ['settings', 'webServer', 'agentPresets'].map((s) => s + '=' + probe(s)).join(' ');
     appendFileSync(
       join(homedir(), '.dsh', 'qqbot-bridge-diag.log'),
       `[${new Date().toISOString()}] bridge apply 被调用 inject=${JSON.stringify(inject)} ${services}\n`,
@@ -670,11 +676,83 @@ export function apply(ctx) {
     }
     return out.sort((a, b) => b.mtime - a.mtime);
   }
+  /**
+   * 列出可用预设（双模式，2026-09-23 适配 dsh 0.1.7）。
+   *  - dsh 0.1.7+：走宿主 `agentPresets.list()` —— 新版预设是 profile 配置里的
+   *    「声明行」(@deepseek-ai/dsh-agent-preset)，**已无目录**，扫目录只会得到空列表；
+   *  - dsh ≤0.1.6：回落 `scanPresets()` 扫 {DSH_HOME}/.agent-presets 目录（旧机制）。
+   *  统一返回 [{id, name, description, source}]，source=registry|dir。
+   */
+  /**
+   * 安全取宿主 agentPresets 服务（2026-09-23 实测修正）。
+   * ⚠️ cordis 对**未在 inject 里声明**的服务, 裸访问 `ctx.xxx` 会直接抛
+   *    "cannot get property \"agentPresets\" without inject"（0.1.7 上实测命中）。
+   *    而桥的 inject 只声明 settings/webServer（多声明会让宿主缺服务时整个 apply 不执行），
+   *    所以这里必须用 **ctx.get()**（不抛）探测，拿不到返回 null 走旧目录回落。
+   */
+  function getAgentPresets() {
+    try {
+      if (ctx && typeof ctx.get === 'function') {
+        const svc = ctx.get('agentPresets');
+        if (svc) return svc;
+      }
+    } catch { /* ignore */ }
+    try { return (ctx && ctx.agentPresets) || null; } catch { return null; }
+  }
+  async function listPresets() {
+    const ap = getAgentPresets();
+    if (ap && typeof ap.list === 'function') {
+      try {
+        const arr = await ap.list();
+        if (Array.isArray(arr) && arr.length) {
+          return arr
+            .map((p) => ({
+              id: String((p && p.id) || ''),
+              name: String((p && (p.name || p.id)) || ''),
+              description: String((p && p.description) || ''),
+              source: 'registry',
+            }))
+            .filter((p) => p.id);
+        }
+      } catch { /* registry 不可用 → 回落旧目录 */ }
+    }
+    return scanPresets().map((p) => ({
+      id: p.id,
+      name: p.name,
+      description: '',
+      source: 'dir',
+      mtime: p.mtime,
+      hasChannelTools: p.hasChannelTools,
+    }));
+  }
+  /**
+   * 写操作在新版下的统一提示（2026-09-23）。
+   * dsh 0.1.7+ 的注册表「不写入任何声明、没有任何接口接受 YAML 写回」，
+   * 新增/覆盖预设只能写 profile 的 bundle 补丁 —— 与其静默失败，不如给出明确指引。
+   * 返回 null 表示走旧版目录流程。
+   */
+  function presetWriteBlocked() {
+    const ap = getAgentPresets();
+    if (ap && typeof ap.list === 'function') {
+      return '当前 dsh 版本的预设是「profile 配置里的声明行」，不再是目录文件（官方注册表不接受任何写回）。'
+        + '请在 profile 的 cordis.patch.yml 里用 `- insert:` 添加/修改 `@deepseek-ai/dsh-agent-preset` 行'
+        + '（或用创造模式生成 bundle），保存后由 patchReload 热生效。';
+    }
+    return null;
+  }
   route(ctx, 'GET', '/api/qqbot-settings/presets', async (_req, res) => {
-    writeJson(res, 200, { root: PRESET_ROOT, presets: scanPresets() });
+    try {
+      const presets = await listPresets();
+      const viaRegistry = presets.some((p) => p.source === 'registry');
+      writeJson(res, 200, { root: viaRegistry ? null : PRESET_ROOT, presets, mode: viaRegistry ? 'registry' : 'dir' });
+    } catch (e) {
+      writeJson(res, 500, { error: String((e && e.message) || e) });
+    }
   });
   // 复制并双名: {sourceId, newId, newName}
   route(ctx, 'POST', '/api/qqbot-settings/presets/copy', async (req, res) => {
+    const blocked = presetWriteBlocked();
+    if (blocked) return writeJson(res, 501, { error: blocked });
     const body = await readJsonBody(req);
     if (!body || typeof body.sourceId !== 'string' || typeof body.newId !== 'string') {
       return writeJson(res, 400, { error: 'sourceId/newId 必填' });
@@ -703,12 +781,14 @@ export function apply(ctx) {
   // 从内置"标准模式(standard)"新建一个预设(空机器起步用): 复制宿主 standard + 自动补 QQ 通道工具行
   // 复用宿主原生 agentPresets.copy(from,id,name) —— 复制出的正是宿主当前标准版, 保证能跑; 无需自己拼组合。
   route(ctx, 'POST', '/api/qqbot-settings/presets/new', async (req, res) => {
+    const blocked = presetWriteBlocked();
+    if (blocked) return writeJson(res, 501, { error: blocked });
     const body = await readJsonBody(req);
     const newId = String(body?.id ?? '').trim();
     const newName = String(body?.name ?? '').trim() || undefined;
     if (!ID_RE.test(newId)) return writeJson(res, 400, { error: '预设 id 只能字母/数字开头，含 - _（也是文件夹名）' });
     try {
-      const ap = (ctx).agentPresets;
+      const ap = getAgentPresets();
       if (!ap || typeof ap.copy !== 'function') {
         return writeJson(res, 500, { error: '宿主未提供 agentPresets 服务, 无法从标准模式新建' });
       }
@@ -725,6 +805,8 @@ export function apply(ctx) {
   });
   // 打开预设文件夹(本机弹资源管理器; 仅限 presetRoot 内白名单路径)
   route(ctx, 'POST', '/api/qqbot-settings/presets/open', async (req, res) => {
+    const blocked = presetWriteBlocked();
+    if (blocked) return writeJson(res, 501, { error: blocked });
     const body = await readJsonBody(req);
     const id = String(body?.id ?? '').trim();
     if (!ID_RE.test(id)) return writeJson(res, 400, { error: '非法的预设 id' });
@@ -757,6 +839,9 @@ export function apply(ctx) {
     return !!(p && p.hasChannelTools);
   }
   route(ctx, 'GET', '/api/qqbot-settings/presets/files', async (req, res) => {
+    // 新版(0.1.7+)没有预设目录了 → 给明确指引, 免得前端只看到"预设不存在"
+    const blockedFiles = presetWriteBlocked();
+    if (blockedFiles) return writeJson(res, 501, { error: blockedFiles });
     const q = new URL(req.url, 'http://x').searchParams;
     const dir = presetDirSafe(q.get('id') || '');
     if (!dir) return writeJson(res, 404, { error: '预设不存在' });
@@ -769,6 +854,8 @@ export function apply(ctx) {
     } catch (e) { writeJson(res, 500, { error: String(e?.message ?? e) }); }
   });
   route(ctx, ['GET', 'PUT'], '/api/qqbot-settings/presets/file', async (req, res) => {
+    const blockedFile = presetWriteBlocked();
+    if (blockedFile) return writeJson(res, 501, { error: blockedFile });
     if (req.method === 'PUT') {
       const body = await readJsonBody(req);
       const id = String(body?.id ?? '');

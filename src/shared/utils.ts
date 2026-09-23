@@ -80,7 +80,9 @@ export function getProfileDir(baseDir: string = PLUGIN_ROOT): string | null {
 
 /** 遍历 ~/.dsh/profiles/<name>，返回装着本插件的 profile 根目录（找不到返回 null） */
 function scanDshProfiles(): string | null {
-  const profilesRoot = join(os.homedir(), '.dsh', 'profiles');
+  // 与宿主保持一致: 优先环境变量 DSH_HOME, 否则回落 ~/.dsh
+  const dshHome = ((process.env.DSH_HOME ?? '').trim()) || join(os.homedir(), '.dsh');
+  const profilesRoot = join(dshHome, 'profiles');
   let entries: string[];
   try {
     entries = readdirSync(profilesRoot);

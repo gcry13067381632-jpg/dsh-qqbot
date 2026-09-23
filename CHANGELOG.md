@@ -4,6 +4,20 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [1.5.6] - 2026-09-23
+
+### 变更（适配 dsh 0.1.7 的「声明式预设」）
+
+dsh **0.1.7** 把 Agent 预设从「目录里的 yml 文件」换成了「profile 配置里的声明行」：由 `@deepseek-ai/dsh-agent-preset-registry` + 每预设一行 `@deepseek-ai/dsh-agent-preset` 构成。官方明确**注册表不扫描目录、不接受 preset 路径、也没有任何接口接受 YAML 写回**（新增/覆盖只能写 profile 的 bundle 补丁）。本版把插件的预设能力改成**双模式探测**：新版走服务、旧版照旧，两边都不崩。
+
+- **预设列表双模式（`GET /presets`）**：dsh 0.1.7+ 改走宿主 **`agentPresets.list()`**（新版没有目录，扫目录只会得到空列表）；≤0.1.6 仍回落扫目录。返回体新增 `mode: "registry" | "dir"`，新版下 `root` 为 `null`。
+- **写操作给明确指引**：`/presets/copy`、`/presets/new`、`/presets/open`、`/presets/files`、`/presets/file` 在新版下一律返回 **501 + 可操作的中文说明**（指引在 profile 的 `cordis.patch.yml` 里用 `- insert:` 声明 `@deepseek-ai/dsh-agent-preset`，或走创造模式生成 bundle），而不是静默失败或只报"预设不存在"。
+- **跟随 `DSH_HOME`**：`PRESET_ROOT` 与 profile 定位（`scanDshProfiles`）此前硬编码 `~/.dsh`，现**优先读环境变量 `DSH_HOME`**，与宿主保持一致（多环境/测试隔离不再串目录）。
+- **预设挂载链路无需改动**：`agentPresets.resolve/mount/defaultId` 在 0.1.7 中签名不变，插件（`session-manager`）原本就走这条，继续可用。
+- **实测**：在独立 `DSH_HOME` 下用 **dsh 0.1.7-rc.1** 验证 —— 插件正常加载并初始化、声明式预设可被 profile 补丁 `- insert:` 声明并生效、无版本兼容拦截。`dsh.engines.dsh` 相应追加 `0.1.7-rc.1`。
+
+> 已知未覆盖：新版下**"复制/新建预设"暂未实现写入**（需把预设组合序列化成 entry-list YAML 写入 profile 补丁，风险较高，留待后续版本；当前给出明确指引而非静默失败）。
+
 ## [1.5.5] - 2026-09-18
 
 ### 变更（适配 dsh 0.1.6）
