@@ -1392,9 +1392,11 @@ window.__ModuleLoader__.load({
         }).then(function (r) { return r.json() }).then(function (d) {
           setBusy('')
           if (d && d.error) { setMsg('复制失败: ' + d.error); return }
-          setMsg('✅ 新预设已生成: ' + d.newId + (copy.fromStandard ? ' (复制自标准模式, 已带 QQ 工具)' : '') + '。去「打开文件夹」改人设吧。')
+          setMsg('✅ 新预设已生成: ' + d.newId + (copy.fromStandard ? ' (复制自标准模式)' : '') + '。稍等片刻即可在列表看到；要改人设点「人格」。')
           setCopy(null); setCopyId(''); setCopyName('')
           load(true)
+          // dsh 0.1.7：预设写在 profile patch 里，由宿主 HMR 重载后才出现在列表中 → 稍后再拉一次
+          setTimeout(function () { load(true) }, 1200)
         }).catch(function (e) { setBusy(''); setMsg('复制异常: ' + e.message) })
       }
       function openPreset(id) {

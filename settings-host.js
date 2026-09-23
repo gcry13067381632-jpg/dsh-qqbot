@@ -97,10 +97,70 @@ async function readJsonBody(req) {
 }
 
 /** 读命名空间当前解析值 + revision(redact 防密钥外泄) */
+/**
+ * 兜底：从 profile 的 cordis.patch.yml 里读某个 entry 的 config（2026-09-23 适配 dsh 0.1.7）。
+ *
+ * 背景：0.1.7 把设置机制换成了「从 profile 里插件条目的 config schema 推导」，
+ * 注册入口 `installSection` 已移除 → 插件静默降级后 `describe()` 里不再有本实例的 ns，
+ * 于是 /read 返回 {value:undefined,revision:undefined}（JSON 序列化后正好是 {}），
+ * 前端就显示"读取失败: {}"。
+ *
+ * 这里只做「块级 + 简单标量」提取（不整文件 YAML 解析，因为含 !!js 标签）：
+ * 找 `- id: <entryId>` 块的 `config:` 子树，逐行取标量，跳过 !!js 与嵌套子块；
+ * secret 类字段按宿主 describe(redactSecrets) 的口径打码。
+ */
+function readEntryConfigFromPatch(entryId) {
+  try {
+    if (!existsSync(PATCH_FILE)) return null;
+    const lines = readFileSync(PATCH_FILE, 'utf8').split(/\r\n|\n/);
+    const esc = String(entryId).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const headRe = new RegExp('^\\s*-\\s*id:\\s*[\'"]?' + esc + '[\'"]?\\s*$');
+    const start = lines.findIndex((l) => headRe.test(l));
+    if (start < 0) return null;
+    const headIndent = (lines[start].match(/^\s*/) || [''])[0].length;
+    let end = lines.length;
+    for (let i = start + 1; i < lines.length; i++) {
+      const ind = (lines[i].match(/^\s*/) || [''])[0].length;
+      if (/- /.test(lines[i]) && ind <= headIndent) { end = i; break; }
+    }
+    const block = lines.slice(start + 1, end);
+    const ci = block.findIndex((l) => /^\s*config:\s*$/.test(l));
+    if (ci < 0) return null;
+    const cfgIndent = (block[ci].match(/^\s*/) || [''])[0].length;
+    const out = {};
+    for (let i = ci + 1; i < block.length; i++) {
+      const raw = block[i];
+      if (!raw.trim()) continue;
+      const ind = (raw.match(/^\s*/) || [''])[0].length;
+      if (ind <= cfgIndent) break;          // config 子树结束
+      if (ind > cfgIndent + 2) continue;    // 嵌套子块/数组项 → 跳过
+      const m = /^\s*([A-Za-z0-9_-]+):\s*(.*)$/.exec(raw);
+      if (!m) continue;
+      let v = m[2].trim();
+      if (v === '' || v.startsWith('!!js')) continue;   // 空值 / 表达式 → 跳过
+      v = v.replace(/^['"]|['"]$/g, '');
+      if (v === 'true') v = true;
+      else if (v === 'false') v = false;
+      else if (/^-?\d+$/.test(v)) v = Number(v);
+      out[m[1]] = v;
+    }
+    for (const k of Object.keys(out)) {
+      if (/secret|token|password|_key$/i.test(k)) out[k] = '__REDACTED__';
+    }
+    return Object.keys(out).length ? out : null;
+  } catch { return null; }
+}
+/** 读一个实例的配置视图；宿主 describe 拿不到时回落到 profile patch。 */
 function viewOf(settings, ns) {
   const target = ns || NS;
-  const d = settings.describe({ redactSecrets: true }).find((x) => x.ns === target);
-  return d ? { value: d.value, revision: d.revision } : { value: undefined, revision: undefined };
+  let list = [];
+  try { list = settings.describe({ redactSecrets: true }) || []; } catch { list = []; }
+  const d = list.find((x) => x.ns === target);
+  if (d) return { value: d.value, revision: d.revision };
+  const fb = readEntryConfigFromPatch(target);
+  // revision 用 -1 标记"兜底视图、没有乐观锁基线"（/update 见负数就跳过 expectedRevision）
+  if (fb) return { value: fb, revision: -1 };
+  return { value: undefined, revision: undefined };
 }
 
 /** 请求里的目录参数(dataDir 显式传; 空=primary 主账号) */
@@ -179,7 +239,10 @@ export function apply(ctx) {
     if (!body || typeof body !== 'object') return writeJson(res, 400, { error: 'body must be JSON object' });
     const ns = typeof body.ns === 'string' && body.ns ? body.ns : NS;
     try {
-      await ctx.settings.update(ns, body.patch ?? {}, typeof body.expectedRevision === 'number' ? body.expectedRevision : undefined);
+      // revision = -1 是"兜底视图"标记（宿主 describe 里没有本 ns，如 dsh 0.1.7）
+      // → 没有可信基线，跳过乐观锁，否则保存必报 SETTINGS_CONFLICT
+      const exp = typeof body.expectedRevision === 'number' && body.expectedRevision >= 0 ? body.expectedRevision : undefined;
+      await ctx.settings.update(ns, body.patch ?? {}, exp);
       writeJson(res, 200, viewOf(ctx.settings, ns));
     } catch (e) {
       const code = e?.code ?? '';
@@ -751,9 +814,30 @@ export function apply(ctx) {
   });
   // 复制并双名: {sourceId, newId, newName}
   route(ctx, 'POST', '/api/qqbot-settings/presets/copy', async (req, res) => {
-    const blocked = presetWriteBlocked();
-    if (blocked) return writeJson(res, 501, { error: blocked });
     const body = await readJsonBody(req);
+    // dsh 0.1.7+：预设是 profile patch 里的声明行 → 复制 = 整段搬运 + 改写 id/name
+    if (getAgentPresets()) {
+      if (!body || typeof body.sourceId !== 'string' || typeof body.newId !== 'string') {
+        return writeJson(res, 400, { error: 'sourceId/newId 必填' });
+      }
+      const nId = body.newId.trim();
+      if (!ID_RE.test(nId)) return writeJson(res, 400, { error: '预设 id 只能字母/数字开头，含 - _' });
+      if (nId === String(body.sourceId).trim()) return writeJson(res, 400, { error: '新预设 id 不能与源相同' });
+      const nName = String(body.newName ?? nId).trim() || nId;
+      try {
+        const arr = await getAgentPresets().list();
+        if (Array.isArray(arr) && arr.some((x) => x && x.id === nId)) {
+          return writeJson(res, 409, { error: '预设 ' + nId + ' 已存在' });
+        }
+      } catch { /* 列表不可用时靠 patch 自身判断 */ }
+      const srcId = String(body.sourceId).trim();
+      // 先按 patch 里的原块整段复制（原汁原味、字节保真）；
+      // patch 里没有（如宿主内置预设 standard）→ 回退用宿主文档读出组成再生成
+      let r = copyPresetDecl(srcId, nId, nName);
+      if (!r.ok) r = await copyPresetViaDocument(srcId, nId, nName);
+      if (!r.ok) return writeJson(res, 404, { error: r.error });
+      return writeJson(res, 200, { ok: true, newId: nId, backup: r.backup, note: '已写入 profile patch，热生效（新会话生效）' });
+    }
     if (!body || typeof body.sourceId !== 'string' || typeof body.newId !== 'string') {
       return writeJson(res, 400, { error: 'sourceId/newId 必填' });
     }
@@ -781,9 +865,22 @@ export function apply(ctx) {
   // 从内置"标准模式(standard)"新建一个预设(空机器起步用): 复制宿主 standard + 自动补 QQ 通道工具行
   // 复用宿主原生 agentPresets.copy(from,id,name) —— 复制出的正是宿主当前标准版, 保证能跑; 无需自己拼组合。
   route(ctx, 'POST', '/api/qqbot-settings/presets/new', async (req, res) => {
-    const blocked = presetWriteBlocked();
-    if (blocked) return writeJson(res, 501, { error: blocked });
     const body = await readJsonBody(req);
+    // dsh 0.1.7+：从 profile patch 里的 preset-standard 声明整段复制出一个新预设
+    if (getAgentPresets()) {
+      const nId = String(body?.id ?? '').trim();
+      const nName = String(body?.name ?? '').trim() || nId;
+      if (!ID_RE.test(nId)) return writeJson(res, 400, { error: '预设 id 只能字母/数字开头，含 - _' });
+      // standard 是**宿主内置**预设（不在用户 patch 里）→ 用宿主的预设文档读它的组成
+      let r = await copyPresetViaDocument('standard', nId, nName);
+      if (!r.ok) {
+        // 兜底：万一 patch 里正好也有一份 preset-standard，就直接整段复制
+        const local = copyPresetDecl('standard', nId, nName);
+        if (local.ok) r = local;
+      }
+      if (!r.ok) return writeJson(res, 500, { error: r.error });
+      return writeJson(res, 200, { ok: true, newId: nId, backup: r.backup, note: '已从 standard 生成新预设并写入 profile patch，热生效' });
+    }
     const newId = String(body?.id ?? '').trim();
     const newName = String(body?.name ?? '').trim() || undefined;
     if (!ID_RE.test(newId)) return writeJson(res, 400, { error: '预设 id 只能字母/数字开头，含 - _（也是文件夹名）' });
@@ -824,8 +921,225 @@ export function apply(ctx) {
 
   // ── 预设人格文件浏览/编辑(2026-09-07): "展开改写人格"。安全: 仅 PRESET_ROOT/{id} 内白名单文件;
   //    写权限仅限"复制出来带QQ工具标记"的副本(防误改内置/半成品); 大小上限 200KB。
+  //
+  // ── 2026-09-24 适配 dsh 0.1.7：预设改为 profile patch 里的声明行后，目录没了，
+  //    但「人设正文」仍在 patch 内（persona 插件 config.prefix 的块标量）。
+  //    这里为它提供"虚拟文件"读写：只动那一段块标量，其余内容一个字节都不碰。
   const PRESET_EDIT_EXT = /.(yml|yaml|json|mjs|js|md|txt)$/i;
   const PRESET_EDIT_MAX = 200 * 1024;
+
+  /** 定位 profile patch 里某个预设声明块 `- id: preset-<id>`。 */
+  function locatePresetBlock(lines, presetId) {
+    const esc = String(presetId).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp('^\\s*-\\s*id:\\s*[\'"]?preset-' + esc + '[\'"]?\\s*$');
+    const head = lines.findIndex((l) => re.test(l));
+    if (head < 0) return null;
+    const headIndent = (lines[head].match(/^\s*/) || [''])[0].length;
+    let end = lines.length;
+    for (let i = head + 1; i < lines.length; i++) {
+      const ind = (lines[i].match(/^\s*/) || [''])[0].length;
+      if (/- /.test(lines[i]) && ind <= headIndent) { end = i; break; }
+    }
+    return { head, headIndent, end };
+  }
+
+  /**
+   * 读预设的人设正文（0.1.7 路径）。
+   * 结构: preset 块 → `- id: persona` → `prefix|text|prompt: |-` → 块标量正文
+   * @returns {{text:string, indent:number, bodyStart:number, bodyEnd:number}|null}
+   */
+  function readPresetPersona(presetId, linesOverride) {
+    try {
+      if (!existsSync(PATCH_FILE)) return null;
+      const lines = linesOverride || readFileSync(PATCH_FILE, 'utf8').split(/\r\n|\n/);
+      const blk = locatePresetBlock(lines, presetId);
+      if (!blk) return null;
+      let pi = -1;
+      for (let i = blk.head + 1; i < blk.end; i++) {
+        if (/^\s*-\s*id:\s*['"]?persona['"]?\s*$/.test(lines[i])) { pi = i; break; }
+      }
+      if (pi < 0) return null;
+      const personaIndent = (lines[pi].match(/^\s*/) || [''])[0].length;
+      let ki = -1;
+      let indent = 0;
+      let inline = false;
+      let inlineVal = '';
+      for (let i = pi + 1; i < blk.end; i++) {
+        const l = lines[i];
+        if (/^\s*#/.test(l)) continue;                                   // 注释行跳过
+        const mB = /^(\s*)(?:prefix|text|prompt):\s*\|-?\s*$/.exec(l);
+        if (mB) { ki = i; indent = mB[1].length; inline = false; break; }
+        const mI = /^(\s*)(?:prefix|text|prompt):\s+(\S.*)$/.exec(l);    // 行内标量写法
+        if (mI) { ki = i; indent = mI[1].length; inline = true; inlineVal = mI[2].trim(); break; }
+        const ind = (l.match(/^\s*/) || [''])[0].length;
+        if (/- /.test(l) && ind <= personaIndent) break;
+      }
+      if (ki < 0) return null;
+      if (inline) {
+        // 行内写法（如 `prefix: 你是一个 xx 助手`）→ 直接返回那一句
+        let v = inlineVal;
+        if ((v.startsWith("'") && v.endsWith("'")) || (v.startsWith('"') && v.endsWith('"'))) v = v.slice(1, -1);
+        return { text: v, indent: indent + 2, bodyStart: ki + 1, bodyEnd: ki + 1, inline: true, lineIndex: ki };
+      }
+      let bEnd = ki + 1;
+      while (bEnd < blk.end) {
+        const raw = lines[bEnd];
+        if (raw.trim() === '') { bEnd++; continue; }
+        if (((raw.match(/^\s*/) || [''])[0]).length <= indent) break;
+        bEnd++;
+      }
+      let last = bEnd;
+      while (last > ki + 1 && lines[last - 1].trim() === '') last--;
+      const body = lines.slice(ki + 1, last);
+      const cuts = body.filter((l) => l.trim()).map((l) => (l.match(/^\s*/) || [''])[0].length);
+      const cut = cuts.length ? Math.min(...cuts) : indent + 2;
+      // 纯空白行原样保留（既不切片也不补缩进），保证「读出 → 原样写回」字节级一致
+      const text = body.map((l) => (l.trim() === '' ? l : l.slice(cut))).join('\n');
+      return { text, indent: cut, bodyStart: ki + 1, bodyEnd: last };
+    } catch { return null; }
+  }
+
+  /**
+   * 复制一个预设声明（dsh 0.1.7 路径）：在 profile patch 里把 `- id: preset-<src>` 整段
+   * 复制一份，只改写三处后追加到顶层数组 —— `- id:` / `config.id` / `config.name`，其余一个字节不动。
+   * 行内换行按原文保真，缩进原样搬运。
+   */
+  function copyPresetDecl(srcId, newId, newName) {
+    try {
+      if (!existsSync(PATCH_FILE)) return { ok: false, error: 'profile patch 不存在' };
+      const raw = readFileSync(PATCH_FILE, 'utf8');
+      const parts = raw.split(/(\r\n|\n)/);
+      const lineTexts = [];
+      const eols = [];
+      for (let i = 0; i < parts.length; i++) {
+        if (i % 2 === 0) lineTexts.push(parts[i]);
+        else eols.push(parts[i]);
+      }
+      const blk = locatePresetBlock(lineTexts, srcId);
+      if (!blk) return { ok: false, error: '在 profile patch 里找不到源预设 preset-' + srcId };
+      const escRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const headRe = new RegExp('id:\\s*[\'"]?preset-' + escRe(srcId) + '[\'"]?');
+      const seg = lineTexts.slice(blk.head, blk.end);
+      const out = [];
+      let cfgIndent = -1;
+      for (let i = 0; i < seg.length; i++) {
+        let l = seg[i];
+        const ind = (l.match(/^\s*/) || [''])[0].length;
+        if (i === 0) {
+          l = l.replace(headRe, 'id: preset-' + newId);
+        } else {
+          const mCfg = /^(\s*)config:\s*$/.exec(l);
+          if (mCfg) { cfgIndent = mCfg[1].length; }
+          else if (cfgIndent >= 0 && ind === cfgIndent + 2) {
+            if (/^\s*id:\s/.test(l)) l = l.replace(/id:\s*.*$/, 'id: ' + newId);
+            else if (/^\s*name:\s/.test(l)) l = l.replace(/name:\s*.*$/, 'name: ' + newName);
+          }
+        }
+        out.push(l);
+      }
+      const eol = eols[blk.end - 1] || eols[blk.head] || '\n';
+      let add = '';
+      for (const l of out) add += l + eol;
+      let text = raw;
+      if (!/[\r\n]$/.test(text)) text += eol;
+      text += add;
+      const bak = PATCH_FILE + '.bak-copy-' + Date.now();
+      try { writeFileSync(bak, raw, 'utf8'); } catch { /* 备份失败不阻塞 */ }
+      writeFileSync(PATCH_FILE, text, 'utf8');
+      return { ok: true, backup: bak, newId };
+    } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+  }
+
+  /**
+   * 用宿主的 `agentPresets.readDocument(id)` 读来源预设的组成，生成一条新的 preset 声明写进 patch。
+   * 用途：**内置预设**（如 `standard`，它不在用户 patch 里）或任何 patch 中不存在的预设。
+   * readDocument 官方标注"仅用于查看"——我们只把它当模板读出来，写进**自己的** profile patch。
+   */
+  async function copyPresetViaDocument(srcId, newId, newName) {
+    const ap = getAgentPresets();
+    if (!ap || typeof ap.readDocument !== 'function') {
+      return { ok: false, error: '宿主未提供 agentPresets.readDocument（读不了内置预设的组成）' };
+    }
+    let doc;
+    try { doc = await ap.readDocument(srcId); }
+    catch (e) { return { ok: false, error: '读取源预设 ' + srcId + ' 失败：' + String((e && e.message) || e) }; }
+    const content = String((doc && doc.content) || '');
+    if (!content.trim()) return { ok: false, error: '源预设 ' + srcId + ' 的组成为空' };
+    const pad = '          ';
+    const head = [
+      '# ── 复制自 ' + srcId + '（组成由宿主的预设文档读出）──',
+      '- insert:',
+      '    - id: preset-' + newId,
+      "      name: '@deepseek-ai/dsh-agent-preset'",
+      '      config:',
+      '        id: ' + newId,
+      '        name: ' + newName,
+      '        plugins:',
+    ];
+    const bodyLines = content.split(/\r\n|\n/).map((l) => (l.trim() === '' ? '' : pad + l));
+    const raw = readFileSync(PATCH_FILE, 'utf8');
+    const parts = raw.split(/(\r\n|\n)/);
+    const eol = parts[1] ?? '\n';
+    let text = raw;
+    if (!/[\r\n]$/.test(text)) text += eol;
+    text += head.join(eol) + eol + bodyLines.join(eol) + eol;
+    const bak = PATCH_FILE + '.bak-newpreset-' + Date.now();
+    try { writeFileSync(bak, raw, 'utf8'); } catch { /* 备份失败不阻塞 */ }
+    writeFileSync(PATCH_FILE, text, 'utf8');
+    return { ok: true, backup: bak, newId, from: 'document' };
+  }
+
+  /** 写回人设正文（只替换那段块标量，写前自动备份整个 patch）。
+   *  ⚠️ 换行符**逐行保真**：patch 可能 LF/CRLF 混用（实测踩过），统一 eol 会改掉别处字节。 */
+  function writePresetPersona(presetId, text) {
+    try {
+      if (!existsSync(PATCH_FILE)) return { ok: false, error: 'profile patch 不存在' };
+      const raw = readFileSync(PATCH_FILE, 'utf8');
+      const parts = raw.split(/(\r\n|\n)/);
+      const lineTexts = [];
+      const eols = [];
+      for (let i = 0; i < parts.length; i++) {
+        if (i % 2 === 0) lineTexts.push(parts[i]);
+        else eols.push(parts[i]);
+      }
+      const found = readPresetPersona(presetId, lineTexts);
+      if (!found) return { ok: false, error: '没找到该预设的人设段落（persona / prefix）' };
+      let pad;
+      let insertAt;
+      let endAt;
+      if (found.inline) {
+        // 行内标量 → 升级成块标量（`prefix: |-` + 缩进正文），这样多行人设也存得下
+        const keyRaw = lineTexts[found.lineIndex];
+        const key = (/(prefix|text|prompt):/.exec(keyRaw) || [])[1] || 'prefix';
+        const keyIndent = (keyRaw.match(/^\s*/) || [''])[0];
+        lineTexts[found.lineIndex] = keyIndent + key + ': |-';
+        pad = keyIndent + '  ';
+        insertAt = found.lineIndex + 1;
+        endAt = found.lineIndex + 1;
+      } else {
+        pad = ' '.repeat(found.indent);
+        insertAt = found.bodyStart;
+        endAt = found.bodyEnd;
+      }
+      const nl = eols[insertAt - 1] || '\n';   // 沿用原段落的换行风格
+      const body = String(text).split(/\r\n|\n|\r/).map((l) => (l.trim() === '' ? l : pad + l));
+      const head = lineTexts.slice(0, insertAt);
+      const tail = lineTexts.slice(endAt);
+      let out = '';
+      for (let i = 0; i < head.length; i++) out += head[i] + (eols[i] ?? '\n');
+      for (const l of body) out += l + nl;
+      for (let i = 0; i < tail.length; i++) {
+        out += tail[i];
+        const ei = endAt + i;
+        if (ei < eols.length) out += eols[ei];
+      }
+      const bak = PATCH_FILE + '.bak-persona-' + Date.now();
+      try { writeFileSync(bak, raw, 'utf8'); } catch { /* 备份失败不阻塞 */ }
+      writeFileSync(PATCH_FILE, out, 'utf8');
+      return { ok: true, backup: bak };
+    } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+  }
+
   function presetDirSafe(id) {
     if (!ID_RE.test(String(id || ''))) return null;
     const dir = resolve(PRESET_ROOT, id);
@@ -839,11 +1153,21 @@ export function apply(ctx) {
     return !!(p && p.hasChannelTools);
   }
   route(ctx, 'GET', '/api/qqbot-settings/presets/files', async (req, res) => {
-    // 新版(0.1.7+)没有预设目录了 → 给明确指引, 免得前端只看到"预设不存在"
-    const blockedFiles = presetWriteBlocked();
-    if (blockedFiles) return writeJson(res, 501, { error: blockedFiles });
     const q = new URL(req.url, 'http://x').searchParams;
-    const dir = presetDirSafe(q.get('id') || '');
+    const rid = String(q.get('id') || '').trim();
+    // dsh 0.1.7+：预设声明在 profile patch 里 → 对外虚拟成「人设正文」一个可编辑文件
+    if (getAgentPresets()) {
+      if (!ID_RE.test(rid)) return writeJson(res, 400, { error: '非法的预设 id' });
+      const persona = readPresetPersona(rid);
+      if (!persona) return writeJson(res, 404, { error: '该预设没有内联人设段落（persona / prefix）；人格可能在外部 .mjs 文件里' });
+      return writeJson(res, 200, {
+        id: rid,
+        dir: '(profile patch)',
+        writable: true,
+        files: [{ name: 'persona（人设正文）', size: Buffer.byteLength(persona.text, 'utf8'), mtime: 0 }],
+      });
+    }
+    const dir = presetDirSafe(rid);
     if (!dir) return writeJson(res, 404, { error: '预设不存在' });
     try {
       const files = readdirSync(dir, { withFileTypes: true })
@@ -854,8 +1178,31 @@ export function apply(ctx) {
     } catch (e) { writeJson(res, 500, { error: String(e?.message ?? e) }); }
   });
   route(ctx, ['GET', 'PUT'], '/api/qqbot-settings/presets/file', async (req, res) => {
-    const blockedFile = presetWriteBlocked();
-    if (blockedFile) return writeJson(res, 501, { error: blockedFile });
+    // dsh 0.1.7+：只支持「人设正文」这一个虚拟文件的读写（落在 profile patch 的 persona 块标量里）
+    if (getAgentPresets()) {
+      if (req.method === 'PUT') {
+        const body = await readJsonBody(req);
+        const id = String(body?.id ?? '').trim();
+        if (!ID_RE.test(id)) return writeJson(res, 400, { error: '非法的预设 id' });
+        const content = String(body?.content ?? '');
+        if (Buffer.byteLength(content, 'utf8') > PRESET_EDIT_MAX) return writeJson(res, 400, { error: '内容过大(上限 200KB)' });
+        const w = writePresetPersona(id, content);
+        if (!w.ok) return writeJson(res, 500, { error: w.error });
+        return writeJson(res, 200, {
+          ok: true,
+          name: 'persona（人设正文）',
+          size: Buffer.byteLength(content, 'utf8'),
+          backup: w.backup,
+          note: '已写入 profile patch，patchReload 热生效（新会话生效）',
+        });
+      }
+      const q = new URL(req.url, 'http://x').searchParams;
+      const id = String(q.get('id') || '').trim();
+      if (!ID_RE.test(id)) return writeJson(res, 400, { error: '非法的预设 id' });
+      const persona = readPresetPersona(id);
+      if (!persona) return writeJson(res, 404, { error: '该预设没有内联人设段落（persona / prefix）' });
+      return writeJson(res, 200, { id, name: 'persona（人设正文）', content: persona.text, writable: true });
+    }
     if (req.method === 'PUT') {
       const body = await readJsonBody(req);
       const id = String(body?.id ?? '');
