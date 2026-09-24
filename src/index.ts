@@ -95,16 +95,38 @@ export async function apply(ctx: Context, config: ImQQBotConfig): Promise<void> 
       return o && typeof o === 'object' ? o : {};
     } catch { return {}; }
   };
+  /**
+   * 深合并（一层递归）—— ⚠️ 不能再用浅合并 Object.assign！
+   * 事故(2026-09-24)：自有存储里若出现空对象(如 sticker: {})，浅合并会把 patch 里的整个
+   * sticker 配置覆盖成空 → config.sticker.collectEnabled 变 undefined → **图片自动下载停摆**
+   * （症状：最后一张自动下载的图停在某时刻，之后入站图片只剩 QQ 长 URL）。
+   * 深合并只在真有子键时才覆盖，空对象顶不掉默认值。
+   */
+  const mergeDeep = (base: unknown, over: unknown): unknown => {
+    if (!over || typeof over !== 'object' || Array.isArray(over)) return over === undefined ? base : over;
+    const b = (base && typeof base === 'object' && !Array.isArray(base)) ? (base as Record<string, unknown>) : {};
+    const out: Record<string, unknown> = Object.assign({}, b);
+    for (const [k, v] of Object.entries(over as Record<string, unknown>)) {
+      if (v === undefined) continue;
+      const cur = out[k];
+      if (v && typeof v === 'object' && !Array.isArray(v) && cur && typeof cur === 'object' && !Array.isArray(cur)) {
+        out[k] = mergeDeep(cur, v) as Record<string, unknown>;
+      } else {
+        out[k] = v;
+      }
+    }
+    return out;
+  };
   const ownSettings = readOwnSettings();
   if (Object.keys(ownSettings).length) {
-    Object.assign(resolvedConfig as unknown as Record<string, unknown>, ownSettings);
+    Object.assign(resolvedConfig as unknown as Record<string, unknown>, mergeDeep(resolvedConfig, ownSettings) as Record<string, unknown>);
     logger.info(`已加载插件自有设置(${Object.keys(ownSettings).length} 项): ${ownSettingsFile}`);
   }
   try {
     (ctx as unknown as { on: (ev: string, fn: (ns?: string) => void) => void }).on('qqbot/settings-changed', (changedNs?: string) => {
       if (changedNs && changedNs !== ns) return;
       const next = readOwnSettings();
-      Object.assign(resolvedConfig as unknown as Record<string, unknown>, next);
+      Object.assign(resolvedConfig as unknown as Record<string, unknown>, mergeDeep(resolvedConfig, next) as Record<string, unknown>);
       logger.info(`设置已热更新(${ns}): ${Object.keys(next).length} 项`);
     });
   } catch { /* 事件系统不可用 → 退化为重启生效 */ }

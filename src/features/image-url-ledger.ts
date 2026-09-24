@@ -131,7 +131,18 @@ export function lookupImageUrlByPath(imgPath: string): string | undefined {
 }
 
 // ── 反向查: QQ 链接 → 图库 id（省 token: 历史里那条几百字符的长链接能换成短标记/本地路径） ──
-const revCache = new Map<string, { key: string; rev: Map<string, string> }>();
+// 2026-09-24 修复: QQ 图片 URL 的 fileid 参数对同一张图是**稳定的**，但完整 URL 会因
+// 临时 rkey 之类每次推送都变 → 只按完整 URL 精确匹配会永远查不到(历史里全被折叠成 [图片])。
+// 故额外建一份 fileid → id 的反向索引，查找时先按 fileid 命中，再退回完整 URL。
+function stableUrlKey(u: string): string | undefined {
+  try {
+    const p = new URL(String(u));
+    const fid = p.searchParams.get('fileid');
+    if (fid) return 'fid:' + fid.slice(0, 40);   // 实测: 同一张图两推的 fileid 只有前 40 字符稳定
+  } catch { /* 非标准 URL */ }
+  return undefined;
+}
+const revCache = new Map<string, { key: string; rev: Map<string, string>; fids: Map<string, string> }>();
 
 /** QQ 链接 → 图库 id（查不到返回 undefined; 反向索引按 mtime/size 缓存） */
 export function lookupStickerIdByUrl(stickerDir: string, url: string): string | undefined {
@@ -144,9 +155,15 @@ export function lookupStickerIdByUrl(stickerDir: string, url: string): string | 
     key = `${st.mtimeMs}:${st.size}`;
   } catch { /* 没有台账 */ }
   const hit = revCache.get(file);
-  if (hit && hit.key === key) return hit.rev.get(u);
+  const sk = stableUrlKey(u);
+  if (hit && hit.key === key) return (sk ? hit.fids.get(sk) : undefined) ?? hit.rev.get(u);
   const rev = new Map<string, string>();
-  for (const it of loadAll(file)) rev.set(it.url, it.id); // 后出现的覆盖 = 最新
-  revCache.set(file, { key, rev });
-  return rev.get(u);
+  const fids = new Map<string, string>();
+  for (const it of loadAll(file)) {
+    rev.set(it.url, it.id);
+    const k = stableUrlKey(it.url);
+    if (k) fids.set(k, it.id);
+  }
+  revCache.set(file, { key, rev, fids });
+  return (sk ? fids.get(sk) : undefined) ?? rev.get(u);
 }

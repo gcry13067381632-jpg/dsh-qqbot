@@ -151,6 +151,39 @@ export async function handleInbound(
       });
     } catch { /* 台账落盘失败不影响消息流 */ }
   }
+  // ⚠️ 2026-09-24 修复「当前消息的图片只显示长 URL、拿不到本地路径」(主人多次反馈)：
+  //   原代码顺序是 assembleAgentBody(拼消息，其中 Layer4 会查 lookupImagePath) **之后**
+  //   才做图片预检并 rememberImagePath —— 等于拼消息时缓存永远是空的，只能回退 QQ 长 URL；
+  //   而缓存要到下一条消息(历史)才生效，所以"历史里有本地路径、当前消息没有"。
+  //   这里在拼消息**之前**先补一次预检：下载 → sha1 → 查图库 → 命中就把 URL→本地路径记进缓存。
+  //   （原来的预检逻辑保持不变，重复执行是幂等的，不影响其它行为。）
+  try {
+    const _imgUrls: string[] = [];
+    for (const _a of (Array.isArray(msg.attachments) ? msg.attachments : [])) {
+      const _u = String((_a as { url?: string })?.url ?? '').trim();
+      const _ct = String((_a as { content_type?: string })?.content_type ?? '').toLowerCase();
+      if (_u && /image/.test(_ct) && !_imgUrls.includes(_u)) _imgUrls.push(_u);
+    }
+    const _first = _imgUrls[0];
+    if (_first && !lookupImagePath(_first, logger)) {
+      const _store = getStickerStore(stickerDirOf(config));
+      let _buf = await fetchImageBuffer(_first);
+      if (_buf && _buf.length > 0) {
+        const _id = createHash('sha1').update(_buf).digest('hex').slice(0, 12);
+        const _hit = _store.get(_id) as unknown as { id?: string } | undefined;
+        if (_hit?.id) {
+          const _p = _store.pathOf(_hit.id);
+          if (_p) {
+            rememberImagePath(_first, _p);
+            logger.info(`[img-path] 预检命中，本条消息将带本地路径: ${_p}`);
+          }
+        }
+      }
+    }
+  } catch (e) {
+    logger.warn(`im-qqbot: 拼消息前的图片预检失败(不影响主流程): ${e instanceof Error ? e.message : String(e)}`);
+  }
+
   let agentBody = assembleAgentBody(msg, mwState, scope, logger, downloaded, refEnabled, msgRef, dataRootOf(config), stickerDirOf(config));
 
   if (!agentBody) return;
@@ -988,7 +1021,10 @@ function localizeHistoryImages(text: string, stickerDir: string): string {
   if (!text || text.indexOf('[图片') < 0) return text;
   return text.replace(/\[图片:\s*(https?:\/\/[^\]\s]+)\]/g, (_m, url: string) => {
     const p = resolveImageLocalPath(url, stickerDir);
-    return p ? `[图片: ${p}]` : '[图片]';
+    // 2026-09-24 改进(主人反馈: 历史里的图片只剩 [图片]、AI 完全读不到图):
+    //   找不到本地图库对应时，**保留 QQ 的原始 URL** —— 宁可多花点 token，也别让模型对着 4 个字干瞪眼。
+    //   （本地命中仍然优先，那是省 token 的正常路径。）
+    return p ? `[图片: ${p}]` : `[图片: ${url}]`;
   });
 }
 

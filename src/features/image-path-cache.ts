@@ -27,10 +27,32 @@ const MAX_ENTRIES = 800;
 
 const cache = new Map<string, Entry>();
 
+/**
+ * QQ 图片 URL 的"稳定键"（2026-09-24 修）。
+ *
+ * 实测：同一张图两次推送的 URL 里 `rkey`(临时凭证) 会变，**连 fileid 的后半段也不同**，
+ * 只有 **前 40 字符**稳定：
+ *   ...fileid=EhSNej89…FIP8KK[JXGg_SEhpcDMgRwcm9k]…&rkey=CAISONPs…
+ *   ...fileid=EhSNej89…FIP8KK[PDVtrGFhpcDMgRwcm9k]…&rkey=CAQSODOc…
+ * 只按完整 URL 缓存 → 每次都是 miss → 消息里只能显示长 URL（AI 还得自己下载、通常下不动）。
+ */
+function stableKey(u: string): string | undefined {
+  try {
+    const parsed = new URL(String(u));
+    const fid = parsed.searchParams.get('fileid');
+    if (fid) return 'fid:' + fid.slice(0, 40);
+  } catch { /* 非标准 URL */ }
+  return undefined;
+}
+
 /** 记一条 URL → 本地路径(下载成功时调用) */
 export function rememberImagePath(url: string, localPath: string): void {
   if (!url || !localPath) return;
-  cache.set(url, { p: localPath, t: Date.now() });
+  const e = { p: localPath, t: Date.now() };
+  cache.set(url, e);
+  // 同时按稳定键存一份：URL 变了(新 rkey)也能命中
+  const k = stableKey(url);
+  if (k) cache.set(k, e);
   if (cache.size > MAX_ENTRIES) {
     // Map 保留插入顺序 → 最旧的就是第一个
     const over = cache.size - MAX_ENTRIES;
@@ -45,7 +67,9 @@ export function rememberImagePath(url: string, localPath: string): void {
 /** 查本地路径(没有/过期 → undefined, 调用方回退原始 URL) */
 export function lookupImagePath(url: string | undefined, logger?: Logger): string | undefined {
   if (!url) return undefined;
-  const e = cache.get(url);
+  // 先按完整 URL 查，miss 再按稳定键(fileid 前缀)查 —— 后者能跨 rkey/fileid 尾部变化命中
+  const k = stableKey(url);
+  const e = cache.get(url) ?? (k ? cache.get(k) : undefined);
   if (!e) return undefined;
   if (Date.now() - e.t > TTL_MS) {
     cache.delete(url);
