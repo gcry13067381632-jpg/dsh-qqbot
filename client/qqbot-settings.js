@@ -2003,6 +2003,73 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         return ac ? (ac.dataDir || '') : ''
       }
       function outNsQ() { return state.ns ? 'ns=' + encodeURIComponent(state.ns) : '' }
+    // ── 无上下文模式（2026-09-27）：按会话保存；当前对象 = 选中的群/人 ──
+    function ctxlessKey() {
+      // sessionKey 格式与插件一致: qqbot:${appId}:${kind}:${peerId}
+      // 目标群优先取【当前会话命中的那个】(单会话设置跟随当前会话)，回落面板里选中的群。
+      var ac = null
+      if (state.accts) state.accts.forEach(function (a) { if (a.ns === state.ns) ac = a })
+      // appId 多字段兜底（state.accts 的字段名不同版本可能不同）
+      var appId = ''
+      if (ac) appId = String(ac.appId || ac.appid || ac.appID || ac.id || '')
+      if (!appId) { try { appId = String(state.acctAppId || '') } catch (e) {} }
+      // 兜底：从顶栏显示串里抠 6~12 位数字（形如 "im-qqbot-2 (1900000000)"）
+      if (!appId && panel) {
+        try {
+          var m = String(panel.textContent || '').match(/\((\d{6,12})\)/)
+          if (m) appId = m[1]
+        } catch (e) {}
+      }
+      var gid = ''
+      try { gid = curHitGid() || '' } catch (e) { gid = '' }
+      if (!gid) gid = state.gid || ''
+      if (!appId || !gid) return ''
+      return 'qqbot:' + appId + ':group:' + gid
+    }
+    function loadCtxless() {
+      var on = panel ? panel.querySelector('#dk-ctxless-on') : null
+      // ⚠️ 绑定不在这里做 —— 面板每次重绘 DOM 都是新的，直接绑会"第二次按不动"。
+      //    改由【面板级事件委托】统一处理（见 startQqDock 里的 installCtxlessDelegates）。
+      var win = panel ? panel.querySelector('#dk-ctxless-win') : null
+      var hint = panel ? panel.querySelector('#dk-ctxless-hint') : null
+      var key = ctxlessKey()
+      if (!key) { if (hint) hint.textContent = '先选一个群'; return }
+      api('contextless?sessionKey=' + encodeURIComponent(key))
+        .then(function (d) {
+          state.ctxless = d || null
+          if (on) on.checked = !!(d && d.enabled)
+          if (win && d && typeof d.window === 'number') win.value = String(d.window)
+          if (hint) hint.textContent = (d && d.enabled) ? '已开启(本会话)' : ''
+        })
+        .catch(function () { if (hint) hint.textContent = '读取失败(面板需刷新/重启后重试)' })
+    }
+    function saveCtxless() {
+      var on = panel ? panel.querySelector('#dk-ctxless-on') : null
+      var win = panel ? panel.querySelector('#dk-ctxless-win') : null
+      var hint = panel ? panel.querySelector('#dk-ctxless-hint') : null
+      // ⚠️ 保存前先刷新"当前会话命中"（2026-09-27）：detectedHit 只在面板打开时刷过一次，
+      //    切 web 会话后不更新 → 会把状态存到"上一个会话所在的群"上（表现为"换会话也显示勾选"）。
+      if (hint) hint.textContent = '读取当前会话…'
+      lookupCurrentSession(function () {
+        var key = ctxlessKey()
+        if (!key) { if (hint) hint.textContent = '未命中 QQ 会话 —— 请先切到与 bot 的群/私聊（顶栏「当前会话」要命中）'; return }
+        var body = { sessionKey: key, enabled: !!(on && on.checked), window: win ? (parseInt(win.value, 10) || 0) : 5 }
+        if (hint) hint.textContent = '保存中…'
+        apiPost('contextless', body).then(function (d) {
+          if (!d || !d.ok) { if (hint) hint.textContent = '保存失败: ' + JSON.stringify(d); return }
+          // ★ 保存后【回读】验证（这样"到底存进去没有"一眼可见，不用猜）
+          api('contextless?sessionKey=' + encodeURIComponent(key)).then(function (back) {
+            var same = back && back.enabled === body.enabled && Number(back.window) === Number(body.window)
+            if (hint) {
+              hint.textContent = same
+                ? ('✅ 已保存并回读确认: ' + (back.enabled ? '开启' : '关闭') + ' / 带 ' + back.window + ' 条')
+                : ('⚠️ 返回 ok 但回读不一致: ' + JSON.stringify(back) + ' (提交: ' + JSON.stringify(body) + ')')
+            }
+            if (same) { state.ctxless = back }
+          }).catch(function () { if (hint) hint.textContent = '已保存, 但回读失败(不影响)' })
+        }).catch(function () { if (hint) hint.textContent = '保存异常(网络/桥未加载?)' })
+      })
+    }
       // ⚙ 单会话设置 · 智能回复(本地小模型; 2026-09-13 主人定, 15:2x 改名)
       // 📊 评分列表 HTML(单独抽出: 供"局部刷新"只替换内容, 不整块重绘)
       function scoreListHtml(vs) {
@@ -2221,7 +2288,10 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         state.lmBusy = true
         var nsq = state.ns ? '?' + outNsQ() : ''
         state.valueScores = null
-        fetch('/api/qqbot-settings/local-model/status' + nsq).then(function (r) { return r.json() }).then(function (d) {
+        // 先让宿主重置本地模型状态，再查状态
+        fetch('/api/qqbot-settings/local-model/reset', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+          .catch(function () { /* reset 失败也继续查 */ })
+          .then(function () { return fetch('/api/qqbot-settings/local-model/status' + nsq) }).then(function (r) { return r.json() }).then(function (d) {
           state.localModel = d && d.ok ? d : null
           paintBody()
         }).catch(function () { state.localModel = null; paintBody() })
@@ -2419,6 +2489,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             state.stTab = v
             paintBody()
             if (v === 'lm') loadLocalModel()
+            if (v === 'cl') loadCtxless()
           }
         })
         var dlBtn = panel.querySelector('#dk-lm-dl')
@@ -3272,7 +3343,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
       function sessionSubTabs() {
         var st = state.stTab || 'lm'
         return '<div class="dk-row" style="gap:4px;margin:4px 0 6px;flex-wrap:wrap;border-bottom:1px dashed #e2d9ff;padding-bottom:6px">'
-          + [['lm', '🧠 智能回复'], ['blank', '📄 空白样板']]
+          + [['lm', '🧠 智能回复'], ['cl', '🚫 无上下文'], ['blank', '📄 空白样板(备用)']]
             .map(function (s) {
               return '<button class="dk-btn' + (st === s[0] ? ' on' : '') + '" data-sttab="' + s[0] + '">' + s[1] + '</button>'
             }).join('')
@@ -3530,7 +3601,19 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           // 次级标签: 🧠 智能回复 / 📄 空白样板(留作以后加新设置的模板)。
           body += sessionSubTabs()
           var st = state.stTab || 'lm'
-          if (st === 'blank') {
+          if (st === 'cl') {
+            // ── 🚫 无上下文模式(2026-09-27 主人定): 每个会话单独生效 ──
+            //    开启后该会话每轮**丢掉历史对话**(系统规则照旧)，只带「@ 之前 N 条群消息」。
+            var ctxHit = curHitLabel()
+            body += '<div class="dk-msg" style="line-height:1.6">开启后, 本会话每轮<b>不继承历史对话</b>(系统规则照旧), 只带上「@ 之前 N 条群消息」—— 群聊省 token 的利器。</div>'
+            body += '<div class="dk-msg" style="color:#888;font-size:12px;margin:2px 0 6px">作用对象: <b>' + (ctxHit || '（当前会话不是 QQ 会话）') + '</b></div>'
+            body += '<div class="dk-row" style="gap:8px;flex-wrap:wrap;align-items:center">'
+              + '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:13px"><input type="checkbox" id="dk-ctxless-on"' + (state.ctxless && state.ctxless.enabled ? ' checked' : '') + '>无上下文模式</label>'
+              + '<span style="font-size:12px;color:#666">带 @ 前 <input type="number" id="dk-ctxless-win" min="0" value="' + ((state.ctxless && typeof state.ctxless.window === 'number') ? state.ctxless.window : 5) + '" style="width:56px"> 条</span>'
+              + '<button class="dk-btn ok" id="dk-ctxless-save" style="margin-left:auto">💾 保存(本会话)</button>'
+              + '<span class="dk-msg" id="dk-ctxless-hint" style="color:#2f9e44"></span></div>'
+            body += '<div class="dk-msg" style="line-height:1.5;color:#888">0 条 = 完全不带群消息(只剩系统规则 + 当前这句)。开关存在插件数据目录, 重启不丢。</div>'
+          } else if (st === 'blank') {
             body += '<div style="border:1px dashed #cfc7ee;border-radius:8px;padding:20px 14px;margin:8px 0;text-align:center;line-height:2">'
               + '<div style="font-size:15px;font-weight:700">📄 空白样板</div>'
               + '<div style="font-size:12px;color:#888">这块先空着 —— 以后要加"每个会话单独生效"的设置, 照这个子标签加就行。<br>'
@@ -3782,6 +3865,14 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         setTimeout(layoutPanel, 0)
       }
       function bindBodyEvents() {
+        // ── 🚫 无上下文模式（2026-09-27）──
+        // 照抄本文件既有模式：paintBody() 渲染完 → 调 bindBodyEvents() 统一绑事件
+        // （DOM 每次重绘都是新的，所以必须绑在"渲染后"，而不是 loadCtxless 里）。
+        var ctxSaveBtn = panel.querySelector('#dk-ctxless-save')
+        if (ctxSaveBtn) ctxSaveBtn.onclick = function () { saveCtxless() }
+        var ctxOnBox = panel.querySelector('#dk-ctxless-on')
+        if (ctxOnBox) ctxOnBox.onchange = function () { saveCtxless() }
+        if (state.tab === 'session' && (state.stTab || 'lm') === 'cl') loadCtxless()
         var tbs = panel.querySelectorAll('.dk-tab button')
         tbs.forEach(function (btn) {
           btn.onclick = function () {

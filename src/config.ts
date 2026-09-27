@@ -618,6 +618,10 @@ export interface ImQQBotConfig {
   maxQueue: number;
   /** 处理超时(ms)，超时中断当前 LLM 调用 */
   processingTimeoutMs: number;
+  /** 无上下文模式: 每轮不继承历史(只带「@ 之前 N 条群消息」+ 系统规则), 大幅省 token */
+  contextlessMode?: boolean;
+  /** 无上下文模式下携带的「@ 之前」群消息条数(0=完全不带) */
+  contextlessWindow?: number;
   /** 群历史缓冲条数 */
   historyLimit: number;
   /** 访问控制 */
@@ -700,6 +704,8 @@ const ConfigSchemaRaw: Schema<ImQQBotConfig> = Schema.object({
   maxQueue: Schema.number().default(20).description('并发队列最大长度'),
   processingTimeoutMs: Schema.number().default(120000).description('处理超时(ms)'),
   historyLimit: Schema.number().default(10).description('群历史缓冲条数'),
+  contextlessMode: Schema.boolean().default(false).description('无上下文模式: 每轮不继承历史(只带「@ 之前 N 条群消息」+ 系统规则)'),
+  contextlessWindow: Schema.number().default(5).description('无上下文模式下携带的「@ 之前」群消息条数(0=完全不带)'),
   access: Schema.object({
     c2cMode: Schema.union(['open', 'allowlist', 'disabled']).default('open').description('C2C访问模式'),
     c2cAllow: Schema.array(Schema.string()).default([]).description('C2C白名单'),

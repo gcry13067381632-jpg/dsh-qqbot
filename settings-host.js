@@ -380,6 +380,66 @@ export function apply(ctx) {
   // 台账文件 {store.dataDir}/known-chats.jsonl 由 dsh-qqbot 中间件 append(见 dsh-qqbot src/features/chat-ledger.ts)。
   // 用途: Web 设置④区下拉点选目标(免抄 openid)——群无群名, 用最近发言者昵称帮主人辨认。
   // 多账号: ?dataDir= 指定账号图库目录(台账与之同目录); 缺省 primary。
+  // ── 推断本插件的 dataRoot（与插件 src/gateway/data-root.ts 的算法保持一致）──
+  //   为什么要这么做：桥和插件在运行时可能是**两份模块实例**（各自的模块级变量不共享）。
+  //   插件在 bootstrap 里 initContextlessStore(dataRoot) 用的是正确路径；桥若没 init，
+  //   contextless-store 的 ensurePath() 只能兜底到 {DSH_HOME}，于是"面板保存"写一个文件、
+  //   "插件实际读取"读另一个文件 → 表现为保存无效 / 开关显示不一致（2026-09-27 实测）。
+  function resolveContextlessDataRoot() {
+    try {
+      const parsed = parsePatch();
+      const bots = (parsed && Array.isArray(parsed.bots)) ? parsed.bots : [];
+      // 优先取"未禁用"的实例，其次任意一个有 cwd 的
+      const pick = bots.filter((b) => b && !b.disabled && b.cfg && (b.cfg.cwd || b.cfg.dataRoot));
+      const list = pick.length ? pick : bots.filter((b) => b && b.cfg && (b.cfg.cwd || b.cfg.dataRoot));
+      for (const b of list) {
+        const cfg = b.cfg || {};
+        if (cfg.dataRoot) return String(cfg.dataRoot);
+        if (cfg.cwd) return join(String(cfg.cwd), 'dshqqbot');   // 与 DEFAULT_DATA_SUBDIR 一致
+      }
+    } catch { /* 推不出来就交给 ensurePath 兜底 */ }
+    return '';
+  }
+  /** 确保 contextless-store 绑定到正确的数据根（幂等；路径变了会重新绑定） */
+  async function loadContextlessStore() {
+    const mod = await import('./dist/features/contextless-store.js');   // ← 函数体内用真正的动态 import（不能调自己）
+    try {
+      const dr = resolveContextlessDataRoot();
+      if (dr) mod.initContextlessStore(dr);
+    } catch { /* ignore */ }
+    return mod;
+  }
+
+  // ── 无上下文模式（2026-09-27 主人定）──
+  //   会话级开关：dock 面板里对**某个会话**开启；开启后该会话每轮只带
+  //   「@ 之前 N 条群消息 + 系统规则」，历史对话全部丢弃（大幅省 token）。
+  //   开关存 {dataRoot}/.qqbot/contextless.json（由插件在 bootstrap 时初始化）。
+  route(ctx, 'GET', '/api/qqbot-settings/contextless', async (req, res) => {
+    try {
+      const u = new URL(req.url ?? '/', 'http://x');
+      const key = (u.searchParams.get('sessionKey') || '').trim();
+      const mod = await loadContextlessStore();   // 先 init 到同一个 dataRoot，避免两份模块实例各写一个文件
+      if (key) return writeJson(res, 200, mod.getContextless(key));
+      return writeJson(res, 200, { list: mod.listContextless() });
+    } catch (e) {
+      return writeJson(res, 500, { error: String((e && e.message) || e) });
+    }
+  });
+  route(ctx, 'POST', '/api/qqbot-settings/contextless', async (req, res) => {
+    try {
+      const body = await readJsonBody(req);
+      if (!body || typeof body !== 'object') return writeJson(res, 400, { error: 'body must be JSON object' });
+      const key = String(body.sessionKey || '').trim();
+      if (!key) return writeJson(res, 400, { error: 'sessionKey required' });
+      const mod = await loadContextlessStore();   // 先 init 到同一个 dataRoot，避免两份模块实例各写一个文件
+      if (body.remove === true) { mod.clearContextless(key); return writeJson(res, 200, { ok: true, removed: true }); }
+      const next = mod.setContextless(key, { enabled: body.enabled, window: body.window });
+      return writeJson(res, 200, { ok: true, value: next });
+    } catch (e) {
+      return writeJson(res, 500, { error: String((e && e.message) || e) });
+    }
+  });
+
   route(ctx, 'GET', '/api/qqbot-settings/known-chats', async (req, res) => {
     try {
       const u = new URL(req.url ?? '/', 'http://x');
@@ -1978,6 +2038,20 @@ export function apply(ctx) {
       req.setTimeout(180000, () => req.destroy(new Error('下载超时(180s)')));
     });
   }
+  // ── 本地小模型：强制重置加载状态（面板「🔄 重新检测」调用）──
+  // 背景：local-embed 曾有"一次失败永久关闭"的缺陷，用户点重新检测时希望能立刻再试一次。
+  // ⚠️ 桥与插件在同进程：动态 import 同一份 dist 模块，拿到的就是插件正在用的那个实例表。
+  route(ctx, 'POST', '/api/qqbot-settings/local-model/reset', async (req, res) => {
+    try {
+      const mod = await import('./dist/features/local-embed.js');
+      let n = 0;
+      try { n = typeof mod.resetAllEmbedders === 'function' ? mod.resetAllEmbedders() : 0; } catch (e) { n = -1; }
+      return writeJson(res, 200, { ok: true, reset: n });
+    } catch (e) {
+      return writeJson(res, 500, { error: String((e && e.message) || e) });
+    }
+  });
+
   route(ctx, 'GET', '/api/qqbot-settings/local-model/status', async (req, res) => {
     try {
       const u = new URL(req.url ?? '/', 'http://x');

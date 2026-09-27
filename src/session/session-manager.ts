@@ -19,6 +19,9 @@ import type { ChatScope, Logger, ReplyTarget } from '../types.js';
 import type { ImQQBotConfig } from '../config.js';
 import { FIXED_CHANNEL_CONTEXT, REFERENCE_CONTEXT } from '../config.js';
 import { takePendingMemoText } from '../features/people-memo.js';
+import { isContextlessActive, contextlessWindowOf, getContextless, listContextless, describeStorePath } from '../features/contextless-store.js';
+import { trimHistoryForContextless } from '../features/contextless-trim.js';
+import { traceContextless } from '../features/contextless-store.js';
 import { dataRootOf, stickerDirOf } from '../gateway/data-root.js';
 import { SettingsReader } from '../model/settings-reader.js';
 import { ModelResolver } from '../model/model-resolver.js';
@@ -927,11 +930,71 @@ export class SessionManager {
           messages?: unknown[];
         };
         const agent = p?.agent;
+        // ⚠️ 当前轮次号（compaction 事件必须与它一致，见 contextless-trim 的 turn 参数注释）
+        const currentTurn = Number((p as { turn?: unknown } | undefined)?.turn);
+        // ⚠️ 2026-09-27：agent/pre-step 是【每个 step】都触发的！人家原来无条件压缩，
+        //   结果一个回合里"思考→工具→再思考"会连压好几次（主人截图：一段里三条"上下文已压缩"）。
+        //   这里只在【回合的第一个 step】做，与"回合开始前压缩一次"的预期一致。
+        const currentStep = Number((p as { step?: unknown } | undefined)?.step);
         const cwd = String(agent?.session?.header?.cwd ?? '');
         const ns = this.nsForCwd(cwd);
         if (!ns) return decision; // 非本 bot agent, 不注入
         const dec = decision as { kind?: string; messages?: unknown[] };
         if (dec?.kind !== 'enter' || !Array.isArray(dec.messages)) return decision;
+
+        // ── 无上下文模式(2026-09-27)：登记"本回合结束后省略历史" ──
+        //   ⚠️ 必须放在**群守则去重早退之前**：下面那段早退靠"surface 里已有同 ns 同内容"命中
+        //      （群守则内容不变的连续回合必然命中），若登记排在它后面就**永远执行不到**，
+        //      而且因为历史一直没被清、早退会一直命中 → 死锁。（2026-09-27 群聊AI排查发现）
+        // ── 无上下文模式(2026-09-27 主人定)：开启后该会话每轮省略历史 ──
+        //   ⚠️ 这里只做"登记"：真正清历史必须走 surface replace（shadow），而且**要等回合空闲**
+        //      （插件硬约束：回合中 append 会坏记录）。所以 fire-and-forget 交给 whenIdle 后执行。
+        //   ⚠️ 绝不能在 pre-step 里裁 decision.messages —— 那是"本步从收件箱取出的新消息"（见 runtime-types），
+        //      裁了就等于把用户刚发的话删掉（曾实测：模型只收到 system-reminder 后空转 abort）。
+        try {
+          const sid0 = String((agent?.session as { id?: string } | undefined)?.id ?? '');
+          let sk0 = '';
+          if (sid0) {
+            // ⚠️ 2026-09-27 修正：SessionRecord 的字段是 **sessionKey**（types.ts:82），
+            //    之前写成 rec.key → 永远 undefined → 登记被静默跳过（表现为"开关读到了却完全没动作"）。
+            const rec0 = this.findBySessionId(sid0) as { sessionKey?: string } | undefined;
+            sk0 = String(rec0?.sessionKey ?? '');
+            if (!sk0) for (const [k, r] of this.sessions) { if ((r as { sessionId?: string })?.sessionId === sid0) { sk0 = k; break; } }
+          }
+          try {
+            traceContextless('pre-step 登记检查: sid=' + sid0 + ' sk=' + (sk0 || '(反查为空)')
+              + ' globalMode=' + String(this.config.contextlessMode)
+              + ' | store文件=' + describeStorePath()
+              + ' | 该会话读到=' + JSON.stringify(getContextless(sk0))
+              + ' | 全表=' + JSON.stringify(listContextless()));
+          } catch (traceErr) { traceContextless('trace 自身异常: ' + (traceErr instanceof Error ? traceErr.message : String(traceErr))); }
+          // ⚠️ 2026-09-27 修：全局模式（contextlessMode: true）不能依赖 sessionKey 反查成功。
+          //   实测 trace：web 会话的 sk=(反查为空)，原写法 `if (sk0 && …)` 直接跳过 →
+          //   "全局开关明明开着却一条都没压"。现在 sk0 为空时用一个占位 key 走全局判定
+          //   （isContextlessActive 在 globalEnabled===true 时直接返回 true）。
+          const ctxKey0 = sk0 || '__global__';
+          if (isContextlessActive(ctxKey0, this.config.contextlessMode)) {
+            const win0 = contextlessWindowOf(sk0, this.config.contextlessWindow ?? 5);
+            this.logger?.info?.('[contextless] 登记: 会话 ' + sk0 + ' 开启中, 带 @ 前 ' + win0 + ' 条 → 本轮内清理');
+            // ⚠️ 2026-09-27 照宿主做法：dsh-compaction-basic 自己就是在 agent/pre-step 里
+            //    `compactIfNeeded → compactRegion({ owner: 'current-turn' })` —— 即"回合开着时"追加事件。
+            //    人家先前把清理放到 whenIdle() 之后（回合已结束），方向就错了；现在直接在本步执行。
+            // 只在回合的第一个 step 压缩（pre-step 每 step 都触发，否则一轮压多次）
+            if (!Number.isFinite(currentStep) || currentStep <= 1) {
+              await trimHistoryForContextless(
+                agent as unknown as { session?: { surface?: { nodes?: number[] } }; whenIdle?: () => Promise<void> },
+                win0,
+                this.logger,
+                (() => { try { return this.ctx as unknown as { tokenMeter?: { estimateMessage?: (m: unknown) => number }; logger?: { info?: (s: string) => void; debug?: (s: string) => void } }; } catch { return undefined; } })(),
+                // turn 必须是当前打开的轮次号：compaction/start 与 compaction/end 要与它一致，
+                // 否则会话日志会以 SessionFormatError 写坏（实测把两个群的会话都写崩过）。
+                Number.isFinite(currentTurn) ? currentTurn : undefined,
+              );
+            } else {
+              traceContextless('跳过: 非首个 step (step=' + currentStep + ', turn=' + currentTurn + ')');
+            }
+          }
+        } catch (e) { traceContextless('pre-step 登记异常: ' + (e instanceof Error ? e.message : String(e))); this.logger?.debug?.('[contextless] 登记异常(已忽略): ' + (e instanceof Error ? e.message : String(e))); }
         const rules = this.readLiveGroupPromptForNs(ns);
         // 引用消息指令(2026-09-13 主人定): 开关关闭时不注入
         const refCtx = this.config.messageReference === false ? '' : REFERENCE_CONTEXT;
@@ -978,6 +1041,11 @@ export class SessionManager {
           if (claimed.includes(dec.messages[i])) { lastClaimedIndex = i; break; }
         }
         const at = Math.max(0, lastClaimedIndex + 1);
+        // ⚠️ 2026-09-27 撤除：「无上下文模式」不能在这个钩子里实现 —— 这里 payload/decision 的 messages 是
+        //   "本步从收件箱取出的新消息"（见 dsh-agent runtime-types: "messages removed from the inbox for this step"），
+        //   不是"发给模型的完整上下文"。在此裁剪只会把用户刚发的话删掉（实测：模型只收到 system-reminder 后空转 abort）。
+        //   "清历史"的正确机制是会话 surface 的 shadow/compaction（见 dsh-compaction-basic 的 shadowedSeqs），
+        //   待按该机制另行实现。
         const entered = [...dec.messages.slice(0, at), desired, ...dec.messages.slice(at)];
         return { ...dec, messages: entered };
       } catch {

@@ -17,6 +17,7 @@ import type { ImQQBotConfig } from '../config.js';
 import type { ChatScope, Logger, RawAttachment, ReplyTarget } from '../types.js';
 import type { DownloadedFile } from './attachment.js';
 import { clearGroupHistory } from '../features/history-store.js';
+import { traceContextless } from '../features/contextless-store.js';
 import { applyInjectRules } from './inject-rules.js';
 import { inferMediaKind, mediaKindLabel } from './media-kind.js';
 import { replaceBotMention, mentionsOthers, type MentionLike } from '../shared/mention-clean.js';
@@ -301,6 +302,19 @@ export async function handleInbound(
       ? (lmCfg.overrides as Record<string, { enabled?: boolean; valueGate?: 'off' | 'log' | 'block'; valueMinScore?: number }>)[ovKey]
       : undefined) || {};
     const gate = ovRaw.valueGate ?? lmCfg?.valueGate ?? 'log';
+    // ⚠️ 2026-09-27 诊断（主人反馈"评分门槛失效、所有消息都放行"）：
+    //   gate 不是 'block' 时 inbound 不拦任何消息（见本文件 770 行），所以必须确认这里读到了什么。
+    try {
+      const allKeys = (lmCfg?.overrides && typeof lmCfg.overrides === 'object')
+        ? Object.keys(lmCfg.overrides as Record<string, unknown>) : [];
+      traceContextless('[gate] ovKey=' + ovKey
+        + ' 命中=' + (ovRaw && Object.keys(ovRaw).length > 0 ? 'yes' : 'NO')
+        + ' → gate=' + gate
+        + ' 账号级gate=' + String(lmCfg?.valueGate)
+        + ' 会话级valueGate=' + String((ovRaw as { valueGate?: unknown }).valueGate)
+        + ' | overrides里的key=' + JSON.stringify(allKeys)
+        + ' | localModel存在=' + (lmCfg ? 'yes' : 'NO'));
+    } catch { /* trace 失败不影响主流程 */ }
     const baseMin = typeof ovRaw.valueMinScore === 'number'
       ? ovRaw.valueMinScore
       : (typeof lmCfg?.valueMinScore === 'number' ? lmCfg.valueMinScore : 0.5);
@@ -616,6 +630,10 @@ export async function handleInbound(
             (attKinds.voice && attP.voice === true) ||    // 语音：默认不放行（有转录文字就按文字评）
             (attKinds.file && attP.file === true);        // 文件：默认不放行
           const worth = sc ? (effScore >= minScore || mediaPass) : mediaPass;
+          try {
+            traceContextless('[gate] worth=' + String(worth) + ' gate=' + gate + ' min=' + String(minScore)
+              + ' score=' + (sc ? sc.score.toFixed(3) : '无分') + ' eff=' + String(effScore) + ' mediaPass=' + String(mediaPass));
+          } catch { /* ignore */ }
           // ① 相关度(观察期, **只记录不参与判定**): 当前消息 ↔ 她上一条发言 / 群里最近 5 条(2026-09-13 主人定)
           const rel = await computeRelevance({
             gid: msg.groupOpenid ?? '',

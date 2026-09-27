@@ -23,6 +23,7 @@ import { initStickerGate, bindStickerGates, flushStickerGate, getStickerGate, St
 import { startScheduler } from '../features/scheduler.js';
 import { startJoinRequestPolling } from '../features/poll-join-requests.js';
 import { configureScheduleStore, getScheduleStore } from '../features/schedule-store.js';
+import { initContextlessStore, traceContextless, describeStorePath } from '../features/contextless-store.js';
 import { setChannelBridge } from '../channel-tools.js';
 import { QqApprovalController, setApprovalDispatch, makeApprovalListener, registerApprovalController } from '../features/qq-approval.js';
 import { QqUserQuestionsController, registerQuestionController } from '../features/qq-user-questions.js';
@@ -98,6 +99,14 @@ export async function bootstrapGateway(
   // 落盘 {cwd}/.qqbot/timers.json; 与图库同策略: 启动早期按 config.cwd 定路径防分裂。
   const scheduleDataDir = join(dataRootOf(config), '.qqbot');
   configureScheduleStore(scheduleDataDir, logger, myNs);
+
+  // ── 无上下文模式(2026-09-27): 会话级开关存 {dataRoot}/.qqbot/contextless.json ──
+  //   开启后该会话每轮丢掉历史(只带 @ 前 N 条 + 系统规则), 大幅省 token。
+  try {
+    const _dr = dataRootOf(config);
+    initContextlessStore(_dr);
+    traceContextless('bootstrap 初始化: dataRoot=' + _dr + ' → store文件=' + describeStorePath());
+  } catch (e) { traceContextless('bootstrap 初始化失败: ' + (e instanceof Error ? e.message : String(e))); }
 
   // ── 初始化 QQ Bot SDK ──
   const userAgent = buildUserAgent();

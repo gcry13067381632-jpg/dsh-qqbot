@@ -23,6 +23,21 @@ const QUERY_PREFIX = '为这个句子生成表示以用于检索相关文章：'
 const ASSETS = ['onnx/model_quantized.onnx', 'tokenizer.json', 'config.json'] as const;
 
 /** 默认模型目录(用户级): {DSH_HOME|~/.dsh}/models/bge-small-zh */
+/**
+ * 全局重置所有已缓存的 embedder（面板「🔄 重新检测」用）。
+ * 场景：某次加载失败会把该实例标记为不可用；用户想"立刻再试一次"而不重启进程时调用它。
+ * @returns 被重置的实例数
+ */
+export function resetAllEmbedders(): number {
+  let n = 0;
+  try {
+    for (const e of embedders.values()) {
+      try { e.reset?.(); n++; } catch { /* 单个失败继续 */ }
+    }
+  } catch { /* ignore */ }
+  return n;
+}
+
 export function defaultModelDir(): string {
   const dshHome = (process.env.DSH_HOME && process.env.DSH_HOME.trim()) || join(homedir(), '.dsh');
   return join(dshHome, 'models', 'bge-small-zh');
@@ -57,6 +72,8 @@ export interface EmbedderStatus {
 }
 
 export interface LocalEmbedder {
+  /** 强制重置加载状态（失败退避 / 已加载实例都清掉），下次用到时重新加载 */
+  reset?: () => void;
   readonly modelDir: string;
   /** 当前状态(不触发加载) */
   status(): EmbedderStatus;
@@ -89,15 +106,30 @@ export function createLocalEmbedder(opts: { modelDir?: string; logger?: Logger; 
 
   const logger = opts.logger;
   let extractor: ExtractorFn | undefined;
-  let failed = false;
+  // ⚠️ 2026-09-27 修（主人反馈"智能回复失效、评分窗口只剩图片"）：
+  //   原来是 `let failed = false` —— **一次加载失败就永久关闭**，之后 load() 永远直接返回 false，
+  //   所有评分静默变成 undefined（只有"无分也记录"的图片条目还留在 value-scores.jsonl 里，
+  //   看起来就像"模型坏了、文字消息完全不评分"）。实测 22:49:33 之后一条有分数的记录都没有。
+  //   现在改成 `failedAt`（时间戳）：退避期结束后**允许重新尝试**，并提供 reset() 供面板"重新检测"强制重载。
+  let failedAt = 0;              // 0 = 从未失败
   let failureReason = '';
   let loading: Promise<boolean> | undefined;
   let dims: number | undefined;
   let loadMs: number | undefined;
 
+  /** 失败后的退避窗口：这段时间内不重复尝试（避免每条消息都触发一次加载风暴） */
+  const RETRY_BACKOFF_MS = 60_000;
+
   async function load(): Promise<boolean> {
     if (extractor) return true;
-    if (failed) return false;
+    if (failedAt) {
+      const waited = Date.now() - failedAt;
+      if (waited < RETRY_BACKOFF_MS) return false;      // 退避中
+      // 退避结束 → 允许再试一次（清掉失败标记，让下面的加载流程跑起来）
+      failedAt = 0;
+      failureReason = '';
+      logger?.info('[im-qqbot] 智能回复：退避结束，重新尝试加载本地小模型…');
+    }
     if (loading) return loading;
     loading = (async (): Promise<boolean> => {
       const t0 = Date.now();
@@ -114,7 +146,7 @@ export function createLocalEmbedder(opts: { modelDir?: string; logger?: Logger; 
         logger?.info(`[im-qqbot] 智能回复(本地小模型)就绪: ${name} (${loadMs}ms)`);
         return true;
       } catch (e) {
-        failed = true;
+        failedAt = Date.now();
         failureReason = e instanceof Error ? e.message : String(e);
         logger?.warn(`[im-qqbot] 智能回复不可用(本地小模型 ${modelDir}): ${failureReason}`);
         return false;
@@ -141,11 +173,29 @@ export function createLocalEmbedder(opts: { modelDir?: string; logger?: Logger; 
     }
   }
 
+  /** 强制重置：清掉失败标记与已加载实例，下次用到时重新加载（面板「重新检测」调用） */
+  function reset(): void {
+    failedAt = 0;
+    failureReason = '';
+    extractor = undefined;
+    loading = undefined;
+    dims = undefined;
+    loadMs = undefined;
+    logger?.info('[im-qqbot] 智能回复：已重置本地小模型状态，下次使用会重新加载');
+  }
+
   const embedder: LocalEmbedder = {
     modelDir,
+    reset,
     status(): EmbedderStatus {
       const assets = checkModelAssets(modelDir);
-      if (failed) return { available: false, modelDir, reason: failureReason, dims, loadMs };
+      if (failedAt) {
+        const left = Math.max(0, RETRY_BACKOFF_MS - (Date.now() - failedAt));
+        return {
+          available: false, modelDir, dims, loadMs,
+          reason: failureReason + (left > 0 ? '（' + Math.ceil(left / 1000) + ' 秒后自动重试；也可点「重新检测」立即重载）' : ''),
+        };
+      }
       if (extractor) return { available: true, modelDir, dims, loadMs };
       if (!assets.ok) {
         return { available: false, modelDir, reason: `模型文件缺失(${assets.missing.join(', ')})` };
@@ -153,7 +203,8 @@ export function createLocalEmbedder(opts: { modelDir?: string; logger?: Logger; 
       return { available: true, modelDir, reason: '待加载(首次使用时加载)' };
     },
     available(): boolean {
-      if (opts.enabled === false || failed) return false;
+      if (opts.enabled === false) return false;
+      if (failedAt && Date.now() - failedAt < RETRY_BACKOFF_MS) return false;
       return extractor !== undefined || checkModelAssets(modelDir).ok;
     },
     embedQuery: (text) => run([text], true).then((r) => r?.[0]),

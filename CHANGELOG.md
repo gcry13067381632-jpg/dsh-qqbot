@@ -4,6 +4,38 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [1.5.11] - 2026-09-28
+
+> 新增「无上下文模式」；修 4 个"静默失效/写坏数据"的问题。
+
+### 新增
+- **无上下文模式（按会话开启，省 token）**：dock 面板「⚙ 单会话设置 → 🚫 无上下文」里对某个会话开启后，
+  该会话**每轮只带「最近 N 条对话 + 系统规则」**，更早的历史会被折叠掉。实现走 **dsh 原生的 surface
+  replace（shadow）机制**（与 dsh 自带 compaction 同一套协议）：
+  - **零额外 LLM 调用**（自带 compaction 需要生成摘要；这里用一句固定替身文本）
+  - **web 记录照旧保留**，只多一行「上下文已压缩」折叠标记（不是删除历史）
+  - **每回合只压一次**（`agent/pre-step` 每个 step 都触发，这里只取首个 step）
+  - 全局开关：`contextlessMode` / `contextlessWindow`
+
+### 修复
+- **智能回复失效**（评分只剩图片、文字消息不再产生分数）：
+  `local-embed` 原来是"**一次加载失败就永久关闭**"，之后所有评分静默返回 undefined，只能重启进程恢复。
+  现改为 **失败后 60 秒退避，退避结束自动重试**；并在面板「🔄 重新检测」时**强制重置**（新增
+  `POST /api/qqbot-settings/local-model/reset`）。
+- **会话日志损坏（SessionFormatError）** —— 两个致命点：
+  - `compaction/start` / `compaction/end` 的 `turn` 必须与**当前打开的回合**一致；之前传 `null`，
+    在回合开着时写会直接让会话被判 corrupt（`does not match the open turn`）。
+  - 压缩范围**绝不从 surface node0 开始** —— 它是"受保护的 head"（通常是 `system/message`），
+    被替换后会报 `system/message requires a protected first surface head`。
+- **压缩过于频繁**：`agent/pre-step` 是**每个 step** 都触发，之前一个回合里「思考→工具→再思考」会连压多次
+  （表现为一段里冒出好几条「上下文已压缩」）；现在只在**回合的第一个 step** 压。
+- **无上下文模式在"全局开关"下不生效**：原判断要求 `sessionKey` 反查成功，而 web 会话反查为空时整段被跳过。
+- **开关落盘失败 / 多实例互相覆盖**：`contextless-store` 在 storePath 为空时 `persist()` 会静默 return
+  （面板显示"已保存"但磁盘上没有）；且多个账号实例共用一个模块级路径会互相覆盖。现加兜底 + 按 key 归属分文件写回。
+
+### 说明
+- `1.5.10` 已包含：dock 悬浮球 `dsh.client` 声明修复、悬浮球位置 clamp、`model-prefs` 落盘与膨胀修复。
+
 ## [1.5.10] - 2026-09-27
 
 > 修 4 个"会打到普通用户"的问题，其中前两个直接影响能否看到/使用插件的 Web 界面。
