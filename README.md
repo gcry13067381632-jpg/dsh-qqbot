@@ -246,7 +246,7 @@ dsh: disabling profile plugin row "mcp-chrome": Plugin ... is incompatible with 
 - **零额外模型调用**（替身文本写死）
 - **从下一轮起生效**（压缩发生在回合开始）
 
-📖 完整说明（含易误解点、全局开关、存储位置）→ **[用户手册](docs/用户手册.md#无上下文模式按会话省-token)**
+📖 完整说明（含易误解点、全局开关、存储位置）→ **[用户手册](docs/USER-GUIDE.md#无上下文模式按会话省-token)**
 
 ## ✅ QQ 审批卡片：谁可以点
 
@@ -256,7 +256,7 @@ dsh: disabling profile plugin row "mcp-chrome": Plugin ... is incompatible with 
 > ⚠️ **群聊场景一定要填白名单**：设置 → QQ 机器人 →「允许操作的主人 openid（逗号分隔，可留空=不校验）」。
 > 否则别人发起的审批，主人点了没反应。
 
-📖 细节 → **[用户手册](docs/用户手册.md#qq-审批卡片谁可以点)**
+📖 细节 → **[用户手册](docs/USER-GUIDE.md#qq-审批卡片谁可以点)**
 
 ---
 
