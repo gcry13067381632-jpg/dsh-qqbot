@@ -79,14 +79,18 @@
       "inject": [
         "@deepseek-ai/dsh-client-ui-settings",
         "@deepseek-ai/dsh-client-ui-slots"
-      ]
+      ],
+      "immediately": true
     },
     "engines": {
       "dsh": "0.1.5-rc.2 || 0.1.6-alpha.2 || 0.1.7-rc.1"
-    }
+    },
+    "manifestVersion": 1
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": ">=3.18.1",
+    "@deepseek-ai/dsh-client-ui-settings": "0.1.7-rc.1",
+    "@deepseek-ai/dsh-client-ui-slots": "0.1.7-rc.1",
+    "@deepseek-ai/schemastery": "3.18.4",
     "@tencent-connect/qqbot-connector": "1.2.0",
     "@tencent-connect/qqbot-nodejs": "^1.0.4",
     "js-yaml": "^4.1.0",

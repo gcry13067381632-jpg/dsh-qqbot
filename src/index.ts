@@ -19,8 +19,7 @@ import { runQrSetup, persistCredentialsToProfile } from './setup.js';
 // 2026-09-24 关闭"启动自动扫码"后，这些符号保留给设置页路径使用；此处显式引用避免 TS 未使用报错。
 void runQrSetup; void persistCredentialsToProfile;
 import type { Logger } from './types.js';
-import { setOutboundModeWriter } from './features/outbound-mode-switch.js';
-import { traceContextless } from './features/contextless-store.js';
+import { setOutboundModeWriter } from './features/outbound-mode-switch.js';
 
 // ⚠️ @deepseek-ai/dsh-settings 的"注册 Web 可视化设置"入口在 harness 各版本间有差异：
 //   - rc.2 及更早：模块顶层具名导出 installSettingsSection(ctx, ns, schema, entry, hooks)
@@ -40,10 +39,6 @@ export type { ImQQBotConfig } from './config.js';
 
 // ── 插件主体 ──
 export async function apply(ctx: Context, config: ImQQBotConfig): Promise<void> {
-  // __APPLY_TRACE__ 2026-09-28 诊断：宿主报 "entry did not activate @zaofan/dsh-qqbot: failed"
-  //   时看不到具体原因（宿主只打印 "failed"），这里把 apply 的关键阶段写进 trace 文件。
-  const _trace = (m: string): void => { try { traceContextless('[apply] ' + m); } catch { /* ignore */ } };
-  _trace('开始 ns=' + String((config as { settingsNs?: string })?.settingsNs ?? '') + ' appId=' + String((config as { appId?: string })?.appId ?? ''));
   const agents = (ctx as unknown as Record<string, unknown>).agents as DshAgentRegistry;
   const logger: Logger = ((ctx as unknown as Record<string, unknown>).logger as Logger) ?? console;
 
@@ -92,7 +87,6 @@ export async function apply(ctx: Context, config: ImQQBotConfig): Promise<void> 
   //   新用户路径：装插件 → 打开 dsh → 设置页「QQ 机器人」→ 填 AppID/Secret 或点「扫码绑定」
   //   → 凭据写入 → 热更新 → 本次 apply 有凭据 → 自动连上。
   //   仍然**不自动弹二维码**（保持 2026-09-24 的死循环修复：扫码只在用户主动点击时发生）。
-  _trace('凭据解析: appId长度=' + String(appId).length + ' secret长度=' + String(appSecret).length);
   const hasCred = !!appId && !!appSecret;
   if (!hasCred) {
     // ⚠️ 2026-09-24 主人要求：**启动时不再自动弹二维码**。
@@ -175,7 +169,6 @@ export async function apply(ctx: Context, config: ImQQBotConfig): Promise<void> 
     logger.warn?.(`im-qqbot: settings 注册跳过: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  _trace('settings/自有存储阶段完成，准备装 host 桥');
 
   // ── 设置面板 host 桥(单包自含, 原 dsh-qqbot-settings 独立包合并而来) ──
   // ⚠️ 2026-09-10 关键修复: 原用 ctx.plugin({name, inject, apply}) 装载 —— 在 dsh 环境下
@@ -194,15 +187,38 @@ export async function apply(ctx: Context, config: ImQQBotConfig): Promise<void> 
       const declared = Array.isArray(bridgeMod.inject) ? bridgeMod.inject : [];
       const required = declared.filter((s) => s !== 'agentPresets');
       const deps = required.length > 0 ? required : ['settings', 'webServer'];
-      ctx.inject(deps, (serverCtx: Context) => {
+      // ⚠️⚠️ 2026-09-28 关键修复：**不要用 ctx.inject 等依赖**。
+      //   原因：cordis 的 ctx.inject(deps, cb) 会把 cb 挂成一个【子 fiber】并让【当前插件】
+      //   一起等待这些服务 —— 一旦宿主没有提供（或尚未注册）settings / webServer，
+      //   插件自身就永久 pending，宿主判定 "1 required plugin did not activate"，
+      //   连带【整个 Web UI 都不渲染】（只剩一句错误 + 一个 dock 球）。
+      //   实测：全新 profile 装本插件必然复现；老环境因为服务早就绪所以看不出来。
+      //   现在改为：服务已就绪就立即装桥；没就绪则监听服务注册事件，**绝不阻塞插件自身激活**。
+      const mountBridge = (c: Context): void => {
         try {
-          bridgeMod.apply!(serverCtx);
-          logger.info(`[im-qqbot] settings host 桥已 apply(ctx.inject ${deps.join('+')})`);
+          bridgeMod.apply!(c);
+          logger.info(`[im-qqbot] settings host 桥已 apply(deps=${deps.join('+')})`);
         } catch (err) {
           logger.warn?.(`im-qqbot: settings host 桥 apply 异常: ${err instanceof Error ? err.message : String(err)}`);
         }
-      });
-      logger.info(`[im-qqbot] settings host 桥已装载(ctx.inject 姿势, deps=${deps.join('+')})`);
+      };
+      // ⚠️⚠️ 2026-09-28 最终方案（两次踩坑后的结论）：
+      //   · 直接 mountBridge(ctx) 不行 —— 桥的 apply 内部要 `ctx.webServer`，
+      //     而没经过 inject 的 ctx 访问它会抛 "cannot get property \"webServer\" without inject"。
+      //   · 用 ctx.inject(deps, cb) 又不行 —— 它会让**插件自身 fiber 一起等依赖**，
+      //     宿主在服务就绪前就判 "1 required plugin did not activate"，
+      //     【整个 Web UI 都不渲染】（只剩一句错误 + 一个 dock 球）。
+      //   → 解法：**apply 先正常返回（插件立即激活成功）**，
+      //     再用 setTimeout 延后到宿主服务注册完成，此时才做 ctx.inject（不再影响已完成的激活）。
+      const doInjectLater = (): void => {
+        try {
+          ctx.inject(deps, (serverCtx: Context) => mountBridge(serverCtx));
+        } catch (err) {
+        }
+      };
+      // 用较短的定时器即可：宿主通常同一轮就把服务注册完
+      try { setTimeout(doInjectLater, 1500); } catch { doInjectLater(); }
+      logger.info(`[im-qqbot] settings host 桥已排程(延后 inject, deps=${deps.join('+')})`);
     } else {
       logger.warn('[im-qqbot] settings-host.js 缺少 apply, 桥跳过');
     }
@@ -227,9 +243,7 @@ export async function apply(ctx: Context, config: ImQQBotConfig): Promise<void> 
   // 没有凭据 → 保留设置面板即可，不启动网关（不连 QQ、不注册入站）
   if (!hasCred) return;
 
-  _trace('开始 bootstrapGateway');
   await bootstrapGateway(ctx, agents, resolvedConfig, logger);
-  _trace('bootstrapGateway 完成，apply 正常结束');
 }
 
 /** 把 settings 用户层合并进 live 运行时配置(原地字段替换; schema 解析值含默认, 可整体覆盖) */

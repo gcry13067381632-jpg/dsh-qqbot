@@ -6,36 +6,44 @@
 
 ## [1.5.13] - 2026-09-28
 
-> 修"全新环境装完插件打不开"的两个致命问题 —— 新用户第一次用的体验。
+> 三个"会让插件**完全加载不起来**"的硬故障修复。
 
 ### 修复
-- **干净环境安装后插件加载失败（`entry did not activate: failed`）**
-  插件的 `dist` 在运行时确实 import 了 4 个宿主包
-  （`@deepseek-ai/dsh-llm` / `dsh-session` / `dsh-tools` / `schemastery`），
-  但它们只写在 `peerDependencies` 里 —— 而 dsh 的 profile **不会自动安装插件的 peer 依赖**。
-  于是全新环境下报 `Cannot find package '@deepseek-ai/schemastery'` → 插件 fiber 直接 failed，
-  宿主前端连带报 `Failed to load plugins / 1 entry did not activate`，**新用户连设置界面都进不去**。
-  （老环境"碰巧"有这些包 —— 是别的插件带进来的，所以一直没暴露。）
-  → **这 4 个运行时依赖已移入 `dependencies`**，`pnpm add @zaofan/dsh-qqbot` 会自动装齐整条依赖链。
+- **插件永久加载失败（语法级错误）**
+  为"从 GitHub 直装缺 dist"新增的包入口守卫 `entry.js` 里多写了一句
+  `export { default } from './dist/index.js'` —— 而 `dist/index.js` 并没有 default 导出，
+  于是抛
+  `SyntaxError: The requested module './dist/index.js' does not provide an export named 'default'`，
+  **整个插件 import 失败**（宿主只打印 `failed to import`，看不出真因）。
+  → 已删除该行。
 
-- **没配凭据时"设置面板也用不了"**
-  原逻辑"缺凭据就整个 return"，会连带跳过【设置面板 host 桥】的装载 →
-  `/api/qqbot-settings/*` 全部 404 → 前端报"重载插件失败"。
-  现在改为：**设置面板照常装载**（settings + host 桥），只把【网关启动】放到凭据检查之后。
-  新用户路径：装插件 → 打开 dsh → 设置页「QQ 机器人」→ 填 AppID/Secret 或点「扫码绑定」
-  → 凭据写入 → 热更新 → 自动连接。
-  （仍然**不自动弹二维码**，保持 2026-09-24 的死循环修复：扫码只在用户主动点击时发生。）
+- **服务未就绪时插件永久 pending（前端整页不渲染）**
+  装载设置面板桥时用了 `ctx.inject(deps, cb)` —— cordis 会让**当前插件 fiber 一起等**这些服务。
+  如果宿主尚未注册 `settings` / `webServer`（全新 profile 常见），插件自身就永久 pending，
+  宿主判定 `1 required plugin did not activate`，**连带整个 Web UI 都不渲染**
+  （只剩一句 Failed to load plugins）。
+  → 改为 **apply 先正常返回（插件立即激活）**，再用 `setTimeout` 延后 inject 装桥。
 
-### 新增
-- **包入口守卫 `entry.js`**：包不完整（典型是"从 GitHub 地址直装但没跑构建、缺 `dist/`"）时，
-  不再只丢一句难懂的 `failed to import`，而是直接打印**原因 + 三种解决办法**。
-- **apply 阶段安装自检**：缺 `client` / `settings-host.js` / `cordis.patch.yml` 时给出明确警告。
+- **依赖声明会破坏宿主生态**
+  曾把 `@deepseek-ai/dsh-llm` / `dsh-session` / `dsh-tools` 放进 `dependencies` ——
+  pnpm 会装出与宿主不匹配的版本（实测装了 `0.1.0-rc.8` 而宿主是 `0.1.7-rc.1`），
+  反而**把宿主自己的官方插件搞挂**（`image-offload` 报 `ctx.sessions.registerMessageProjection is not a function`）。
+  → 这三个回到 `peerDependencies`（必须由宿主提供）。
+  只保留两个纯工具/客户端依赖：`@deepseek-ai/schemastery`（配置解析）、
+  `@deepseek-ai/dsh-client-ui-slots` / `dsh-client-ui-settings`（前端半边声明要用）。
 
 ### 其他
-- **"从 GitHub 直装"体验**：加 `prepare` 脚本（pnpm 从 git 依赖安装时会自动编译）；
-  `.npmignore` 增加 `*.bak*`（之前有 19 个本地备份被误打进包，约 2MB）；
-  删除仓库里 85 个 `.bak` 文件。
-- README 精简，详细说明移入 `docs/USER-GUIDE.md`。
+- 新增包入口守卫 `entry.js` + apply 阶段安装自检：包不完整时直接打印**原因与解决办法**，
+  不再只丢一句 `failed to import`。
+- `.npmignore` 增加 `*.bak*`（此前 19 个本地备份被误打进包，约 2MB）；删除仓库里 85 个 `.bak`。
+- `prepare` 脚本（pnpm 从 git 依赖安装时自动编译）。
+- README 安装章节：把「**必须装到 web profile**」提为醒目警告。
+
+### ⚠️ 安装位置提醒
+本插件的前端设置面板只在 **`web` profile**（即 `dsh web` 使用的 profile）里生效。
+装到其它 profile 会得到一个**没有设置面板的裸环境** —— dock 球与「QQ 机器人」设置页都不会出现。
+正常使用 `dsh web` 的用户无需关心这点（默认就是 web）。
+
 
 ## [1.5.12] - 2026-09-28
 

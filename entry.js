@@ -49,5 +49,9 @@ if (missing.length > 0) {
 }
 
 // 自检通过 → 正常导出
+// ⚠️ 2026-09-28 修：原来这里多写了一句 `export { default } from './dist/index.js'`，
+//   但 dist/index.js 并没有 default 导出 → 触发
+//     SyntaxError: The requested module './dist/index.js' does not provide an export named 'default'
+//   → 整个插件 import 失败（宿主只报一句难懂的 "failed to import"）。
+//   这是个语法级错误：哪怕自检全过，插件也永远加载不起来。
 export * from './dist/index.js';
-export { default } from './dist/index.js';
