@@ -1,0 +1,410 @@
+import { dataRootOf } from './data-root.js';
+import { handleInbound } from '../transport/inbound.js';
+import { getHistoryStore, historyGroupKey } from '../features/history-store.js';
+import { appendFileSync } from 'node:fs';
+import { join } from 'node:path';
+const DEFAULTS = { enabled: true, silenceSec: 3, maxMsgs: 10, mentionDelayed: true };
+/**
+ * 「回合忙」最多等多久（ms）—— 超时强制放行。
+ *
+ * 3 分钟：正常回合（哪怕连着调十几个工具、跑长命令）都够；超过基本可以认定是异常卡死。
+ * ⚠️ 这条兜底的意义不在"性能"，而在**可用性**：宁可偶尔让两条消息挤进同一个回合，
+ *    也不能让一个卡住的回合把整个会话的消息通道永久堵住。
+ */
+const BUSY_MAX_WAIT_MS = 3 * 60_000;
+/** 解析消息服务器时间戳(ISO 字符串或 ms 数字; 解析失败回落"到达时刻"兜底) */
+function msgTs(msg) {
+    const raw = msg.timestamp;
+    const n = typeof raw === 'number' ? raw : Date.parse(String(raw ?? ''));
+    return Number.isFinite(n) ? n : Date.now();
+}
+function num(v, d) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : d;
+}
+const INJECTORS = [];
+export function injectSynthetic(scope, peerId, text, opts, owner) {
+    for (const fn of INJECTORS) {
+        try {
+            if (fn(scope, peerId, text, opts, owner))
+                return true;
+        }
+        catch { /* 单个实例失败不影响其它 */ }
+    }
+    return false;
+}
+export function debounceLayer(config, manager, logger, cooldownAt) {
+    const windows = new Map();
+    /** 调序调试日志(排查官方帧序用): 默认**关闭** —— 需要时设环境变量 `DSH_QQBOT_DEBOUNCE_DBG=1` 才写
+     *  → {dataRoot}/.qqbot/debounce-dbg.log。(2026-09-12: 该文件曾涨到 3.8MB, 改用开关按需开) */
+    const dbgOn = !!process.env.DSH_QQBOT_DEBOUNCE_DBG && process.env.DSH_QQBOT_DEBOUNCE_DBG !== '0';
+    const dbgFile = join(dataRootOf(config), '.qqbot', 'debounce-dbg.log');
+    function dbg(line) {
+        if (!dbgOn)
+            return;
+        try {
+            appendFileSync(dbgFile, `${new Date().toISOString()} ${line}\n`, 'utf8');
+        }
+        catch { /* ignore */ }
+    }
+    const cfg = () => {
+        const d = config.behavior?.debounce;
+        return d ?? DEFAULTS;
+    };
+    function clearTimer(w) {
+        if (w.timer) {
+            clearTimeout(w.timer);
+            w.timer = null;
+        }
+    }
+    /** 尝试派发一批(窗口内全部消息 → AI 一次综合回复)。
+     *  群普通(无@)受 60s 冷却约束: 未过冷却 → 窗口保留、重排计时器, 冷却结束再整批按时间序派发。
+     *  @ 消息(窗口含@)/私聊: 随时派发。 */
+    async function flush(key, w) {
+        const pre = w.entries;
+        if (pre.length === 0) {
+            clearTimer(w);
+            windows.delete(key);
+            return;
+        }
+        const f0 = pre[0];
+        if (!f0) {
+            clearTimer(w);
+            windows.delete(key);
+            return;
+        }
+        const fKind = String(f0.msg.kind ?? '');
+        const hasMention = pre.some(e => e.wasMentioned);
+        // ── LLM 回合中聚合(2026-09-07 主人定, 2026-09-11 主人改): 我正在思考/输出时, 新消息全攒着,
+        //    不派发不入站 —— 无时间限制, 必须等 turn/end(record.turnActive=false)后窗口才批量 flush;
+        //    只受条数约束(窗口防御上限 + maxMsgs 攒满尝试派发)。──
+        {
+            const recPeer = fKind === 'group'
+                ? String(f0.msg.groupOpenid ?? f0.msg.senderId ?? '')
+                : String(f0.msg.senderId ?? '');
+            if (recPeer) {
+                const busyRec = manager.findByPeer(fKind === 'group' ? 'group' : 'c2c', recPeer);
+                if (busyRec?.turnActive) {
+                    // 回合忙：本来"一直等到 turn/end"。2026-09-15 起加**超时兜底** ——
+                    //   卡死的回合会把该会话的消息通道永久堵住（主人实测"发完语音后消息全不进"），
+                    //   超过 BUSY_MAX_WAIT_MS 就强制放行（warn 留痕），宁可挤一点也不能哑掉。
+                    const since = w.busySince ?? (w.busySince = Date.now());
+                    const waitedMs = Date.now() - since;
+                    if (waitedMs < BUSY_MAX_WAIT_MS) {
+                        w.turnDeferred = true; // 本次窗口因回合忙被 defer → 派发时带系统时间提示
+                        clearTimer(w);
+                        w.timer = setTimeout(() => void flush(key, w), 800); // 回合中: 800ms 后重查(等到回合结束或超时)
+                        w.timer.unref?.();
+                        dbg(`flush 回合忙 defer(等 turn/end, 已等 ${Math.round(waitedMs / 1000)}s) key=${key} n=${pre.length}`);
+                        return; // 窗口保留, 不派发
+                    }
+                    logger.warn(`[debounce] 回合忙等超时(${Math.round(waitedMs / 1000)}s ≥ ${BUSY_MAX_WAIT_MS / 1000}s) → 强制放行 ` +
+                        `key=${key} n=${pre.length}（该会话的回合疑似卡死，消息不能一直堵着）`);
+                    w.busySince = undefined; // 放行后复位，下一轮重新计时
+                    // 不 return —— 落到下面照常走冷却/派发链
+                }
+                else {
+                    w.busySince = undefined; // 回合已结束 → 复位计时
+                }
+            }
+        }
+        if (fKind === 'group' && !hasMention) {
+            // 群普通消息: 距上次普通派发不足 freeIntervalSec → 冷却中, 窗口保留继续攒
+            const gid = String(f0.msg.groupOpenid ?? f0.msg.senderId ?? '');
+            const freeSec = Math.max(0, num(config.behavior?.freeIntervalSec, 0));
+            if (gid && freeSec > 0) {
+                const nowMs = Date.now();
+                const lastAt = cooldownAt.get(gid) ?? 0;
+                const passedMs = nowMs - lastAt;
+                if (passedMs < freeSec * 1000) {
+                    clearTimer(w);
+                    const retryMs = Math.max(500, freeSec * 1000 - passedMs);
+                    w.timer = setTimeout(() => void flush(key, w), retryMs);
+                    w.timer.unref?.();
+                    dbg(`flush 冷却中 defer ${Math.round(retryMs / 1000)}s key=${key} n=${pre.length}`);
+                    return; // 窗口保留, 不派发
+                }
+            }
+        }
+        clearTimer(w);
+        windows.delete(key);
+        const entries = w.entries;
+        if (entries.length === 0)
+            return;
+        // QQ 官方推送可能乱序: 派发前统一按服务器时间戳升序排(旧→新)
+        entries.sort((a, b) => a.ts - b.ts);
+        // 触发消息形状(仅取 kind/gid 参考; 真正的 current 在群分支按时间序从 merged 里取)
+        const trigger = entries[entries.length - 1];
+        if (!trigger)
+            return;
+        const kind = String(trigger.msg.kind ?? '');
+        dbg(`flush key=${key} n=${entries.length} sorted-order=[${entries.map(e => JSON.stringify(String(e.msg.content ?? '').slice(0, 24))).join(',')}] hasMention=${hasMention}`);
+        try {
+            if (kind === 'group') {
+                const gid = String(trigger.msg.groupOpenid ?? trigger.msg.senderId ?? '');
+                if (!gid)
+                    return;
+                // 群冷却吞掉的消息也已被 mediaHistoryBuffer(链第4步, 冷却/debounce 之前)记录进 store。
+                // 因此以 store 为权威全量: 与窗口合并去重、按服务器时间序排列后,
+                // current 取"时间上真正最后一条"(窗口含@时取最后一条被@的), 其余按序进 history ——
+                // 避免 current 取成"群冷却放行的第一条"导致上下文整体倒序。
+                let storeHist = [];
+                try {
+                    storeHist = await getHistoryStore(config.appId).list(historyGroupKey(config.appId, gid), num(config.historyLimit, 20));
+                }
+                catch (err) {
+                    logger.warn?.(`[debounce] 拉群历史失败: ${err instanceof Error ? err.message : String(err)}`);
+                }
+                dbg(`  store-raw=[${storeHist.map(h => JSON.stringify(String(h.content).slice(0, 24))).join(',')}]`);
+                const merged = storeHist.map(h => ({
+                    messageId: h.messageId,
+                    ts: h.timestamp || 0,
+                    content: h.content,
+                    senderId: h.senderId,
+                    senderName: h.senderName,
+                    // 2026-09-15 修: store 条目上的[@过bot]标记要接过来(media-history 写入的 mentioned),
+                    //   否则只有[当前还在窗口里]的那条能靠 entries 循环补上, store 来源的会丢。
+                    wasMentioned: h.mentioned === true,
+                }));
+                for (const e of entries) {
+                    const id = String(e.msg.messageId ?? '');
+                    // ⚠️ 空 messageId(合成消息, 如 /资源 求助)不参与去重 —— 否则同一窗口里的第二条会被当"重复"吞掉
+                    const hit = id ? merged.find(m => m.messageId === id) : undefined;
+                    if (hit) {
+                        if (e.wasMentioned)
+                            hit.wasMentioned = true;
+                        // ⚠️ 2026-09-10 去重(主人实测: "图片链接重复两次, 那不是又回原来的长上下文咯?"):
+                        //   store 条目只带 foldMedia 折叠文本(`[图片: url]` / `[语音: url]`), **窗口条目才带
+                        //   原始 content + attachments**。命中时若不给 hit 补 msg, current 就会取 store 版本,
+                        //   于是附件 URL 在上下文里出现两次: 折叠文本一次 + Layer4 的 `- Image: 名 → url` 一次。
+                        //   补上后: current 走 cur.msg(原始 content, 附件交给 Layer4 描述), history 仍用折叠文本。
+                        if (!hit.msg)
+                            hit.msg = e.msg;
+                    }
+                    else {
+                        merged.push({
+                            messageId: id, ts: e.ts, msg: e.msg, wasMentioned: e.wasMentioned,
+                            // 从 msg 提上来: 合成消息(如 /资源 求助)的 senderName 只在 msg 里, 不带上历史行会渲染成 []
+                            senderId: String(e.msg.senderId ?? ''), senderName: String(e.msg.senderName ?? ''),
+                        });
+                    }
+                }
+                merged.sort((a, b) => a.ts - b.ts);
+                // current 恒取时间序最后一条(纯时间序, 上下文永不倒置)。
+                const cur = merged[merged.length - 1];
+                if (!cur)
+                    return;
+                // 忠实还原 store 原文进 history; 窗口内曾 @ 机器人的消息(时间上早于 current)
+                // 补 " (@you)" 标注 —— 与 current 的 (@you) 同款格式, 还原"这条@了bot"的事实,
+                // 由 AI 按自身守则决定是否开口(插件不注入回复指令, 保持通用)。
+                // 忠实还原 store 原文进 history; 窗口内曾 @ 机器人的消息(时间上早于 current)
+                // 补 " (@you)" 标注 —— 与 current 的 (@you) 同款格式, 还原"这条@了bot"的事实,
+                // 由 AI 按自身守则决定是否开口(插件不注入回复指令, 保持通用)。
+                //
+                // ⚠️ 2026-09-15 修(主人实测「聚合里 @ 了她也不回话」):
+                //   "这条 @ 了 bot" 不能只打成文本 (@you) 给 AI 看, **还得作为结构化标记 mentioned 随条目传下去** ——
+                //   inbound 的聚合加权(AGG_MENTION_BOOST)与点名豁免(!aggMentioned)读的就是它。
+                //   此前只打文本没带标记 ⇒ 评分链路里"窗口里 @ 了她"认不出来 ⇒ 低分被拦、点名不回。
+                const hist = merged
+                    .filter(m => m !== cur) // 用引用比较: 空 messageId 的合成消息彼此相等, 按 id 比会把它们全滤掉
+                    .map(m => {
+                    const baseContent = m.content ?? String(m.msg?.content ?? '');
+                    return {
+                        senderId: m.senderId ?? '',
+                        senderName: m.senderName,
+                        content: m.wasMentioned ? `${baseContent} (@you)` : baseContent,
+                        timestamp: m.ts,
+                        messageId: m.messageId,
+                        ...(m.wasMentioned ? { mentioned: true } : {}),
+                    };
+                });
+                // current 消息: 窗口条目有完整 msg; store 来源的只有 HistoryEntry 字段,
+                // 从群窗口消息继承 kind/groupOpenid/attachments 等再补齐本人字段。
+                const curMsg = cur.msg ?? {
+                    ...(entries[entries.length - 1] ?? trigger).msg,
+                    messageId: cur.messageId,
+                    content: cur.content ?? '',
+                    senderId: cur.senderId,
+                    senderName: cur.senderName,
+                    timestamp: new Date(cur.ts).toISOString(),
+                };
+                // 系统时间提示只在「LLM 回合中 defer 攒批」时带; 普通连发聚合(等用户停口)不带
+                const state = { history: hist, aggregated: w.turnDeferred === true };
+                if (cur.wasMentioned) {
+                    // current 本身就是 @ 消息 → 走正常 mention, AI 见 (@you)
+                    state.mention = { wasMentioned: true };
+                }
+                else {
+                    state.batchDispatch = true;
+                }
+                dbg(`  merged-order=[${merged.map(m => JSON.stringify(String(m.content ?? m.msg?.content ?? '').slice(0, 16))).join(',')}] cur=${JSON.stringify(String(cur.content ?? cur.msg?.content ?? '').slice(0, 16))} hasMention=${hasMention}`);
+                // 群普通(无@)批派发 → 记冷却(与群冷却中间件共享 lastDispatchAt, 防刷屏语义保留)
+                // ⚠️ 2026-09-13(主人要求): 冷却要"**真产生回复**才算消耗" —— 批派发只是一次尝试,
+                //    下游可能因价值评分低分而不唤醒(没回复) → 把回滚回调一并交下去, 让它还这枚冷却。
+                if (!hasMention) {
+                    const prev = cooldownAt.get(gid);
+                    cooldownAt.set(gid, Date.now());
+                    state.qqCooldownRollback = {
+                        prev,
+                        restore: () => { if (prev === undefined)
+                            cooldownAt.delete(gid);
+                        else
+                            cooldownAt.set(gid, prev); },
+                    };
+                }
+                logger.debug(`[debounce] flush(group ${gid}) 窗口${entries.length}条/store${storeHist.length}条 → handleInbound`);
+                await handleInbound(curMsg, manager, config, logger, state);
+            }
+            else {
+                // 私聊: 无群历史缓冲, 窗口自缓冲 → 文本按序拼接 + 合并附件成一条合成消息
+                const textLines = entries
+                    .map(e => String(e.msg.content ?? '').trim())
+                    .filter(Boolean);
+                const allAtts = [];
+                for (const e of entries) {
+                    const a = e.msg.attachments;
+                    if (Array.isArray(a) && a.length > 0)
+                        allAtts.push(...a);
+                }
+                const lastEntry = entries[entries.length - 1];
+                const base = (lastEntry ?? trigger).msg;
+                const merged = {
+                    ...base,
+                    content: textLines.join('\n'),
+                    attachments: allAtts.length > 0 ? allAtts : undefined,
+                };
+                logger.debug(`[debounce] flush(c2c ${String(base.senderId ?? '')}) ${entries.length}条 → handleInbound`);
+                await handleInbound(merged, manager, config, logger, { aggregated: w.turnDeferred === true });
+            }
+        }
+        catch (err) {
+            logger.error(`[debounce] flush 失败: ${err instanceof Error ? err.message : String(err)}`);
+        }
+    }
+    // 注册"合成消息入窗"能力(2026-09-12): 与真人消息同一窗口, 自动参与聚合/冷却/回合忙 defer
+    INJECTORS.push((scope, peerId, text, opts, owner) => {
+        // ⚠️ 多实例同进程共享本模块(INJECTORS 是模块级) → **只接自己那实例的请求**,
+        //    否则会把 A 实例的群消息塞进 B 实例的窗口 → 会话会建到 B 的**工作区**(2026-09-12 实测踩到)。
+        if (owner !== undefined && owner !== manager)
+            return false;
+        const c = cfg();
+        const silenceMs = Math.max(0, num(c.silenceSec, DEFAULTS.silenceSec)) * 1000;
+        const key = `${scope}:${peerId}`;
+        const fake = {
+            kind: scope,
+            senderId: opts?.senderId || '', // 留空: 历史行渲染成 [资源助手] xxx, 不带难看的 (system)
+            senderName: opts?.senderName || '资源助手',
+            content: text,
+            messageId: '',
+            timestamp: new Date().toISOString(),
+            groupOpenid: scope === 'group' ? peerId : undefined,
+            msgType: 0,
+        };
+        if (c.enabled && silenceMs > 0) {
+            // 聚合启用 → 塞进同一窗口(标 wasMentioned 以绕过"无@冷却"推迟, 保证这批能派发)
+            let w = windows.get(key);
+            if (!w) {
+                w = { entries: [], timer: null };
+                windows.set(key, w);
+            }
+            const ts = Date.now();
+            w.entries.push({ msg: fake, wasMentioned: opts?.wasMentioned !== false, ts });
+            clearTimer(w);
+            w.timer = setTimeout(() => void flush(key, w), silenceMs);
+            w.timer.unref?.();
+            dbg(`inject ${key} n=${w.entries.length} text=${JSON.stringify(text.slice(0, 30))}`);
+            logger.debug(`[debounce] 合成消息入窗 ${key}(窗口${w.entries.length}条): ${text.slice(0, 40)}`);
+            return true;
+        }
+        // 聚合未启用 → 退化: 立即唤醒一轮(不再聚合)
+        void handleInbound(fake, manager, config, logger, { mention: { wasMentioned: true } });
+        logger.debug(`[debounce] 合成消息(聚合未启用) → handleInbound 立即唤醒: ${text.slice(0, 40)}`);
+        return true;
+    });
+    return async (ctx, next) => {
+        // 完全不思考(nothink, 2026-09-07 主人定): QQ 入站不唤醒 LLM, 但消息要照常进入上下文。
+        // 这里直接交 handleInbound —— 它的 nothink 分支会把组装好的 user/message append 进会话
+        // (不 followup 不唤醒), 下次 web/真人唤醒时 AI 看到完整记录。不走下方群冷却/派发链(防丢)。
+        const outMode = config.outboundMode || 'adaptive';
+        if (outMode === 'nothink') {
+            const nm = ctx.message;
+            const kind0 = String(nm.kind ?? '');
+            const content0 = String(nm.content ?? '').trim();
+            // 斜杠命令(/outmode 等)放行 → 走下方 slash 层(逃生通道: 主人可随时唤醒 nothink)
+            if (content0.startsWith('/'))
+                return next();
+            if (kind0 === 'group' || kind0 === 'c2c') {
+                try {
+                    await handleInbound(nm, manager, config, logger, ctx.state);
+                }
+                catch (err) {
+                    logger.error(`[nothink] handleInbound(append) 异常: ${err instanceof Error ? err.message : String(err)}`);
+                }
+                return; // 吞掉本消息(已 append 记录), 不触发任何回合
+            }
+            return next();
+        }
+        const c = cfg();
+        if (!c.enabled)
+            return next();
+        const msg = ctx.message;
+        const kind = String(msg.kind ?? '');
+        if (kind !== 'group' && kind !== 'c2c')
+            return next();
+        // 斜杠命令不聚合: 保 /approve、/bot-stop、/help 等即时响应
+        const content = String(msg.content ?? '').trim();
+        if (content.startsWith('/'))
+            return next();
+        const wasMentioned = ctx.state?.mention?.wasMentioned === true;
+        // @ 可配置为不走延迟(秒回)
+        if (wasMentioned && c.mentionDelayed === false)
+            return next();
+        const peerId = kind === 'group'
+            ? (msg.groupOpenid ?? msg.senderId)
+            : msg.senderId;
+        if (!peerId)
+            return next();
+        const key = `${kind}:${String(peerId)}`;
+        const silenceMs = Math.max(0, num(c.silenceSec, DEFAULTS.silenceSec)) * 1000;
+        const maxMsgs = Math.max(1, Math.floor(num(c.maxMsgs, DEFAULTS.maxMsgs)));
+        if (silenceMs <= 0)
+            return next(); // 0=不停顿: 保持原链路立即派发
+        let w = windows.get(key);
+        if (!w) {
+            w = { entries: [], timer: null };
+            windows.set(key, w);
+        }
+        // 防御: 窗口保留等冷却期间可能持续进消息 → 超上限丢最老(只留最近 100 条)
+        if (w.entries.length >= 100) {
+            w.entries.splice(0, w.entries.length - 80);
+        }
+        const ts = msgTs(msg);
+        const arrivedAt = Date.now();
+        // 到达日志: 记录"到达本中间件的时刻"+"服务器时间戳", 用于对比官方帧序与真实发送序
+        dbg(`arrive key=${key} at=${arrivedAt} ts=${String(msg.timestamp ?? '')} parsedTs=${ts} id=${String(msg.messageId ?? '').slice(0, 14)} mention=${wasMentioned} content=${JSON.stringify(content.slice(0, 30))}`);
+        // 只有"比窗口现有消息更新"的消息才算最近说话者继续开口 → 重置静默计时;
+        // 乱序补到的旧消息(服务器时间更早)只入窗口, 不延长等待。
+        let maxTs = 0;
+        for (let i = 0; i < w.entries.length; i++) {
+            const e = w.entries[i];
+            if (e && e.ts > maxTs)
+                maxTs = e.ts;
+        }
+        const isNewer = ts >= maxTs;
+        w.entries.push({ msg: { ...msg }, wasMentioned, ts });
+        dbg(`  win=${w.entries.length} new=${isNewer} order=[${w.entries.map(e => JSON.stringify(String(e.msg.content ?? '').slice(0, 16))).join(',')}]`);
+        if (isNewer) {
+            // 最近说话者(按服务器时间)刚又开口 → 重新等 ta 停口 silenceMs
+            clearTimer(w);
+            w.timer = setTimeout(() => void flush(key, w), silenceMs);
+            w.timer.unref?.();
+        }
+        // 攒满上限立即发, 不等对方停
+        if (w.entries.length >= maxMsgs) {
+            void flush(key, w);
+            return;
+        }
+        // 吞掉本消息(不调 next): 群消息已被链第4步 mediaHistoryBuffer 记录, 延迟到 flush 直连派发
+    };
+}
+//# sourceMappingURL=debounce.js.map

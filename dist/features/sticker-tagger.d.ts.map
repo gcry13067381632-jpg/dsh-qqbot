@@ -1,0 +1,1 @@
+{"version":3,"file":"sticker-tagger.d.ts","sourceRoot":"","sources":["../../src/features/sticker-tagger.ts"],"names":[],"mappings":"AAYA,OAAO,KAAK,EAAE,MAAM,EAAE,MAAM,aAAa,CAAC;AAiC1C;;;GAGG;AACH,wBAAsB,YAAY,CAAC,SAAS,EAAE,MAAM,EAAE,SAAS,EAAE,MAAM,EAAE,MAAM,CAAC,EAAE,MAAM,GAAG,OAAO,CAAC;IAAE,IAAI,EAAE,MAAM,EAAE,CAAC;IAAC,IAAI,EAAE,MAAM,CAAA;CAAE,GAAG,IAAI,CAAC,CAqC1I"}

@@ -1,0 +1,55 @@
+import { resetCommand, newCommand, newPresetCommand, presetSwitchCommand, presetsCommand } from './session.js';
+import { modelCommand, modelAliasCommand } from './model.js';
+import { statusCommand } from './status.js';
+import { helpCommand } from './help.js';
+import { pingCommand, versionCommand, stopCommand, toolsReloadCommand } from './misc.js';
+import { outModeCommand } from './outmode.js';
+import { answerCommand, answerAliasCommand } from './answer.js';
+import { permissionCommand } from './permission.js';
+import { botplayCommand } from './botplay.js';
+import { injectCommand } from './inject.js';
+import { botRestartCommand, botExitCommand } from './exit.js';
+/**
+ * 构建标准命令列表
+ */
+export function buildCommandList(deps) {
+    const commands = [
+        // 会话
+        resetCommand(deps),
+        newCommand(deps),
+        // 人格(preset): /preset <id> 热切换不丢历史, /new <id> 开新档, /presets 查看可用(2026-09-08/10)
+        newPresetCommand(deps),
+        presetSwitchCommand(deps),
+        presetsCommand(deps),
+        // 模型
+        modelCommand(deps),
+        modelAliasCommand(deps), // /model 简写
+        // 状态
+        statusCommand(deps),
+        // 出站模式(逃生通道: SDK 直通不经 LLM, nothink 也能唤醒)
+        outModeCommand(deps),
+        // 权限档位切换(宿主 permissionPresets)
+        permissionCommand(deps),
+        // 提问兜底(2026-09-11): /答 A 或 /ans A —— 提问卡片的文字回答通道
+        // (必须带斜杠: 群聊裸文字被 @门控拦、私聊被 debounce 聚合层直接吞进 agent)
+        answerCommand(deps),
+        answerAliasCommand(deps),
+        // botplay 互动事件(/botplay 列表/触发发卡)
+        botplayCommand(deps),
+        // 安全注入: /inject 文本 → 插入当前会话 LLM 回合(不打断当前回合)
+        injectCommand(deps),
+        // 自重启(杀旧+自动拉起 dsh web; /bot-exit 兼容同款)
+        botRestartCommand(),
+        botExitCommand(),
+        // 杂项
+        pingCommand(),
+        versionCommand(deps),
+        stopCommand(),
+        // 开发: 工具热刷新
+        toolsReloadCommand(deps),
+    ];
+    // help 需要访问完整列表（含自身），通过闭包惰性引用
+    commands.push(helpCommand(deps, () => commands));
+    return commands;
+}
+//# sourceMappingURL=index.js.map
