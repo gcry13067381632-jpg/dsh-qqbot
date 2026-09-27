@@ -4,6 +4,39 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [1.5.13] - 2026-09-28
+
+> 修"全新环境装完插件打不开"的两个致命问题 —— 新用户第一次用的体验。
+
+### 修复
+- **干净环境安装后插件加载失败（`entry did not activate: failed`）**
+  插件的 `dist` 在运行时确实 import 了 4 个宿主包
+  （`@deepseek-ai/dsh-llm` / `dsh-session` / `dsh-tools` / `schemastery`），
+  但它们只写在 `peerDependencies` 里 —— 而 dsh 的 profile **不会自动安装插件的 peer 依赖**。
+  于是全新环境下报 `Cannot find package '@deepseek-ai/schemastery'` → 插件 fiber 直接 failed，
+  宿主前端连带报 `Failed to load plugins / 1 entry did not activate`，**新用户连设置界面都进不去**。
+  （老环境"碰巧"有这些包 —— 是别的插件带进来的，所以一直没暴露。）
+  → **这 4 个运行时依赖已移入 `dependencies`**，`pnpm add @zaofan/dsh-qqbot` 会自动装齐整条依赖链。
+
+- **没配凭据时"设置面板也用不了"**
+  原逻辑"缺凭据就整个 return"，会连带跳过【设置面板 host 桥】的装载 →
+  `/api/qqbot-settings/*` 全部 404 → 前端报"重载插件失败"。
+  现在改为：**设置面板照常装载**（settings + host 桥），只把【网关启动】放到凭据检查之后。
+  新用户路径：装插件 → 打开 dsh → 设置页「QQ 机器人」→ 填 AppID/Secret 或点「扫码绑定」
+  → 凭据写入 → 热更新 → 自动连接。
+  （仍然**不自动弹二维码**，保持 2026-09-24 的死循环修复：扫码只在用户主动点击时发生。）
+
+### 新增
+- **包入口守卫 `entry.js`**：包不完整（典型是"从 GitHub 地址直装但没跑构建、缺 `dist/`"）时，
+  不再只丢一句难懂的 `failed to import`，而是直接打印**原因 + 三种解决办法**。
+- **apply 阶段安装自检**：缺 `client` / `settings-host.js` / `cordis.patch.yml` 时给出明确警告。
+
+### 其他
+- **"从 GitHub 直装"体验**：加 `prepare` 脚本（pnpm 从 git 依赖安装时会自动编译）；
+  `.npmignore` 增加 `*.bak*`（之前有 19 个本地备份被误打进包，约 2MB）；
+  删除仓库里 85 个 `.bak` 文件。
+- README 精简，详细说明移入 `docs/USER-GUIDE.md`。
+
 ## [1.5.12] - 2026-09-28
 
 > 修两处"点了审批没反应 / 点了就失败"的问题。

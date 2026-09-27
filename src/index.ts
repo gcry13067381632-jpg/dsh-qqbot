@@ -20,6 +20,7 @@ import { runQrSetup, persistCredentialsToProfile } from './setup.js';
 void runQrSetup; void persistCredentialsToProfile;
 import type { Logger } from './types.js';
 import { setOutboundModeWriter } from './features/outbound-mode-switch.js';
+import { traceContextless } from './features/contextless-store.js';
 
 // ⚠️ @deepseek-ai/dsh-settings 的"注册 Web 可视化设置"入口在 harness 各版本间有差异：
 //   - rc.2 及更早：模块顶层具名导出 installSettingsSection(ctx, ns, schema, entry, hooks)
@@ -39,8 +40,31 @@ export type { ImQQBotConfig } from './config.js';
 
 // ── 插件主体 ──
 export async function apply(ctx: Context, config: ImQQBotConfig): Promise<void> {
+  // __APPLY_TRACE__ 2026-09-28 诊断：宿主报 "entry did not activate @zaofan/dsh-qqbot: failed"
+  //   时看不到具体原因（宿主只打印 "failed"），这里把 apply 的关键阶段写进 trace 文件。
+  const _trace = (m: string): void => { try { traceContextless('[apply] ' + m); } catch { /* ignore */ } };
+  _trace('开始 ns=' + String((config as { settingsNs?: string })?.settingsNs ?? '') + ' appId=' + String((config as { appId?: string })?.appId ?? ''));
   const agents = (ctx as unknown as Record<string, unknown>).agents as DshAgentRegistry;
   const logger: Logger = ((ctx as unknown as Record<string, unknown>).logger as Logger) ?? console;
+
+  // __INSTALL_SELFCHECK__ 安装完整性自检（2026-09-28）
+  //   entry.js（包入口）已拦住"缺 dist"；这里补查"import 成功但功能不全"
+  //   （缺前端 / 缺配置桥 / 缺 patch —— 常见于"从 GitHub 直装但没跑构建"）。
+  try {
+    const here = new URL('.', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');   // → .../dist/
+    const pkgRoot = here.replace(/[\\/]dist[\\/]?$/, '');
+    const expect = ['client/qqbot-settings.js', 'settings-host.js', 'cordis.patch.yml'];
+    const miss = expect.filter((r) => !existsSync(pkgRoot + '/' + r));
+    if (miss.length > 0) {
+      logger.warn('');
+      logger.warn('  ⚠️  dsh-qqbot 安装不完整：缺少 ' + miss.join(', '));
+      logger.warn('      插件主功能可用，但设置面板 / 配置桥可能不工作。');
+      logger.warn('      建议改用 npm 发布版安装（自带全部文件，无需构建）：');
+      logger.warn('        pnpm add @zaofan/dsh-qqbot');
+      logger.warn('      （安装目录: ' + pkgRoot + '）');
+      logger.warn('');
+    }
+  } catch { /* 自检失败不影响启动 */ }
 
 
 
@@ -59,14 +83,25 @@ export async function apply(ctx: Context, config: ImQQBotConfig): Promise<void> 
   const cwdOverride = resolveEnv(config.cwd ?? '', 'QQBOT_CWD') || undefined;
   const presetOverride = resolveEnv(config.preset ?? '', 'QQBOT_PRESET') || undefined;
 
-  // ── 凭据缺失 ──
-  if (!appId || !appSecret) {
+  // ── 凭据检查（⚠️ 2026-09-28 重要改动：不再"缺凭据就整个 return"）──
+  //   原来缺凭据直接 return，会连带跳过【设置面板 host 桥】的装载，后果是新用户装完插件打开 dsh：
+  //     · /api/qqbot-settings/* 全部 404
+  //     · 前端 entry 激活失败 → 页面报 "1 entry did not activate"
+  //     · 根本走不到「扫码绑定」—— 连填凭据的界面都打不开。
+  //   现在改为：**设置面板照常装载**（settings + host 桥），只把【网关启动】留到凭据检查之后。
+  //   新用户路径：装插件 → 打开 dsh → 设置页「QQ 机器人」→ 填 AppID/Secret 或点「扫码绑定」
+  //   → 凭据写入 → 热更新 → 本次 apply 有凭据 → 自动连上。
+  //   仍然**不自动弹二维码**（保持 2026-09-24 的死循环修复：扫码只在用户主动点击时发生）。
+  _trace('凭据解析: appId长度=' + String(appId).length + ' secret长度=' + String(appSecret).length);
+  const hasCred = !!appId && !!appSecret;
+  if (!hasCred) {
     // ⚠️ 2026-09-24 主人要求：**启动时不再自动弹二维码**。
     //    原因：自动扫码会 persistCredentialsToProfile() 写 profile patch → 触发 dsh 热更新
     //    → 插件重新 apply → 凭据仍缺失 → 再扫码，形成死循环（实测把宿主启动刷死）。
     //    现在一律只提示；需要扫码时去 Web「账号与预设」点「扫码绑定」（那条路径是交互式的，不会自转）。
-    logger.error(`实例 ${ns}: 未配置 appId/appSecret——请在 Web「账号与预设」填写凭据（或在那里点「扫码绑定」）后保存，本实例本次不启动。`);
-    return;
+    logger.warn(`实例 ${ns}: 尚未配置 appId/appSecret —— 机器人暂不连接 QQ，但设置面板已就绪。`);
+    logger.warn('  · 请在 dsh 设置页「QQ 机器人」里填写 AppID/AppSecret，或点「扫码绑定」；');
+    logger.warn('  · 凭据保存后会热生效，本实例自动连接（无需重启）。');
   }
 
   const resolvedConfig: ImQQBotConfig = {
@@ -140,6 +175,8 @@ export async function apply(ctx: Context, config: ImQQBotConfig): Promise<void> 
     logger.warn?.(`im-qqbot: settings 注册跳过: ${err instanceof Error ? err.message : String(err)}`);
   }
 
+  _trace('settings/自有存储阶段完成，准备装 host 桥');
+
   // ── 设置面板 host 桥(单包自含, 原 dsh-qqbot-settings 独立包合并而来) ──
   // ⚠️ 2026-09-10 关键修复: 原用 ctx.plugin({name, inject, apply}) 装载 —— 在 dsh 环境下
   //    桥的 apply 从未被调用(实测 ~/.dsh/qqbot-bridge-diag.log 不生成, 所有
@@ -187,7 +224,12 @@ export async function apply(ctx: Context, config: ImQQBotConfig): Promise<void> 
     logger.warn(`[im-qqbot] 小传上下文注册失败: ${err instanceof Error ? err.message : String(err)}`);
   }
 
+  // 没有凭据 → 保留设置面板即可，不启动网关（不连 QQ、不注册入站）
+  if (!hasCred) return;
+
+  _trace('开始 bootstrapGateway');
   await bootstrapGateway(ctx, agents, resolvedConfig, logger);
+  _trace('bootstrapGateway 完成，apply 正常结束');
 }
 
 /** 把 settings 用户层合并进 live 运行时配置(原地字段替换; schema 解析值含默认, 可整体覆盖) */
