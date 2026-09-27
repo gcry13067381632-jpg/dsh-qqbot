@@ -4,6 +4,22 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [1.5.14] - 2026-09-28
+
+### 修复
+- **账号设置里填了「工作目录 cwd」，保存后又变空**（同样影响「Agent 预设」）
+  自 2026-09-24 起，已有账号的 `appId` / `appSecret` / `preset` / `cwd` 只写**插件自有存储**、
+  不再写 profile patch（为避免"多条目 insert 时块边界跨到隔壁"把 YAML 写歪）。
+  但**回显路径只读 patch** → 界面上填过的值保存后就显示为空 ❌
+  → 现改为回显时**合并自有存储**（patch 优先，其次自有存储），与写路径对称。
+  随之修正同源的：`preset` 回显、`appId` 回显、`hasSecret` 判定、`disabled` 判定。
+
+### 变更（让"填 GitHub 地址安装"开箱可用）
+- **把构建产物 `dist/` 提交进仓库**：此前仓库不提交 dist，从 git 直装只有源码，
+  而新版 pnpm 默认禁止 git 依赖执行构建脚本（`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`）
+  → 装出来没有 dist → 插件加载失败。现在 dist 随仓库分发，git 直装即可用。
+- **移除 `prepare` 脚本**：它正是触发上述 pnpm 拦截的原因；dist 已入库，无需安装时构建。
+
 ## [1.5.13] - 2026-09-28
 
 > 三个"会让插件**完全加载不起来**"的硬故障修复。

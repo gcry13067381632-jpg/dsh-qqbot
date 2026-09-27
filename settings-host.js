@@ -836,18 +836,26 @@ export function apply(ctx) {
       writeJson(res, 200, {
         hasFile,
         instances: bots.map((b) => {
-          const cwd = b.cfg?.cwd || '';
+          // ⚠️ 2026-09-28 修：保存时 cwd/preset/appId 只写【自有存储】(见 saveInstances 的 2026-09-24 注释)，
+          //   但回显原先只读 patch → 界面上填过的 cwd/preset 保存后就"变空"了（前端拿到空串）。
+          //   这里把自有存储的值一并合并，与写路径对称（patch 优先，其次自有存储）。
+          let ownCfg = {};
+          try { ownCfg = readOwnSettings(String(b.id)) || {}; } catch { ownCfg = {}; }
+          const cwd = b.cfg?.cwd || ownCfg.cwd || '';
+          const presetMerged = b.cfg?.preset || ownCfg.preset || '';
+          const appIdMerged = b.cfg?.appId || ownCfg.appId || '';
+          const hasSecretMerged = !!(b.cfg?.appSecret || ownCfg.appSecret);
           // 数据根与 dist 侧 dataRootOf 对齐: 未配 dataRoot → `{cwd}/dshqqbot`(2026-09-12 新默认)
           const droot = b.cfg?.dataRoot || (cwd ? join(cwd, 'dshqqbot') : '');
           return {
             id: b.id,
             ns: b.id, // settings 命名空间 = 实例 id(主 im-qqbot; 非主实例 render 已写 settingsNs=id)
-            appId: b.cfg?.appId || '',
-            appSecret: b.cfg?.appSecret ? SECRET_MASK : '', // 掩码回显(借鉴 panel: masked)
-            hasSecret: !!b.cfg?.appSecret,
-            preset: b.cfg?.preset || '',
+            appId: appIdMerged,
+            appSecret: hasSecretMerged ? SECRET_MASK : '', // 掩码回显(借鉴 panel: masked)
+            hasSecret: hasSecretMerged,
+            preset: presetMerged,
             cwd,
-            disabled: !!b.disabled,
+            disabled: !!b.disabled || ownCfg.disabled === true,
             online: typeof reg.isBotOnline === 'function' ? reg.isBotOnline(b.id) : false, // 在线状态(bot ws ready 事件驱动)
             // 账号数据目录(各号各库各定时): 图库={cwd}/表情包, 定时={cwd}/.qqbot
             dataDir: droot ? join(droot, '表情包') : '',
