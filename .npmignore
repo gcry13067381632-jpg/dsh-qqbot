@@ -7,3 +7,8 @@ tsconfig.json
 .dsh-sessions/
 *.tsbuildinfo
 node_modules/
+
+# 本地备份（曾被误打进包，约 2MB）
+*.bak
+*.bak-*
+*.bak.*

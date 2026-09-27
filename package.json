@@ -32,7 +32,8 @@
     "lint": "eslint src/",
     "test": "vitest run",
     "clean": "rm -rf dist",
-    "ci:prepare-test-pkg": "node scripts/prepare-test-pkg.js"
+    "ci:prepare-test-pkg": "node scripts/prepare-test-pkg.js",
+    "prepare": "tsc -p tsconfig.json"
   },
   "repository": {
     "type": "git",
@@ -72,7 +73,14 @@
     "bundle": {
       "patch": "./cordis.patch.yml"
     },
-    "client": { "platform": "web", "inject": ["@deepseek-ai/dsh-client-ui-settings", "@deepseek-ai/dsh-client-ui-slots"], "immediately": true },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-slots"
+      ],
+      "immediately": true
+    },
     "engines": {
       "dsh": "0.1.5-rc.2 || 0.1.6-alpha.2 || 0.1.7-rc.1"
     }
