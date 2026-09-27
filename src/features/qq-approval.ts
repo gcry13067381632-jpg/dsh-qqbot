@@ -176,7 +176,12 @@ export class QqApprovalController {
     try {
       // ① 按钮卡片优先: 按钮仅发起者本人可点(permission.specify_user_ids = 发起者 openid)
       const kb = approvalKeyboard(code);
-      const ownerIds = record.scope === 'group' ? [record.senderId] : [];
+      // ⚠️ 2026-09-28 修：原来只把【发起者本人】放进可点名单，导致"别人发起审批时主人点不动"。
+      //   现在 = 发起者 + 主人白名单(config.groupAdmin.owners)。私聊场景仍不设限制（本就只有双方）。
+      const ownerExtra = this.manager.adminOwners();
+      const ownerIds = record.scope === 'group'
+        ? Array.from(new Set([record.senderId, ...ownerExtra].filter((x) => typeof x === 'string' && x.length > 0)))
+        : [];
       const kbRows = kb as { content: { rows: Array<{ buttons: Array<{ action: { permission: { type: number } } }> }> } };
       for (const row of kbRows.content.rows) {
         for (const b of row.buttons) {
@@ -299,7 +304,14 @@ export class QqApprovalController {
             text: `主人已在 QQ ${allowed ? '批准' : '拒绝'}一次工具权限申请${toolName ? `(工具: ${toolName})` : ''}。`,
           }],
           source: {
-            kind: 'plugin' as const, plugin: 'qqbot-approval', form: 'notice' as const,
+            // ⚠️ 2026-09-28 修：原为 `kind: 'plugin'` —— dsh 会话格式 V4 明确拒绝该值
+            //    （dsh-session-format-v3-to-v4/lib/index.js:126：
+            //      `value["kind"] === "plugin"` → 抛 "format v4 message requires a producer-owned source kind"），
+            //    表现为"主人点批准/拒绝后本轮运行失败"。
+            //    官方对第三方插件的默认 producer kind 是 `plugin:<插件名>`（见同文件 producerKind()）。
+            //    这里改为自有的 producer kind，并把已淘汰的 `plugin` 字段去掉。
+            kind: 'plugin:qqbot-approval' as const,
+            form: 'notice' as const,
             summary: `主人${allowed ? '批准' : '拒绝'}了工具${toolName || ''}的权限申请`,
           } as never,
         }));

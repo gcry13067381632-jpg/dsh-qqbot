@@ -1054,6 +1054,18 @@ export class SessionManager {
     });
   }
 
+  /**
+   * 主人 openid 白名单（config.groupAdmin.owners）。
+   * 用于 QQ 审批卡片"谁可以点"的名单：发起者 + 这些主人。
+   * @returns 非空字符串数组（配置缺失/异常时返回空数组）
+   */
+  adminOwners(): string[] {
+    try {
+      const list = (this.config as { groupAdmin?: { owners?: unknown } } | undefined)?.groupAdmin?.owners;
+      return Array.isArray(list) ? list.map((x) => String(x)).filter((x) => x.length > 0) : [];
+    } catch { return []; }
+  }
+
   findBySessionId(sessionId: string): SessionRecord | undefined {
     for (const record of this.sessions.values()) {
       if (record.sessionId === sessionId) return record;

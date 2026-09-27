@@ -4,6 +4,26 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [1.5.12] - 2026-09-28
+
+> 修两处"点了审批没反应 / 点了就失败"的问题。
+
+### 修复
+- **审批点了就失败（dsh 会话格式 V4 不兼容）**：
+  `qq-approval` 的注入消息用了 `source.kind = 'plugin'`，而 dsh V4 明确拒绝该值
+  （`SessionFormatError: format v4 message requires a producer-owned source kind`）。
+  症状：在 web 或 QQ 点「批准 / 拒绝」后**本轮直接运行失败**。
+  现改为官方给第三方插件的 producer kind —— `plugin:qqbot-approval`，并去掉已淘汰的 `plugin` 字段。
+- **群里发起的审批，主人点不动按钮**：
+  审批卡片的 `permission.specify_user_ids` 原来只放"发起者本人"，
+  于是**别人发起的审批，主人无法批准**（点了没反应）。
+  现改为 **发起者 + 主人白名单（`groupAdmin.owners`）**，并新增 `SessionManager.adminOwners()` 读取白名单。
+  > 提示：白名单在「设置 → QQ 机器人 → 允许操作的主人 openid（逗号分隔，可留空=不校验）」里填写。
+
+### 说明
+- `1.5.11` 已包含：无上下文模式（按会话）、智能回复退避重试、会话损坏修复、压缩频率修复。
+- `1.5.10` 已包含：dock 悬浮球 `dsh.client` 声明修复、悬浮球位置 clamp、`model-prefs` 落盘与膨胀修复。
+
 ## [1.5.11] - 2026-09-28
 
 > 新增「无上下文模式」；修 4 个"静默失效/写坏数据"的问题。
