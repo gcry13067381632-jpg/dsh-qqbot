@@ -1734,8 +1734,13 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
       var badge = wrap.querySelector('#qqs-dock-badge')
       var panel = null
       var open = false
-      if (pos) { wrap.style.left = pos.x + 'px'; wrap.style.top = pos.y + 'px'; wrap.style.right = 'auto'; wrap.style.bottom = 'auto' }
-      // 拖拽(球上按住移动; 单击与拖拽区分)
+      // ⚠️ 2026-09-27 修复「拖到屏幕外后球永久消失」：拖拽时本来有 clamp(行1749)，
+      //   但**读取上次位置时没有** —— 窗口变小/换显示器后，存的坐标会落在可视区外，
+      //   球就再也点不到了（用户只能手动清 localStorage 才能找回）。这里读取时同样 clamp。
+      var _bw = 60, _bh = 60
+      var _x = Math.max(0, Math.min(Math.max(0, window.innerWidth - _bw), Number(pos.x) || 0))
+      var _y = Math.max(0, Math.min(Math.max(0, window.innerHeight - _bh), Number(pos.y) || 0))
+      wrap.style.left = _x + 'px'; wrap.style.top = _y + 'px'; wrap.style.right = 'auto'; wrap.style.bottom = 'auto'
       var dragState = null
       ball.addEventListener('mousedown', function (e) {
         dragState = { sx: e.clientX, sy: e.clientY, ox: wrap.offsetLeft, oy: wrap.offsetTop, moved: false }

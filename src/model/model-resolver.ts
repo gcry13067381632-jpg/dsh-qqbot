@@ -12,11 +12,13 @@
  *   > settings.yaml 的 agent-default-model（只读，作为默认兜底）
  *   > 宿主 agentDefaultModel 服务
  */
+import { join } from 'node:path';
 import type { Context } from '@deepseek-ai/cordis';
 import type { ImQQBotConfig } from '../config.js';
 import type { Logger } from '../types.js';
 import type { ModelRoute, ModelEntry } from './types.js';
 import { PrefsStore } from './prefs-store.js';
+import { dataRootOf } from '../gateway/data-root.js';
 import { SettingsReader } from './settings-reader.js';
 
 export class ModelResolver {
@@ -28,8 +30,10 @@ export class ModelResolver {
     private readonly config: ImQQBotConfig,
     private readonly logger?: Logger,
   ) {
+    // 偏好文件跟着 dataRoot 走（{dataRoot}/.qqbot/model-prefs.json），不再孤零零丢在 C 盘家目录
     this.prefs = new PrefsStore(
       config.debug ? (msg) => this.logger?.debug(msg) : undefined,
+      (() => { try { return join(dataRootOf(config), '.qqbot'); } catch { return undefined; } })(),
     );
     this.settings = new SettingsReader();
   }

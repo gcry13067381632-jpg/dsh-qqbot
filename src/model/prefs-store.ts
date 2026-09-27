@@ -9,7 +9,7 @@
  *     避免写盘瞬间被 kill 留下半截 JSON);
  *   - load 解析失败不再静默吞掉: 损坏文件改名 .corrupt-<ts> 保留取证, 空偏好继续。
  */
-import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, copyFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import type { ModelRoute } from './types.js';
@@ -47,10 +47,71 @@ export class PrefsStore {
   private readonly prefsPath: string;
   private readonly debugLog?: DebugFn;
 
-  constructor(debugLog?: DebugFn) {
-    this.prefsPath = resolve(homedir(), '.dsh-qqbot', 'model-prefs.json');
+  /**
+   * @param debugLog 调试日志回调
+   * @param baseDir  存放目录。**强烈建议传 `{dataRoot}/.qqbot`** ——
+   *   2026-09-24 修复：此前硬编码 `homedir()/.dsh-qqbot`，导致用户把 dataRoot 指到 D 盘后，
+   *   这个偏好文件仍孤零零留在 C 盘用户目录（其他数据都在 dataRoot，就它漏了）。
+   *   不传时回落到 `$DSH_HOME/.dsh-qqbot`（再退 `~/.dsh-qqbot`），保持向后兼容。
+   */
+  constructor(debugLog?: DebugFn, baseDir?: string) {
+    const root = (baseDir && baseDir.trim())
+      || resolve(process.env.DSH_HOME?.trim() || homedir(), '.dsh-qqbot');
+    this.prefsPath = resolve(root, 'model-prefs.json');
     this.debugLog = debugLog;
+    this.migrateLegacy();
     this.load();
+  }
+
+  /** 把老位置(`~/.dsh-qqbot/model-prefs.json`)的偏好**搬到新位置**（新位置没有时才搬，搬完保留原文件改名 .migrated） */
+  private migrateLegacy(): void {
+    try {
+      const legacy = resolve(homedir(), '.dsh-qqbot', 'model-prefs.json');
+      if (legacy === this.prefsPath) return;              // 目标就是老位置 → 不用搬
+      if (!existsSync(legacy) || existsSync(this.prefsPath)) return;
+      mkdirSync(dirname(this.prefsPath), { recursive: true });
+      copyFileSync(legacy, this.prefsPath);
+      try { renameSync(legacy, legacy + '.migrated'); } catch { /* 改不了名也无妨，反正已经复制 */ }
+      this.debugLog?.(`prefs 已从旧位置迁移: ${legacy} → ${this.prefsPath}`);
+    } catch (err) {
+      this.debugLog?.(`prefs 迁移失败(不影响运行): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /** 每个 Map 的条目上限 —— 只增不减会让文件无限膨胀（2026-09-24 主人反馈"越写越长"）。 */
+  private static readonly MAX_ENTRIES = 300;
+
+  /**
+   * 清理**孤儿 override**（2026-09-24 主人反馈"还是越写越多"）。
+   *
+   * override 的 key 是 `sessionKey@sessionId`，而每次新建会话（/new、cwd/preset 变更、
+   * 重启后未 resume）都会产生**新 sessionId** → 新 key；`sessionIds` 只记该 key 的最新会话，
+   * 于是旧 sessionId 的 override 永远没人删，一个群能攒出十几条。
+   *
+   * 判定：key 里的 sessionId ≠ `sessionIds` 记录的最新值 → 该 override 已失效（不可能再被读到）→ 删。
+   * 老式 peer 级 key（不含 `@sessionId`）保持不动，避免误删兼容路径。
+   */
+  private pruneOrphanOverrides(): void {
+    for (const key of [...this.overrides.keys()]) {
+      const at = key.lastIndexOf('@');
+      if (at < 0) continue;
+      const sessionKey = key.slice(0, at);
+      const sid = key.slice(at + 1);
+      const latest = this.sessionIds.get(sessionKey);
+      if (latest && latest !== sid) this.overrides.delete(key);
+    }
+  }
+
+  /** 超出上限时按插入顺序淘汰最旧（Map 保序；用过的键重新 set 会排到末尾，近似 LRU） */
+  private prune(): void {
+    this.pruneOrphanOverrides();
+    for (const m of [this.overrides, this.sessionIds, this.sessionCfg, this.sessionPresets]) {
+      while (m.size > PrefsStore.MAX_ENTRIES) {
+        const oldest = m.keys().next().value as string | undefined;
+        if (oldest === undefined) break;
+        m.delete(oldest);
+      }
+    }
   }
 
   // ── Override 操作 ──
@@ -177,6 +238,7 @@ export class PrefsStore {
 
   private write(): void {
     try {
+      this.prune();   // 防无限膨胀
       mkdirSync(dirname(this.prefsPath), { recursive: true });
       const data: PrefsFile = {
         overrides: Object.fromEntries(this.overrides.entries()),

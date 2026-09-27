@@ -4,6 +4,30 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [1.5.10] - 2026-09-27
+
+> 修 4 个"会打到普通用户"的问题，其中前两个直接影响能否看到/使用插件的 Web 界面。
+
+### 修复
+- **dsh 0.1.7 下 dock 悬浮球不显示（影响所有用户）**：
+  客户端模块的加载条件（`dsh-client-modules`）要求 `dsh.client` 声明里给出依赖或立即加载标记；
+  原来只有 `{"platform":"web","inject":[]}`，**空 inject 且无 `immediately`** 时该模块不会被排进前端的加载图
+  → 页面上永远看不到 `🛡` 悬浮球（连报错都没有）。
+  现改为 `{"platform":"web","inject":["@deepseek-ai/dsh-client-ui-settings","@deepseek-ai/dsh-client-ui-slots"],"immediately":true}`。
+- **悬浮球被拖到屏幕外后永久消失（用户很难自救）**：
+  拖拽过程**有**边界限制，但**读取上次位置时没有** —— 窗口变小 / 换显示器后，
+  `localStorage['qqs-dock-pos']` 里的旧坐标落在可视区外，球就再也点不到了。
+  现读取时同样 clamp 到可视区（旧坐标会被自动拉回）。
+- **`model-prefs.json` 落在 C 盘用户目录**：该文件此前硬编码 `~/.dsh-qqbot/`，
+  没跟随 `DSH_HOME`/`dataRoot`（其他数据都在 dataRoot）。现改为 `{dataRoot}/.qqbot/model-prefs.json`，
+  并在启动时**自动迁移**老文件（原文件改名 `.migrated` 留档）。
+- **`model-prefs.json` 只增不减**：`overrides` 的 key 是 `会话键@会话ID`，
+  每次新建会话（`/new`、cwd/preset 变更、重启后未 resume）都会多一条，而旧会话的条目永远没人清。
+  现新增**孤儿清理**（sessionId 已不是该会话最新值时删除）+ **每表 300 条上限**。
+
+### 说明
+- `1.5.9` 已包含：设置保存改插件自有存储（深合并）、图片本地路径修复（预检顺序 + fileid 稳定键）、
+  历史图片不再折叠成 `[图片]`、写 patch 前去重、README 两条 FAQ。
 ## [1.5.9] - 2026-09-24
 
 > 修一批"静默失效"型 bug：不报错、但功能悄悄没了。都跟 0.1.7 适配期的配置合并与图片链路有关。
@@ -520,5 +544,6 @@ dsh **0.1.7** 把 Agent 预设从「目录里的 yml 文件」换成了「profil
 ### 问题修复
 
 - 修复配置解析问题。
+
 
 

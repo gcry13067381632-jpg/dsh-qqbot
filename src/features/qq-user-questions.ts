@@ -20,11 +20,19 @@
  *   ③ 多问题(questions > 1): 依次发卡, 回答时可用 `#2 B` 指定第 2 问;
  *   ④ 选项超过按钮上限(QQ 卡片最多 5 行 → 5 个可点按钮)时, 卡片正文照样列全, 靠文字兜底补齐;
  *   ⑤ 按钮卡片发送失败时不再放弃提问 —— 退化成纯文字选项清单, pending 保留(文字兜底能收答案)。
+ *
+ * 2026-09-24 增强(主人需求: 卡片要能"指定 openid 或昵称匹配"):
+ *   卡片可点人既认 `<@32位openid>`、也认 **`<@群友昵称>`** —— 昵称会用本地群成员台账
+ *   (`{dataRoot}/表情包/group-members.jsonl`, 在群里发过言/申请过入群的人)解析成 openid;
+ *   没写 `<@...>` 标注、但 question/header 文本里唯一命中某位成员昵称时同样按点名处理。
+ *   解析不到就沿用老逻辑(最近被 @ 的人 → 消息发送者壳 → 会话发起者)。
  */
 import type { ReplyTarget } from '@tencent-connect/qqbot-nodejs';
+import { join } from 'node:path';
 import type { QQBotSender } from '../transport/outbound-buffer.js';
 import type { SessionManager } from '../session/index.js';
 import type { Logger } from '../types.js';
+import { readGroupMembers } from './chat-ledger.js';
 
 const BTN_PREFIX = 'q:';
 /** 选项字母表(文字兜底按它映射) */
@@ -132,24 +140,61 @@ function promptOf(item: PendingItem, timeoutMs: number, forCard: boolean): strin
   return `${ask}\n\n${list}\n\n${point}\n（${tips}）`;
 }
 
+/** 昵称 → openid 的解析器(群聊用; 数据源=本地群成员台账) */
+export interface QuestionOwnerResolver {
+  /** 昵称 → openid(命中才返回; 同名取最近发言者, 包含匹配要求唯一) */
+  byName(name: string): string | null;
+  /** 整段文本里唯一命中的成员昵称 → openid(没有任何 <@...> 标注时兜底用) */
+  byText(text: string): string | null;
+}
+
+/** 取出文本里所有 `<@内容>` 标注(内容可能是 openid, 也可能是昵称) */
+function atTokens(text: string): string[] {
+  const out: string[] = [];
+  for (const m of String(text || '').matchAll(/<@([^<>\n]{1,64})>/g)) {
+    const v = String(m[1] ?? '').trim();
+    if (v) out.push(v);
+  }
+  return out;
+}
+
+/** 32 位字母数字 = openid(QQ 的 member_openid/user_openid 形状) */
+function looksLikeOpenid(s: string): boolean {
+  return /^[0-9A-Za-z]{32}$/.test(s);
+}
+
 /**
  * 解析"这张提问卡片该谁回答"(按钮 permission.type=0 + specify_user_ids 显式指定人):
- *  ① 本次提问的 question/header 文本里的 <@openid> —— 工具输入直接写明 id 指定(优先级最高)
- *  ② 最近真人 user/message 文本里的 <@openid>: 取最后一个(提问目标句末; 前面常是 @bot 自己)
+ *  ① 本次提问的 question/header 文本里的 `<@openid>` **或 `<@昵称>`** —— 显式指定(优先级最高)
+ *  ①b 文本里没写任何 `<@...>` 标注、但**唯一**命中某位群成员的昵称 → 也算点名
+ *  ② 最近真人 user/message 文本里的 `<@openid>`/`<@昵称>`: 取最后一个(提问目标句末; 前面常是 @bot 自己)
  *  ③ 消息发送者壳 [昵称 (openid)]
  *  ④ 兜底: 会话发起者 record.senderId
  * 注: 群投票/谁都能点可走 permission.type:2(owner 为空时 optionsKeyboard 已处理)。
+ * 2026-09-24 增强(主人需求): 支持**昵称匹配** —— 不必手打 32 位 openid, 写 `<@某群友昵称>` 即可。
  */
-function resolveCardOwner(record: { senderId: string; agent?: { session?: { events?: readonly unknown[] } } }, inlineText?: string): string {
-  const firstAt = (text: string): string | null => {
-    const ats: string[] = [];
-    for (const m of String(text || '').matchAll(/<@([A-Za-z0-9]{32})>/g)) ats.push(m[1]!);
-    return ats.length > 0 ? ats[ats.length - 1]! : null;
+function resolveCardOwner(
+  record: { senderId: string; agent?: { session?: { events?: readonly unknown[] } } },
+  inlineText?: string,
+  resolver?: QuestionOwnerResolver,
+): string {
+  /** 标注内容 → openid: 是 openid 直接用; 是昵称则走台账匹配 */
+  const fromToken = (tok: string): string | null => {
+    if (looksLikeOpenid(tok)) return tok;
+    return resolver?.byName(tok) ?? null;
   };
-  // ① 提问文本里的点名 = 显式指定(id 写在 header/question 都算)
+  // ① 提问文本里的点名 = 显式指定(id 或昵称写在 header/question 都算)
   if (inlineText) {
-    const hit = firstAt(inlineText);
-    if (hit) return hit;
+    const toks = atTokens(inlineText);
+    for (let i = toks.length - 1; i >= 0; i--) {
+      const hit = fromToken(toks[i]!);
+      if (hit) return hit;
+    }
+    // ①b 没写 <@...> 标注时: 文本里唯一出现的成员昵称也算点名
+    if (toks.length === 0) {
+      const hit = resolver?.byText(inlineText) ?? null;
+      if (hit) return hit;
+    }
   }
   try {
     const evs = record.agent?.session?.events;
@@ -164,9 +209,12 @@ function resolveCardOwner(record: { senderId: string; agent?: { session?: { even
         const content = Array.isArray(data.content) ? (data.content as Array<{ text?: string }>) : [];
         const text = content.map((b) => (b?.text ?? '')).join('\n');
         if (!text) continue;
-        // ② 最近真人消息点名(取最后一个 @)
-        const hit = firstAt(text);
-        if (hit) return hit;
+        // ② 最近真人消息点名(取最后一个 @): openid 或昵称都认
+        const toks = atTokens(text);
+        for (let k = toks.length - 1; k >= 0; k--) {
+          const hit = fromToken(toks[k]!);
+          if (hit) return hit;
+        }
         // ③ 消息发送者壳
         const shell = text.match(/\[\[^\]\n]*?\s*\(([A-Za-z0-9]{32})\)\]/);
         if (shell) return shell[1]!;
@@ -240,6 +288,46 @@ export class QqUserQuestionsController {
   ) {}
 
   /**
+   * 群成员昵称 → openid 解析器(2026-09-24 主人需求: 提问卡片支持"昵称匹配"指定收件人)。
+   * 数据源 = 本地群成员台账 `{dataRoot}/表情包/group-members.jsonl`(在群里发过言/申请过入群的人);
+   * 群聊之外、或台账里查不到 → 返回 undefined, 调用方按老逻辑回落(会话发起者)。
+   * ⚠️ 从没发过言的人查不到(官方群成员列表接口未开放) —— 那种情况请照旧写 <@32位openid>。
+   */
+  private ownerResolverFor(record: { replyTarget?: { scope?: string; targetId?: string } }): QuestionOwnerResolver | undefined {
+    try {
+      const scope = record?.replyTarget?.scope;
+      const gid = scope === 'group' ? String(record?.replyTarget?.targetId ?? '') : '';
+      if (!gid) return undefined;
+      const members = readGroupMembers(join(this.manager.dataRoot, '表情包'), gid);
+      if (!Array.isArray(members) || members.length === 0) return undefined;
+      const byName = (name: string): string | null => {
+        const key = String(name ?? '').trim().replace(/^[＠@]+/u, '').trim();
+        if (!key) return null;
+        // 精确同名: 台账按最近发言倒序 → 第一个就是最近说话的那位
+        const exact = members.filter((m) => m.name === key);
+        const f = exact[0];
+        if (f && f.mid) return f.mid;
+        // 包含匹配: 必须唯一命中, 否则宁可不指定(避免绑错人)
+        const part = members.filter((m) => typeof m.name === 'string' && m.name.length > 0 && m.name.includes(key));
+        const p = part[0];
+        if (part.length === 1 && p && p.mid) return p.mid;
+        return null;
+      };
+      const byText = (text: string): string | null => {
+        const hits = new Set<string>();
+        for (const m of members) {
+          const nm = String(m.name ?? '').trim();
+          if (nm.length < 2 || !m.mid) continue;
+          if (String(text ?? '').includes(nm)) hits.add(m.mid);
+        }
+        const arr = [...hits];
+        return arr.length === 1 ? arr[0]! : null;
+      };
+      return { byName, byText };
+    } catch { return undefined; }
+  }
+
+  /**
    * 宿主 user-questions/request 处理器。只 claim"会话可定位 + 每个问题都带选项"的场景;
    * 其余(无会话/无选项/选项过多/问题过多) → next() 交回宿主(Web UI 或原样)。
    * 多问题时依次发卡, 回答用 `#2 B` 指定; 全部答完或超时后一起回给宿主。
@@ -275,7 +363,8 @@ export class QqUserQuestionsController {
     const peerKey = `${record.replyTarget.scope}:${record.replyTarget.targetId}`;
     // 卡片可点人: 从最近真人消息解析——被点名的最后一人(@)优先, 其次消息发送者壳, 回落会话发起者
     // (修复: 主人让 bot 问群友时, 卡片应绑被问者而不是 bot/主人, 否则被问者点卡片=无权限)
-    const owner = resolveCardOwner(record, parsed.map((q) => `${q.header} ${q.question}`).join(' '));
+    const owner = resolveCardOwner(record, parsed.map((q) => `${q.header} ${q.question}`).join(' '), this.ownerResolverFor(record));
+    this.logger.info(`QQ question owner resolved: ${owner ? owner.slice(0, 8) + '…' : '(全员可点)'}`);
 
     // 先注册 pending(防按钮回调/文字回复先于 Promise 建立到达)
     let resolver: (v: unknown) => void = () => undefined;
