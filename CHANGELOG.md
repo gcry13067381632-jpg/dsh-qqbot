@@ -14,6 +14,13 @@
   → 现改为回显时**合并自有存储**（patch 优先，其次自有存储），与写路径对称。
   随之修正同源的：`preset` 回显、`appId` 回显、`hasSecret` 判定、`disabled` 判定。
 
+- **同类问题根治：账号配置"只写自有存储、读取只读 patch"的不对称**
+  除上面那条 `cwd` 回显外，桥里还有多处**只读 patch** 取账号配置（`nsBot()`、`/session-lookup`、
+  `/group/join-summary`），导致用户存进自有存储的 `appId` / `appSecret` / `cwd` 读不到：
+    - `nsBot()` 返回 `null` → 群管理 / 图库 / 无上下文 / Excel 导出**全部走错路径**
+      （症状：报"找不到该账号实例(请先在账号页配置 appId/appSecret)"、图库与定时目录消失）
+  → 新增 `mergeOwnIntoCfg()` 统一合并（patch 优先，其次自有存储），上述入口全部改用它。
+
 ### 变更（让"填 GitHub 地址安装"开箱可用）
 - **把构建产物 `dist/` 提交进仓库**：此前仓库不提交 dist，从 git 直装只有源码，
   而新版 pnpm 默认禁止 git 依赖执行构建脚本（`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`）
