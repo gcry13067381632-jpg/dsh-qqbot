@@ -19,7 +19,7 @@ import { runQrSetup, persistCredentialsToProfile } from './setup.js';
 // 2026-09-24 关闭"启动自动扫码"后，这些符号保留给设置页路径使用；此处显式引用避免 TS 未使用报错。
 void runQrSetup; void persistCredentialsToProfile;
 import type { Logger } from './types.js';
-import { setOutboundModeWriter } from './features/outbound-mode-switch.js';
+import { setOutboundModeWriter } from './features/outbound-mode-switch.js';
 
 // ⚠️ @deepseek-ai/dsh-settings 的"注册 Web 可视化设置"入口在 harness 各版本间有差异：
 //   - rc.2 及更早：模块顶层具名导出 installSettingsSection(ctx, ns, schema, entry, hooks)
@@ -151,12 +151,35 @@ export async function apply(ctx: Context, config: ImQQBotConfig): Promise<void> 
     Object.assign(resolvedConfig as unknown as Record<string, unknown>, mergeDeep(resolvedConfig, ownSettings) as Record<string, unknown>);
     logger.info(`已加载插件自有设置(${Object.keys(ownSettings).length} 项): ${ownSettingsFile}`);
   }
+  // ⚠️ 2026-09-28 修：监听里除了热更新配置，还要处理"从无凭据 → 有凭据"的自动启动网关。
+  //   背景：bootstrapGateway 只在 apply() 里跑一次。用户首次安装时没有凭据，
+  //   插件只是"装好设置面板"就结束了（见下方 hasCred 分支）→ 此后在设置页填好凭据，
+  //   配置对象虽然更新了，但**网关从未启动** → 表现就是"填了密码却不会自动重连"（必须重启）。
+  //   现在：一旦检测到凭据从无到有，就自动启动一次网关。
+  let gatewayStarted = false;
+  const tryStartGateway = async (): Promise<void> => {
+    if (gatewayStarted) return;
+    const cur = resolvedConfig as unknown as Record<string, unknown>;
+    const id = String(cur.appId ?? '');
+    const sec = String(cur.appSecret ?? '');
+    if (!id || !sec) return;
+    gatewayStarted = true;
+    try {
+      logger.info(`实例 ${ns}: 检测到凭据已就绪，开始启动网关…`);
+      await bootstrapGateway(ctx, agents, resolvedConfig, logger);
+      logger.info(`实例 ${ns}: 网关已启动（凭据热更新生效，无需重启）`);
+    } catch (err) {
+      gatewayStarted = false;   // 失败则允许下次重试
+      logger.warn?.(`实例 ${ns}: 凭据热更新后启动网关失败: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
   try {
     (ctx as unknown as { on: (ev: string, fn: (ns?: string) => void) => void }).on('qqbot/settings-changed', (changedNs?: string) => {
       if (changedNs && changedNs !== ns) return;
       const next = readOwnSettings();
       Object.assign(resolvedConfig as unknown as Record<string, unknown>, mergeDeep(resolvedConfig, next) as Record<string, unknown>);
       logger.info(`设置已热更新(${ns}): ${Object.keys(next).length} 项`);
+      void tryStartGateway();   // ← 若刚从"无凭据"变成"有凭据"，自动把网关拉起来
     });
   } catch { /* 事件系统不可用 → 退化为重启生效 */ }
 
@@ -241,9 +264,13 @@ export async function apply(ctx: Context, config: ImQQBotConfig): Promise<void> 
   }
 
   // 没有凭据 → 保留设置面板即可，不启动网关（不连 QQ、不注册入站）
-  if (!hasCred) return;
+  //   此时已注册 settings-changed 监听：用户填好凭据保存后会自动启动网关（无需重启）。
+  if (!hasCred) {
+    logger.info(`实例 ${ns}: 暂无凭据 —— 设置面板已就绪，填好凭据保存后会自动连接（无需重启）。`);
+    return;
+  }
 
-  await bootstrapGateway(ctx, agents, resolvedConfig, logger);
+  await tryStartGateway();
 }
 
 /** 把 settings 用户层合并进 live 运行时配置(原地字段替换; schema 解析值含默认, 可整体覆盖) */
