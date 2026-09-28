@@ -837,14 +837,20 @@ export function apply(ctx) {
         hasFile,
         instances: bots.map((b) => {
           // ⚠️ 2026-09-28 修：保存时 cwd/preset/appId 只写【自有存储】(见 saveInstances 的 2026-09-24 注释)，
-          //   但回显原先只读 patch → 界面上填过的 cwd/preset 保存后就"变空"了（前端拿到空串）。
-          //   这里把自有存储的值一并合并，与写路径对称（patch 优先，其次自有存储）。
+          //   但回显原先只读 patch → 界面上填过的 cwd/preset 保存后就"变空"/"显示旧值"。
+          //   **自有存储优先**（那是用户在设置页保存的最新值；patch 是历史旧值），与 /read 一致。
           let ownCfg = {};
-          try { ownCfg = readOwnSettings(String(b.id)) || {}; } catch { ownCfg = {}; }
-          const cwd = b.cfg?.cwd || ownCfg.cwd || '';
-          const presetMerged = b.cfg?.preset || ownCfg.preset || '';
-          const appIdMerged = b.cfg?.appId || ownCfg.appId || '';
-          const hasSecretMerged = !!(b.cfg?.appSecret || ownCfg.appSecret);
+          try { ownCfg = readOwnSettings(String(b.cfg?.settingsNs || b.id)) || {}; } catch { ownCfg = {}; }
+          const pickOwn = (k) => {
+            const o = ownCfg[k];
+            if (o !== undefined && o !== '') return o;
+            const c = b.cfg ? b.cfg[k] : undefined;
+            return c !== undefined && c !== '' ? c : '';
+          };
+          const cwd = pickOwn('cwd');
+          const presetMerged = pickOwn('preset');
+          const appIdMerged = pickOwn('appId');
+          const hasSecretMerged = !!pickOwn('appSecret');
           // 数据根与 dist 侧 dataRootOf 对齐: 未配 dataRoot → `{cwd}/dshqqbot`(2026-09-12 新默认)
           const droot = b.cfg?.dataRoot || (cwd ? join(cwd, 'dshqqbot') : '');
           return {
@@ -1748,13 +1754,23 @@ export function apply(ctx) {
    *   （避免多条目 insert 时块边界写歪 YAML）。但桥里有若干地方**只读 patch** 取账号配置，
    *   于是用户存进自有存储的值读不到 —— 表现为：
    *     · 账号页填了「工作目录」保存后回显为空
-   *     · nsBot() 返回 null → 群管理/图库/无上下文/Excel 导出全部走错路径
-   *   这里统一合并（patch 优先，其次自有存储），所有取账号配置的入口都应走它。
+   *     · 改「Agent 预设(人格)」后界面仍显示旧人格（看起来"没改成"）
+   *     · nsBot() 拿到旧的 appSecret/cwd → 用错凭据连不上（掉线）/ 群管理图库走错路径
+   *
+   * ⚠️⚠️ 优先级必须【自有存储优先】：自有存储 = 用户在设置页保存的最新值；
+   *   patch = 历史遗留的旧值。这与 /read 接口的做法一致：
+   *     const value = Object.assign({}, base.value || {}, own)   // own 覆盖 base
+   *   （人家第一版写成"patch 优先"，方向搞反，导致界面始终显示旧人格 —— 已修正。）
    */
   function mergeOwnIntoCfg(cfg, nsLike) {
     let own = {};
     try { own = readOwnSettings(String(nsLike)) || {}; } catch { own = {}; }
-    const pick = (k) => (cfg && cfg[k] !== undefined && cfg[k] !== '' ? cfg[k] : (own[k] !== undefined && own[k] !== '' ? own[k] : (cfg ? cfg[k] : undefined)));
+    const pick = (k) => {
+      const o = own[k];
+      if (o !== undefined && o !== '') return o;      // ← 自有存储优先（用户最新保存的）
+      const c = cfg ? cfg[k] : undefined;
+      return c !== undefined && c !== '' ? c : (cfg ? cfg[k] : undefined);
+    };
     return {
       ...cfg,
       appId: pick('appId'),
@@ -1772,18 +1788,16 @@ export function apply(ctx) {
     if (!b) return null;
     // ⚠️ 2026-09-28 修（同类问题根治）：自 2026-09-24 起，已有账号的 appId/appSecret/preset/cwd
     //   只写【插件自有存储】，不再写 profile patch（避免多条目 insert 时块边界写歪 YAML）。
-    //   但这里原先只读 patch → 用户存进自有存储的 cwd 读不到 → 数据目录算成空 →
-    //   群管理 / 图库 / 无上下文 / Excel 导出 等**所有**依赖 nsBot 的接口全部走错路径
-    //   （症状：报"找不到该账号实例(请先在账号页配置 appId/appSecret)"、图库与定时目录消失）。
-    //   现在先合并自有存储（patch 优先，其次自有存储），与写路径对称。
-    let own = {};
-    try { own = readOwnSettings(String(b.cfg?.settingsNs || id)) || {}; } catch { own = {}; }
-    const appId = b.cfg?.appId || own.appId || '';
-    const appSecret = b.cfg?.appSecret || own.appSecret || '';
+    //   但这里原先只读 patch → 用户存进自有存储的 cwd/appSecret 读不到 →
+    //   数据目录算成空 / 用错凭据连不上（掉线）→ 群管理、图库、无上下文、Excel 导出全部走错路径。
+    //   现在统一走 mergeOwnIntoCfg（**自有存储优先**，与 /read 接口一致；patch 是历史旧值）。
+    const m = mergeOwnIntoCfg(b.cfg || {}, b.cfg?.settingsNs || id);
+    const appId = m.appId || '';
+    const appSecret = m.appSecret || '';
     // 数据根: dataRoot(新) > `{cwd}/dshqqbot`(**2026-09-12 新默认**, 与 dist 侧 dataRootOf 对齐);
     // nsBot 的 cwd 字段按数据根返回(全为数据目录用途) —— 未配 dataRoot 的实例不再落到工作目录。
-    const cwdCfg = b.cfg?.cwd || own.cwd || '';
-    const cwd = (b.cfg?.dataRoot || own.dataRoot || (cwdCfg ? join(cwdCfg, 'dshqqbot') : ''));
+    const cwdCfg = m.cwd || '';
+    const cwd = (m.dataRoot || (cwdCfg ? join(cwdCfg, 'dshqqbot') : ''));
     if (!appId || !appSecret) return null;
     return { id, appId, appSecret, cwd, ns: id };
   }
