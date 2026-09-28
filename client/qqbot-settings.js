@@ -4832,8 +4832,17 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         state.wantPeer = null
         paintDetect()
         lookupCurrentSession(function (hit) {
-          if (!state.accts.length) { api('accounts').then(function (dd) { var list = (dd && Array.isArray(dd.instances) ? dd.instances : []).filter(function (a) { return !a.disabled }); state.accts = list; applyHit(hit, list) }) }
-          else applyHit(hit, state.accts)
+          // ⚠️ 2026-09-28 修：只滤 disabled 不够 —— 插件 bundle 自动注入的「幽灵实例」
+          //   (id: im-qqbot，凭据是占位符 __FROM_ENV__) 的 disabled 是 false，
+          //   它只是【没有 appId】。它一旦被当成"当前账号"，面板就会读它的空配置，
+          //   于是评分模式等全部回落成 schema 默认值（看着像"设置全被重置"）。
+          function realOnly(list) {
+            return (Array.isArray(list) ? list : []).filter(function (a) {
+              return a && !a.disabled && a.appId
+            })
+          }
+          if (!state.accts.length) { api('accounts').then(function (dd) { var list = realOnly(dd && dd.instances); state.accts = list; applyHit(hit, list) }) }
+          else applyHit(hit, realOnly(state.accts))
         })
       }
       function applyHit(hit, list) {
@@ -4843,6 +4852,8 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           if (hit.scope === 'c2c') { state.sendScope = 'c2c'; state.sendTo = hit.peerId; state.sendName = hit.name || '' }
           else { state.sendScope = 'group'; state.gid = hit.peerId }
         } else if (list.length && !state.ns) {
+          // 反查不到（例如切到了非 QQ 会话）→ 回落到第一个【真实例】，
+          // ⚠️ 绝不能落到幽灵实例，否则整个面板会显示成默认值。
           state.ns = list[0].ns || ''
         }
         refreshAll(); paintHead(); paintDetect()
