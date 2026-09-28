@@ -1740,16 +1740,50 @@ export function apply(ctx) {
   // ── ⑥QQ 群管理面板(P3, 2026-09-05): 多群管理 host 路由(读/写走 GroupAdminClient; 面板=主人直发免 QQ 审批) ──
   // 数据: {cwd}/.qqbot/{groups.json 群注册表, join-pending.json 待审, group-audit.jsonl 审计日志}
   // 鉴权: 与全路由一致走 route() 同源 loopback fence; 面板主人级鉴权(P4 加强)。
+  /**
+   * 把【插件自有存储】的值合并进 patch 解析出的实例列表。
+   *
+   * ⚠️ 2026-09-28 根治同类问题：
+   *   自 2026-09-24 起，已有账号的 appId / appSecret / preset / cwd 只写自有存储、不写 patch
+   *   （避免多条目 insert 时块边界写歪 YAML）。但桥里有若干地方**只读 patch** 取账号配置，
+   *   于是用户存进自有存储的值读不到 —— 表现为：
+   *     · 账号页填了「工作目录」保存后回显为空
+   *     · nsBot() 返回 null → 群管理/图库/无上下文/Excel 导出全部走错路径
+   *   这里统一合并（patch 优先，其次自有存储），所有取账号配置的入口都应走它。
+   */
+  function mergeOwnIntoCfg(cfg, nsLike) {
+    let own = {};
+    try { own = readOwnSettings(String(nsLike)) || {}; } catch { own = {}; }
+    const pick = (k) => (cfg && cfg[k] !== undefined && cfg[k] !== '' ? cfg[k] : (own[k] !== undefined && own[k] !== '' ? own[k] : (cfg ? cfg[k] : undefined)));
+    return {
+      ...cfg,
+      appId: pick('appId'),
+      appSecret: pick('appSecret'),
+      preset: pick('preset'),
+      cwd: pick('cwd'),
+      dataRoot: pick('dataRoot'),
+    };
+  }
+
   function nsBot(ns) {
     const { bots } = parsePatch();
     const id = ns && ns !== 'im-qqbot' ? String(ns) : 'im-qqbot';
     const b = bots.find((x) => x.id === id);
     if (!b) return null;
-    const appId = b.cfg?.appId || '';
-    const appSecret = b.cfg?.appSecret || '';
+    // ⚠️ 2026-09-28 修（同类问题根治）：自 2026-09-24 起，已有账号的 appId/appSecret/preset/cwd
+    //   只写【插件自有存储】，不再写 profile patch（避免多条目 insert 时块边界写歪 YAML）。
+    //   但这里原先只读 patch → 用户存进自有存储的 cwd 读不到 → 数据目录算成空 →
+    //   群管理 / 图库 / 无上下文 / Excel 导出 等**所有**依赖 nsBot 的接口全部走错路径
+    //   （症状：报"找不到该账号实例(请先在账号页配置 appId/appSecret)"、图库与定时目录消失）。
+    //   现在先合并自有存储（patch 优先，其次自有存储），与写路径对称。
+    let own = {};
+    try { own = readOwnSettings(String(b.cfg?.settingsNs || id)) || {}; } catch { own = {}; }
+    const appId = b.cfg?.appId || own.appId || '';
+    const appSecret = b.cfg?.appSecret || own.appSecret || '';
     // 数据根: dataRoot(新) > `{cwd}/dshqqbot`(**2026-09-12 新默认**, 与 dist 侧 dataRootOf 对齐);
     // nsBot 的 cwd 字段按数据根返回(全为数据目录用途) —— 未配 dataRoot 的实例不再落到工作目录。
-    const cwd = (b.cfg?.dataRoot || (b.cfg?.cwd ? join(b.cfg.cwd, 'dshqqbot') : ''));
+    const cwdCfg = b.cfg?.cwd || own.cwd || '';
+    const cwd = (b.cfg?.dataRoot || own.dataRoot || (cwdCfg ? join(cwdCfg, 'dshqqbot') : ''));
     if (!appId || !appSecret) return null;
     return { id, appId, appSecret, cwd, ns: id };
   }
@@ -1862,8 +1896,11 @@ export function apply(ctx) {
       const { bots } = parsePatch();
       const botByNs = new Map();
       for (const bot of bots) {
-        if (bot.disabled || !bot.cfg?.appId || !bot.cfg?.cwd) continue;
-        botByNs.set(bot.id, bot);
+        // ⚠️ 2026-09-28：appId/cwd 可能只在【自有存储】里（2026-09-24 起的保存策略），
+        //   合并后再判断，否则这类账号会被误跳过。
+        const mcfg = mergeOwnIntoCfg(bot.cfg || {}, bot.cfg?.settingsNs || bot.id);
+        if (bot.disabled || !mcfg.appId || !mcfg.cwd) continue;
+        botByNs.set(bot.id, { ...bot, cfg: mcfg });
       }
       const hits = [];
       const seen = new Set();
@@ -3754,6 +3791,8 @@ const WHY_MAP = { busy: '目标会话回合活跃,已等待至回合结束仍超
       const { bots } = parsePatch();
       const out = [];
       for (const bot of bots) {
+        // ⚠️ 2026-09-28：凭据可能只在【自有存储】里（2026-09-24 起的保存策略），合并后再判断。
+        bot.cfg = mergeOwnIntoCfg(bot.cfg || {}, bot.cfg?.settingsNs || bot.id);
         if (bot.disabled || !bot.cfg?.appId || !bot.cfg?.appSecret) continue;
         try {
           const ns = bot.id;
