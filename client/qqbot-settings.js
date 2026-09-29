@@ -1726,6 +1726,12 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
       if (oldWrap) { try { oldWrap.remove() } catch (e) { if (oldWrap.parentNode) oldWrap.parentNode.removeChild(oldWrap) } }
       // 位置记忆(可拖拽)
       var pos = null; try { var raw = localStorage.getItem('qqs-dock-pos'); if (raw) pos = JSON.parse(raw) } catch (e) {}
+      // 修复(全新实例必崩): 没有历史坐标(或值损坏被上面的 catch 吞掉)时 pos 仍是 null,
+      // 而紧跟着的 `Number(pos.x)` 会抛 TypeError: Cannot read properties of null (reading 'x')。
+      // startQqDock 由 apply() 裸调 → 异常冒泡 → cordis 把这条 client fiber 判 FAILED →
+      // dsh 0.1.7 的客户端启动审计视为致命 → 整个 Web UI 退化成 "Failed to load plugins"。
+      // 作者机器上不炸只因为 localStorage 里早就有 qqs-dock-pos(拖过球)。
+      if (!pos || typeof pos !== 'object') pos = {}
       var wrap = document.createElement('div')
       wrap.id = 'qqs-dock-wrap'
       wrap.innerHTML = '<div id="qqs-dock-ball" title="QQ 群管理(拖拽移动, 点开面板)">🛡<span id="qqs-dock-badge">0</span></div>'
@@ -4864,20 +4870,30 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
     }
 
     function apply(ctx) {
+      // 防御(与 dsh-undo-savepoint 的 safe() 同款): client 半边任一环节抛异常, 这条 entry 就会
+      // 被判 FAILED, 而 dsh 0.1.7 的客户端启动审计是**致命**的 —— 整个 Web UI 只剩余下
+      // "Failed to load plugins"。故这里逐段降级(打 warn 便于定位), 不连坐整页。
+      var safe = function (label, fn) {
+        try { return fn() } catch (e) {
+          try { console.warn('[qqbot-settings] ' + label + ' degraded: ' + String((e && e.message) || e)) } catch (x) {}
+        }
+      }
       ensureCss()
       var slots = ctx.slots
       if (!slots) { console.warn('[qqbot-settings] slots unavailable'); return }
-      slots.inject('settings.section', function () {
-        return slots.register(
-          { name: 'settings.section', id: 'qqbot', order: 32, label: 'QQ 机器人' },
-          function (props) { return h(QqbotHome, { close: props && props.close }) })
+      safe('settings section', function () {
+        slots.inject('settings.section', function () {
+          return slots.register(
+            { name: 'settings.section', id: 'qqbot', order: 32, label: 'QQ 机器人' },
+            function (props) { return h(QqbotHome, { close: props && props.close }) })
+        })
       })
-      startApprovalFloat()
+      safe('approval float', startApprovalFloat)
       // sessions 服务(宿主根服务): 权威读 web 当前会话(current)与 cwd(agent id === session id)
       var sessionsSvc = null
       try { sessionsSvc = (ctx && (ctx.sessions || (ctx.get && ctx.get('sessions')))) || null } catch (e) { sessionsSvc = null }
       if (!sessionsSvc) { try { sessionsSvc = ctx.get && ctx.get('sessions') } catch (e) {} }
-      startQqDock(sessionsSvc)
+      safe('dock', function () { startQqDock(sessionsSvc) })
     }
 
     exports.inject = ['slots', 'sessions']
