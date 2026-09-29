@@ -99,6 +99,13 @@ export function createLocalEmbedder(opts = {}) {
         if (lexical)
             lexical = undefined; // 开关关掉 → 回到模型优先
         if (failedAt) {
+            // 兜底开关打开且模型已经失败过 → 直接走兜底, 不再每 60s 重试模型(安卓上模型必然失败, 白等窗口)
+            if (lexicalFallbackWanted || opts.lexicalFallback === true) {
+                lexical = createLexicalEmbedder({ dims: 512 });
+                dims = lexical.dims;
+                logger?.info('[im-qqbot] 智能回复: 模型此前已失败 → 直接使用程序兜底(不再重试小模型)');
+                return true;
+            }
             const waited = Date.now() - failedAt;
             if (waited < RETRY_BACKOFF_MS)
                 return false; // 退避中

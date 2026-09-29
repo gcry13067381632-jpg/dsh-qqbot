@@ -138,6 +138,13 @@ export function createLocalEmbedder(opts: { modelDir?: string; logger?: Logger; 
     if (lexical && (lexicalFallbackWanted || opts.lexicalFallback === true)) return true;   // 程序兜底已生效
     if (lexical) lexical = undefined;                                                        // 开关关掉 → 回到模型优先
     if (failedAt) {
+      // 兜底开关打开且模型已经失败过 → 直接走兜底, 不再每 60s 重试模型(安卓上模型必然失败, 白等窗口)
+      if (lexicalFallbackWanted || opts.lexicalFallback === true) {
+        lexical = createLexicalEmbedder({ dims: 512 });
+        dims = lexical.dims;
+        logger?.info('[im-qqbot] 智能回复: 模型此前已失败 → 直接使用程序兜底(不再重试小模型)');
+        return true;
+      }
       const waited = Date.now() - failedAt;
       if (waited < RETRY_BACKOFF_MS) return false;      // 退避中
       // 退避结束 → 允许再试一次（清掉失败标记，让下面的加载流程跑起来）
