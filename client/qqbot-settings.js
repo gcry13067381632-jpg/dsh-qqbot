@@ -269,6 +269,9 @@ window.__ModuleLoader__.load({
             visionCli: cfg.sticker.visionCli,
           },
           injectRules: cfg.injectRules,
+          // 2026-09-30 修: 这两个开关原来漏写进 patch → 面板勾了/取消了都存不下去(读得到、写不回)
+          imageHint: cfg.imageHint !== false,
+          messageReference: cfg.messageReference !== false,
           // 定时唤醒(④)已并入「定时任务」页编辑; 这里原样带过不丢即可
           schedule: cfg.schedule && Array.isArray(cfg.schedule.targets) ? cfg.schedule : { targets: [] },
           groupPrompt: typeof gpOverride === 'string' ? gpOverride : (typeof cfg.groupPrompt === 'string' ? cfg.groupPrompt : ''),
