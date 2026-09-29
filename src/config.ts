@@ -270,6 +270,8 @@ export interface EditableConfig {
     /** 价值评分门槛(0~1): 近邻相似度低于此值视为不值得回应 */
     valueMinScore?: number;
     /** 单会话覆盖(2026-09-13): key = "group:<群openid>" / "c2c:<私聊openid>"; 未覆盖则继承账号默认 */
+    /** 兜底: 小模型不可用时改用纯程序(字符 n-gram)算向量(安卓等无 ONNX 环境仍可用) */
+    lexicalFallback?: boolean;
     overrides?: Record<string, { enabled?: boolean; valueGate?: 'off' | 'log' | 'block'; valueMinScore?: number }>;
   };
   /** 群聊常驻守则(默认含表情包礼仪; QQ 通道级注入, 跨 preset 不碰 persona) */
@@ -327,6 +329,7 @@ const localModelSchema = Schema.object({
   modelDir: Schema.string().default('').description('模型目录(留空=默认 {DSH_HOME|~/.dsh}/models/bge-small-zh)'),
   valueGate: Schema.union(['off', 'log', 'block']).default('log').description('价值评分模式(账号默认): off=不评分 / log=只记录分数 / block=低分不唤醒AI(消息仍进上下文)'),
   valueMinScore: Schema.number().min(0).max(1).default(0.5).description('价值评分门槛(0~1, 越高越安静): 近邻相似度低于此值视为不值得回应'),
+  lexicalFallback: Schema.boolean().default(false).description('兜底(实验): 小模型不可用时改用纯程序(字符 n-gram + TF)算向量 —— 安卓等缺 ONNX 原生后端的环境仍可用价值评分与语义搜索; 只衡量字面相似, 门槛需按新分布重标'),
   // 附件唤醒开关（2026-09-15 主人："视频和文件不算是图片，为什么也默认唤醒了"）
   //   ⚠️ 必须在这里声明 —— settings 走 Schema 校验，**未声明的字段会被直接丢掉**，
   //      表现就是"面板勾了保存、重载又跳回默认"（跟上次漏返回 valueGate 是同一类坑）。
@@ -344,6 +347,7 @@ const localModelSchema = Schema.object({
   modelDir: '',
   valueGate: 'log',
   valueMinScore: 0.5,
+  lexicalFallback: false,
   attachmentPassthrough: { image: true, video: false, voice: false, file: false },
   overrides: {},
 });
@@ -664,6 +668,8 @@ export interface ImQQBotConfig {
     /** 价值评分门槛(0~1) */
     valueMinScore?: number;
     /** 单会话覆盖: key = "group:<群openid>" / "c2c:<私聊openid>" */
+    /** 兜底: 小模型不可用时改用纯程序(字符 n-gram)算向量(安卓等无 ONNX 环境仍可用) */
+    lexicalFallback?: boolean;
     overrides?: Record<string, { enabled?: boolean; valueGate?: 'off' | 'log' | 'block'; valueMinScore?: number }>;
   };
   /** 定时唤醒任务(M3) */
