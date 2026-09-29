@@ -610,7 +610,7 @@ export async function handleInbound(
         //   会整块跳过"值不值得唤醒"的判断，等于无条件放行，附件开关就形同虚设了。
         const hasAnyAttachment = attKinds.image || attKinds.video || attKinds.voice || attKinds.file;
         // 2026-09-30: 纯文字**没算出分**时也记一行(标 无分) —— 否则观察期里看不出这条到底评没评
-        const textNoScore = !sc && !firstImg && !hasAnyAttachment && String(scText || plain || '').trim() !== '';
+        const textNoScore = !sc && !firstImg && !hasAnyAttachment && String(msg.content || '').trim() !== ''; // ⚠️ 只能用此处已在作用域内的 msg.content(scText 声明在后面, 引用会 TDZ 抛错)
         if (sc || firstImg || hasAnyAttachment || textNoScore) {
           // 会话级门槛: 用本会话算出的 minScore 判定(不是 scorer 内部的默认值); 无分(纯图)视作放行
           // 判定分：加权模式用**综合分**（Σ权×有效分 / Σ权，各条的好感偏移已在里面算过）；

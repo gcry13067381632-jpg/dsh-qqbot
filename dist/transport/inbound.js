@@ -544,7 +544,7 @@ export async function handleInbound(rawMsg, manager, config, logger, state) {
                 const hasAnyAttachment = attKinds.image || attKinds.video || attKinds.voice || attKinds.file;
                 // 2026-09-30: 纯文字**没算出分**时也记一行(标 无分) —— 否则观察期里"这条到底评没评"看不出来,
                 //   使用者会以为"评分没工作"(实测主人就这么困惑过)。文件本身有环形上限, 不会无限增长。
-                const textNoScore = !sc && !firstImg && !hasAnyAttachment && String(scText || plain || '').trim() !== '';
+                const textNoScore = !sc && !firstImg && !hasAnyAttachment && String(msg.content || '').trim() !== ''; // ⚠️ 只能用此处已在作用域内的 msg.content(scText 声明在后面, 引用会 TDZ 抛错)
                 if (sc || firstImg || hasAnyAttachment || textNoScore) {
                     // 会话级门槛: 用本会话算出的 minScore 判定(不是 scorer 内部的默认值); 无分(纯图)视作放行
                     // 判定分：加权模式用**综合分**（Σ权×有效分 / Σ权，各条的好感偏移已在里面算过）；
