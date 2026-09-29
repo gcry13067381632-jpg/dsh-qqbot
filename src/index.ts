@@ -20,6 +20,7 @@ import { runQrSetup, persistCredentialsToProfile } from './setup.js';
 void runQrSetup; void persistCredentialsToProfile;
 import type { Logger } from './types.js';
 import { setOutboundModeWriter } from './features/outbound-mode-switch.js';
+import { setLexicalFallback } from './features/local-embed.js';
 
 // ⚠️ @deepseek-ai/dsh-settings 的"注册 Web 可视化设置"入口在 harness 各版本间有差异：
 //   - rc.2 及更早：模块顶层具名导出 installSettingsSection(ctx, ns, schema, entry, hooks)
@@ -173,12 +174,15 @@ export async function apply(ctx: Context, config: ImQQBotConfig): Promise<void> 
       logger.warn?.(`实例 ${ns}: 凭据热更新后启动网关失败: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
+  // 程序兜底(2026-09-30): 启动时按配置同步一次(否则不打开设置面板的进程永远不会启用兜底)
+  setLexicalFallback(((resolvedConfig as unknown as { localModel?: { lexicalFallback?: boolean } }).localModel?.lexicalFallback) === true);
   try {
     (ctx as unknown as { on: (ev: string, fn: (ns?: string) => void) => void }).on('qqbot/settings-changed', (changedNs?: string) => {
       if (changedNs && changedNs !== ns) return;
       const next = readOwnSettings();
       Object.assign(resolvedConfig as unknown as Record<string, unknown>, mergeDeep(resolvedConfig, next) as Record<string, unknown>);
       logger.info(`设置已热更新(${ns}): ${Object.keys(next).length} 项`);
+      setLexicalFallback(((resolvedConfig as unknown as { localModel?: { lexicalFallback?: boolean } }).localModel?.lexicalFallback) === true);   // 兜底开关热生效
       void tryStartGateway();   // ← 若刚从"无凭据"变成"有凭据"，自动把网关拉起来
     });
   } catch { /* 事件系统不可用 → 退化为重启生效 */ }
@@ -310,6 +314,7 @@ async function installLiveSettings(ctx: Context, live: ImQQBotConfig, logger: Lo
       if (typeof next.imageHint === 'boolean') live.imageHint = next.imageHint;
       // 本地小模型: 整块替换(面板发的是完整对象; overrides 也在里面) —— 改了就地生效, 不用重启
       if (next.localModel && typeof next.localModel === 'object') live.localModel = next.localModel;
+      setLexicalFallback(((live as { localModel?: { lexicalFallback?: boolean } }).localModel?.lexicalFallback) === true);   // 兜底开关热生效(settings 服务路径)
       if (typeof next.groupPrompt === 'string') live.groupPrompt = next.groupPrompt;
       if (next.schedule) live.schedule = next.schedule;
       if (next.groupAdmin) live.groupAdmin = next.groupAdmin;
