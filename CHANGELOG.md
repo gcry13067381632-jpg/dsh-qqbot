@@ -4,6 +4,25 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [1.5.18] - 2026-09-29
+
+### 修复（**全新安装必崩**的致命问题）
+- **全新实例下 dock 位置记忆的空指针会拖垮整个 Web UI**
+  现象：全新安装本插件后，dsh web 只剩一句 `Failed to load plugins`
+  （`web boot: 1 entry did not activate / @zaofan/dsh-qqbot: failed`），
+  **设置页与侧栏全部消失，且每次启动必现**。
+  根因：`startQqDock()` 读位置记忆时 `pos` 初值为 `null`（只有 localStorage 里
+  已有 `qqs-dock-pos` 时才会被赋成对象），随后 `pos.x` / `pos.y` 被无保护读取 →
+  `TypeError: Cannot read properties of null (reading 'x')`。
+  `apply()` 裸调 `startQqDock()` → 异常冒泡 → cordis 把这条 client fiber 判 `FAILED` →
+  dsh 0.1.7 的客户端启动审计把"任一 client entry 未激活"视为致命 → **整页退化**。
+  → 1.5.10 加位置 clamp 时只处理了"坐标在屏幕外"，漏了 `pos === null`；
+  作者机器不复现，是因为其 localStorage 里早就有 `qqs-dock-pos`（拖过球）。
+  **修复**：① 读完后若 `pos` 非对象则回落 `{}`（守卫空值/损坏值）；
+  ② `apply()` 内的「设置页注册 / 审批浮层 / dock」三处改为**逐段降级**（`safe()`），
+  单个环节异常只打 `warn`，不再连坐整页。
+  验证：dsh 0.1.7-rc.2 + Android 应用分身全新实例 —— 修复前打开即失败，修复后界面正常、🛡 悬浮球正常挂载。
+
 ## [1.5.17] - 2026-09-28
 
 ### 修复
