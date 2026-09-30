@@ -41,6 +41,17 @@ interface PendingItem {
     }>;
     /** 发起者 openid(群=member_openid, c2c=user_openid); 回调/文字兜底都校验, 防止别人代答 */
     ownerId: string;
+    /**
+     * 抢答许可(2026-09-30 主人定): 卡片上多一个「🙋 我来回答」按钮，
+     * **所有人都能点**，点一次即把回答权**转移**给点的人（`ownerId` 被改写），
+     * 之后原 owner 与其他人再点都会被拒。
+     * 用途：机器人把问题问错人 / 被问的人不在 / 想让"谁先看到谁答"的场景。
+     */
+    claimable?: boolean;
+    /** 是否已被抢走（抢到后置 true，第二个人再点会被明确拒绝） */
+    claimed?: boolean;
+    /** 抢答成功者 openid（仅用于回执文案「已被 XXX 抢到」） */
+    claimedBy?: string;
     /** 是否多选(宿主给的 multiSelect) */
     multiSelect: boolean;
     /** 会话键 `scope:peerId`: 文字兜底据此判断"这条消息是不是在回答本问题" */

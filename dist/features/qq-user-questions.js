@@ -1,6 +1,8 @@
 import { join } from 'node:path';
 import { readGroupMembers } from './chat-ledger.js';
 const BTN_PREFIX = 'q:';
+/** 抢答按钮前缀（claim）：点击后把回答权转移给点击者，全员可点 */
+const CLAIM_PREFIX = 'qc:';
 /** 选项字母表(文字兜底按它映射) */
 const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 /** QQ 卡片按钮上限: 最多 5 行, 每行 1 个选项 → 最多 5 个可点按钮 */
@@ -32,6 +34,25 @@ function optionsKeyboard(item, token, ownerId) {
                 }],
         };
     });
+    // ── 抢答按钮（2026-09-30 主人定）──────────────────────────────
+    //   放在最上面：**全员可点**（permission type 2）。谁先点谁把回答权抢走
+    //   （回调里改写 item.ownerId 并重发卡片），之后其他人再点只收到「已被 XXX 抢到」。
+    //   用途：机器人问错人 / 被问的人不在 / 想"谁先看到谁答"。
+    if (item.claimable && !item.claimed) {
+        const claimLabel = '🙋 我来回答';
+        rows.unshift({
+            buttons: [{
+                    id: `${CLAIM_PREFIX}${item.qid}:${token}`,
+                    render_data: { label: claimLabel, visited_label: claimLabel, style: 1 },
+                    action: {
+                        type: 1,
+                        permission: { type: 2 },
+                        data: `${CLAIM_PREFIX}${item.qid}:${token}`,
+                        unsupport_tips: '按钮不可用时, 直接发 /答 A (或 /答 你的回答)',
+                    },
+                }],
+        });
+    }
     return { content: { rows } };
 }
 /** 选项字母表(卡片正文用): `A. xxx` 一行一个, 列全 */
@@ -302,6 +323,13 @@ export class QqUserQuestionsController {
                 qid: q.qid, question: q.question, header: q.header, detail: q.detail,
                 opts: q.opts, ownerId: owner, multiSelect: q.multiSelect,
                 peerKey, group, index: i + 1, total: parsed.length,
+                // ── 抢答按钮（2026-09-30 主人定）──────────────────────────
+                //   卡片上多一个「🙋 我来回答」：**全员可点、只能抢一次**，
+                //   抢到即把回答权转移给他（ownerId 改写 + 补发绑他的卡片）。
+                //   默认开启：解决"机器人问错人 / 被问的人不在 / 谁先看到谁答"。
+                //   ⚠️ 单问题时才加（多问题时抢答语义混乱：一张卡 5 个按钮上限，
+                //      抢答按钮要占一行，问题多了会挤掉选项）。
+                claimable: parsed.length === 1,
                 deadlineAt: Date.now() + timeoutMs,
             };
             group.keys.push(key);
@@ -437,8 +465,62 @@ export class QqUserQuestionsController {
         if (e?.data?.type !== 11)
             return false;
         const data = e.data.resolved?.button_data;
-        if (!data || !data.startsWith(BTN_PREFIX))
+        if (!data || (!data.startsWith(BTN_PREFIX) && !data.startsWith(CLAIM_PREFIX)))
             return false;
+        /** 点击者 openid（群聊看 group_member_openid，私聊看 user_openid） */
+        const presser = e.group_member_openid ?? e.user_openid ?? '';
+        // ── 抢答分支（2026-09-30 主人定）：全员可点、先到先得，点击即转移回答权 ──
+        //   带 `claimable` 的问题会多一个「🙋 我来回答」按钮（permission type=2 全员可点）。
+        //   第一个人点 → 改写 item.ownerId 为他（此后选项回调与文字兜底都按新 owner 判），
+        //   第二个人再点 → 只收到「已被 XXX 抢到」，不会误答。
+        if (data.startsWith(CLAIM_PREFIX)) {
+            const cm = /^qc:([^:]+):([^:]+)$/.exec(data);
+            if (!cm)
+                return false;
+            const item = this.pending.get(`${cm[1]}:${cm[2]}`);
+            if (!item) {
+                try {
+                    this.sender.sendMarkdown(replyTarget, '这个问题已经结束啦~').catch(() => undefined);
+                }
+                catch { /* ignore */ }
+                return true;
+            }
+            if (!presser)
+                return true;
+            // 已被别人抢走 → 明确拒绝
+            if (item.claimed && item.ownerId && item.ownerId !== presser) {
+                try {
+                    this.sender.sendMarkdown(replyTarget, `手慢了～已经被 <@${item.ownerId}> 抢到啦`).catch(() => undefined);
+                }
+                catch { /* ignore */ }
+                return true;
+            }
+            // 自己已经是 owner（重复点）→ 友好提示
+            if (item.ownerId === presser) {
+                try {
+                    this.sender.sendMarkdown(replyTarget, '你已经抢到啦，直接点下面的选项，或发 /答 A').catch(() => undefined);
+                }
+                catch { /* ignore */ }
+                return true;
+            }
+            // ★ 权限转移：改写 ownerId + 标记已抢；原 owner 与其他人此后都会被拒
+            item.ownerId = presser;
+            item.claimed = true;
+            item.claimedBy = presser;
+            this.logger.info(`QQ question claimed: qid=${item.qid} by=${presser.slice(0, 8)}…`);
+            try {
+                await this.sender.sendMarkdown(replyTarget, `✅ <@${presser}> 抢到了回答权，请点下面的选项，或直接发 /答 A（也可自由回答）`);
+            }
+            catch { /* ignore */ }
+            // 选项按钮的 permission 是"发送时烘焙"的、已发的卡片改不了 →
+            // 必须补发一张绑新 owner 的卡片，抢到的人才能点选项。
+            try {
+                const left = Math.max(5000, item.deadlineAt - Date.now());
+                await this.sender.sendMarkdownWithKeyboard(replyTarget, promptOf(item, left, true), optionsKeyboard(item, cm[2], item.ownerId));
+            }
+            catch { /* 补发失败不影响 /答 文字通道 */ }
+            return true;
+        }
         const m = /^q:([^:]+):([^:]+):(\d+)$/.exec(data);
         if (!m)
             return false;
@@ -449,8 +531,8 @@ export class QqUserQuestionsController {
         const item = this.pending.get(key);
         if (!item)
             return false;
-        // 防别人代答: 群聊看 group_member_openid, c2c 看 user_openid, 必须等于发起者
-        const presser = e.group_member_openid ?? e.user_openid ?? '';
+        // 防别人代答: 必须等于【当前 owner】—— owner 可能已被"抢答"改写，
+        // 所以这里必须重新读 item.ownerId，不能用发送卡片时的快照。
         if (item.ownerId && presser && presser !== item.ownerId) {
             try {
                 this.sender.sendMarkdown(replyTarget, '这个问题不是问你的哦~').catch(() => undefined);
