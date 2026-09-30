@@ -4,6 +4,34 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [1.5.23] - 2026-09-30
+
+### 修复（🔴 智能回复"静默无分"的真根因）
+- **`@huggingface/transformers` 是"隐式依赖"——代码用了却没声明**
+  本地小模型（`bge-small-zh`）靠 `await import('@huggingface/transformers')` 推理，
+  但这个包**从未写进 `dependencies`** —— 只靠它"碰巧被 hoist 到 profile 上层"才能跑。
+  一旦环境不同（pnpm 严格模式 / profile 重装 / 依赖提升位置变化 / 单独安装本插件），
+  `import` 直接抛错 → `failedAt` 进入 60 秒退避 → **此后所有评分静默变成 `undefined`**：
+  面板上只剩"门槛 0.70"和"无分"条目（`value-scores.jsonl` 里连 `score` 字段都没有），
+  看起来就像"模型坏了 / 评分功能失效"。
+  → 已加入 `dependencies`：`@huggingface/transformers@^4.3.0`。
+- **顺带补齐另外两个隐式依赖**
+  - `@deepseek-ai/dsh-settings` → `peerDependencies`（宿主服务，与 dsh-llm/dsh-session/dsh-tools 同类）
+  - `vitest` → `devDependencies`（误留在运行时依赖里）
+
+### 体验
+- **`/local-model/status` 增加 `embStatus`**（嵌入器真实状态，含 `reason`）
+  以前模型加载失败时，失败原因只写在 dsh 终端的 `logger.warn` 里，**面板完全看不到**，
+  用户只能看到"评分不出现"。现在状态接口会把"待加载 / 已就绪 / 失败原因"一并返回，
+  面板可明确提示，不再静默。
+
+### 排查提示（写进手册）
+模型"看起来坏了"时，按顺序核对：
+1. `~/.dsh/models/bge-small-zh` 四个文件是否齐（`checkModelAssets`）
+2. `@huggingface/transformers` 是否可解析（从 `dist/features` 为基准）
+3. `/local-model/status` 的 `embStatus.reason` 是什么
+4. 都是好的但仍无分 → 进程内 `failedAt` 退避中，**重启 dsh** 即恢复
+
 ## [1.5.22] - 2026-09-30
 
 ### 适配

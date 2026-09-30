@@ -2144,10 +2144,16 @@ export function apply(ctx) {
         if (own && own.localModel && typeof own.localModel === 'object') cfg = own.localModel;
       } catch { /* 自有 settings 读不到就用 patch 默认值兜底 */ }
       // 程序兜底(2026-09-30): 把开关同步进嵌入器模块 —— 变更时顺带重置, 下一次用到的就是新模式(无需重启)
+      // ⚠️ 2026-09-31 同时取【嵌入器真实状态】：模型加载失败时评分会静默变成 undefined，
+      //   面板只显示"无分"，失败原因只在 dsh 终端的 logger.warn 里 → 用户无从知晓。
+      //   这里把 status().reason 一并返回，面板可明确提示"模型加载失败：<原因>"。
+      let embStatus;
       try {
         const le = await import('./dist/features/local-embed.js');
         const want = cfg.lexicalFallback === true;
         if (le.isLexicalFallback() !== want) { le.setLexicalFallback(want); le.resetAllEmbedders(); }
+        const e = le.createLocalEmbedder({ modelDir: dir });
+        if (e && typeof e.status === 'function') embStatus = e.status();
       } catch { /* 嵌入器模块不可用不影响状态接口 */ }
       writeJson(res, 200, {
         ok: true,
@@ -2162,6 +2168,7 @@ export function apply(ctx) {
         valueMinScore: typeof cfg.valueMinScore === 'number' ? cfg.valueMinScore : 0.5,
         // ⚠️ 同 valueGate: **必须返回**, 否则面板勾了保存又跳回未勾选
         lexicalFallback: cfg.lexicalFallback === true,
+        embStatus,
         // 附件唤醒开关（2026-09-15）：跟 valueGate 一样**必须返回** ——
         //   否则面板读回 undefined → 勾选框永远按默认渲染，看着像"保存没生效"。
         attachmentPassthrough:
