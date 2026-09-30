@@ -719,7 +719,8 @@ export async function apply(ctx: Context): Promise<void> {
         type: 'object', additionalProperties: false,
         properties: { ok: { type: 'boolean', required: true } },
       },
-      render: () => [{ type: 'text' as const, text: '' }],
+      // ⚠️ 2026-09-30 修: render 空文本 → 空 tool_result → DeepSeek 400 INVALID_REQUEST
+      render: () => [{ type: 'text' as const, text: '·' }],
     },
     async execute() {
       return { ok: true }; // 纯打断, 无实质结果
@@ -746,7 +747,7 @@ export async function apply(ctx: Context): Promise<void> {
         },
       },
       render: (_a, v: { ok: boolean; stopped: boolean }) => [
-        { type: 'text' as const, text: v.stopped ? '(已静默: 本回合终止, 不再回复)' : '' },
+        { type: 'text' as const, text: v.stopped ? '(已静默: 本回合终止, 不再回复)' : '(继续回复)' },
       ],
     },
     async execute(args, exec) {
