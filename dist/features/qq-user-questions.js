@@ -487,8 +487,19 @@ export class QqUserQuestionsController {
             }
             if (!presser)
                 return true;
-            // 已被别人抢走 → 明确拒绝
-            if (item.claimed && item.ownerId && item.ownerId !== presser) {
+            // 白名单（groupAdmin.owners，通常是主人）拥有【无限抢答权】：
+            //   不受"只能抢一次"限制，任何时候都能把回答权拿回来（含从别的普通人手里拿回）。
+            //   普通人则严格"先到先得、抢到即锁"。
+            //   —— 2026-09-30 主人定。
+            let isAdmin = false;
+            try {
+                isAdmin = this.manager.adminOwners().includes(presser);
+            }
+            catch {
+                isAdmin = false;
+            }
+            // 已被别人抢走 → 普通人明确拒绝；白名单直接夺回
+            if (item.claimed && item.ownerId && item.ownerId !== presser && !isAdmin) {
                 try {
                     this.sender.sendMarkdown(replyTarget, `手慢了～已经被 <@${item.ownerId}> 抢到啦`).catch(() => undefined);
                 }
@@ -503,13 +514,16 @@ export class QqUserQuestionsController {
                 catch { /* ignore */ }
                 return true;
             }
+            const tookOver = item.claimed && item.ownerId && item.ownerId !== presser; // 白名单夺回
             // ★ 权限转移：改写 ownerId + 标记已抢；原 owner 与其他人此后都会被拒
             item.ownerId = presser;
             item.claimed = true;
             item.claimedBy = presser;
-            this.logger.info(`QQ question claimed: qid=${item.qid} by=${presser.slice(0, 8)}…`);
+            this.logger.info(`QQ question claimed: qid=${item.qid} by=${presser.slice(0, 8)}…${isAdmin ? ' (admin)' : ''}${tookOver ? ' 夺回' : ''}`);
             try {
-                await this.sender.sendMarkdown(replyTarget, `✅ <@${presser}> 抢到了回答权，请点下面的选项，或直接发 /答 A（也可自由回答）`);
+                await this.sender.sendMarkdown(replyTarget, tookOver
+                    ? `👑 <@${presser}>（主人）接管了回答权，请点下面的选项，或直接发 /答 A`
+                    : `✅ <@${presser}> 抢到了回答权，请点下面的选项，或直接发 /答 A（也可自由回答）`);
             }
             catch { /* ignore */ }
             // 选项按钮的 permission 是"发送时烘焙"的、已发的卡片改不了 →
