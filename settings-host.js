@@ -2119,7 +2119,14 @@ export function apply(ctx) {
       const missing = LOCAL_MODEL_FILES.filter((rel) => !existsSync(join(dir, rel)));
       let bytes = 0;
       for (const rel of LOCAL_MODEL_FILES) { try { bytes += statSync(join(dir, rel)).size; } catch { /* 缺文件不计数 */ } }
-      const cfg = (bot && bot.cfg && bot.cfg.localModel) || {};
+      // ⚠️ 2026-09-30 修(主人反馈"评分又没了"): 原来取 bot.cfg.localModel —— 那是**安装 patch 里的默认值**,
+      //   而面板保存写的是插件自有 settings; 两边不一致 → 每次打开面板就把 lexicalFallback 同步成 false
+      //   (并 resetAllEmbedders) → 评分立刻全部变成"无分"。改为与读取路由同源: 自有 settings 优先, patch 兜底。
+      let cfg = (bot && bot.cfg && bot.cfg.localModel) || {};
+      try {
+        const own = readOwnSettings(NSQ(u));
+        if (own && own.localModel && typeof own.localModel === 'object') cfg = own.localModel;
+      } catch { /* 自有 settings 读不到就用 patch 默认值兜底 */ }
       // 程序兜底(2026-09-30): 把开关同步进嵌入器模块 —— 变更时顺带重置, 下一次用到的就是新模式(无需重启)
       try {
         const le = await import('./dist/features/local-embed.js');
