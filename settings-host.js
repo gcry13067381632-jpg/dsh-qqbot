@@ -1778,6 +1778,15 @@ export function apply(ctx) {
       preset: pick('preset'),
       cwd: pick('cwd'),
       dataRoot: pick('dataRoot'),
+      // ⚠️ 2026-09-30 补：localModel 也是"面板保存写自有存储"的字段之一。
+      //   漏了它 → /local-model/status 与 localModelDirOf 读的是 patch 默认值 →
+      //   一开面板就把 lexicalFallback 同步成 false（"评分又没了"）。
+      localModel: (() => {
+        const o = own.localModel;
+        if (o && typeof o === 'object') return o;
+        const c = cfg ? cfg.localModel : undefined;
+        return c && typeof c === 'object' ? c : (o !== undefined ? o : c);
+      })(),
     };
   }
 
@@ -1799,7 +1808,14 @@ export function apply(ctx) {
     const cwdCfg = m.cwd || '';
     const cwd = (m.dataRoot || (cwdCfg ? join(cwdCfg, 'dshqqbot') : ''));
     if (!appId || !appSecret) return null;
-    return { id, appId, appSecret, cwd, ns: id };
+    // ⚠️ 2026-09-30 修（同类问题继续根治）：
+    //   下游有大量 `bot.cfg.dataRoot` / `bot.cfg.localModel` 写法（export.xlsx、value-samples、
+    //   图库、群管理、localModelDirOf …），但 nsBot 原先**只返回 {id,appId,appSecret,cwd,ns}**，
+    //   根本没有 cfg 字段 → 那些地方拿到的永远是 undefined → 数据根算空 / 找不到模型目录。
+    //   这里把"合并自有存储后的 cfg"一并带出（并补上推导出的 dataRoot），让下游写法自然成立。
+    //   注意：cwd 字段仍是【数据根】（历史语义），cfg.cwd 才是工作目录，别混用。
+    const cfgMerged = { ...m, dataRoot: m.dataRoot || cwd };
+    return { id, appId, appSecret, cwd, ns: id, cfg: cfgMerged };
   }
   async function groupClientOf(ns) {
     const bot = nsBot(ns);

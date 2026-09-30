@@ -4,6 +4,26 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [1.5.21] - 2026-09-30
+
+### 修复（"从 patch 读配置而不是从自有存储读"的同类问题：彻底根治）
+- **`nsBot()` 不返回 `cfg`，导致一大批接口拿到的数据根永远是空**
+  下游有大量 `bot.cfg.dataRoot` / `bot.cfg.localModel` 写法
+  （`export.xlsx`、`value-samples`、`value-scores`、`affinity`、`attitude`、`group/accounts`、
+  `localModelDirOf` …），但 `nsBot()` 原先只返回 `{id, appId, appSecret, cwd, ns}` ——
+  **根本没有 `cfg` 字段** → 那些地方读到的恒为 `undefined` →
+  数据根算空、模型目录找不到（图库/导出/计分/群管理全受影响）。
+  → `nsBot()` 现在带上**合并自有存储后的 `cfg`**（并补上推导出的 `dataRoot`）。
+- **`mergeOwnIntoCfg()` 漏了 `localModel`**
+  `localModel` 同样是"面板保存写自有存储"的字段，漏合并 →
+  `/local-model/status` 与 `localModelDirOf` 读的是 patch 默认值 →
+  **一打开面板就把 `lexicalFallback` 同步成 `false`（并重置嵌入器）→ 评分立刻全部变成"无分"**。
+  → 已补进合并白名单（自定义字段也一并保留）。
+
+### 说明
+- 与 1.5.16 / 1.5.20 属**同一类根因**（"保存写自有存储、读取只读 patch"的不对称）。
+  至此桥内所有"取账号配置"的入口都统一走 `mergeOwnIntoCfg()` / `nsBot()` 的合并值。
+
 ## [1.5.20] - 2026-09-30
 
 ### 修复
