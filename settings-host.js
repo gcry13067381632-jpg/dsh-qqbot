@@ -2120,6 +2120,12 @@ export function apply(ctx) {
       let bytes = 0;
       for (const rel of LOCAL_MODEL_FILES) { try { bytes += statSync(join(dir, rel)).size; } catch { /* 缺文件不计数 */ } }
       const cfg = (bot && bot.cfg && bot.cfg.localModel) || {};
+      // 程序兜底(2026-09-30): 把开关同步进嵌入器模块 —— 变更时顺带重置, 下一次用到的就是新模式(无需重启)
+      try {
+        const le = await import('./dist/features/local-embed.js');
+        const want = cfg.lexicalFallback === true;
+        if (le.isLexicalFallback() !== want) { le.setLexicalFallback(want); le.resetAllEmbedders(); }
+      } catch { /* 嵌入器模块不可用不影响状态接口 */ }
       writeJson(res, 200, {
         ok: true,
         enabled: cfg.enabled !== false,
@@ -2131,6 +2137,8 @@ export function apply(ctx) {
         //    面板读回 undefined → 一律按默认 'log' 渲染 → 看着像"保存没生效"(其实配置里已是 block)。
         valueGate: cfg.valueGate === 'off' || cfg.valueGate === 'block' ? cfg.valueGate : 'log',
         valueMinScore: typeof cfg.valueMinScore === 'number' ? cfg.valueMinScore : 0.5,
+        // ⚠️ 同 valueGate: **必须返回**, 否则面板勾了保存又跳回未勾选
+        lexicalFallback: cfg.lexicalFallback === true,
         // 附件唤醒开关（2026-09-15）：跟 valueGate 一样**必须返回** ——
         //   否则面板读回 undefined → 勾选框永远按默认渲染，看着像"保存没生效"。
         attachmentPassthrough:

@@ -14,6 +14,7 @@
 import { existsSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
+import { createLexicalEmbedder } from './lexical-embed.js';
 /** bge-zh 官方查询前缀(查询侧) */
 const QUERY_PREFIX = '为这个句子生成表示以用于检索相关文章：';
 /** 模型资产清单(任一缺失即不可用) */
@@ -59,6 +60,12 @@ export function checkModelAssets(modelDir) {
     }
     return { ok: missing.length === 0, missing, bytes };
 }
+/** 程序兜底全局开关(桥侧 settings-host 同步; 面板勾选后无需重启) */
+let lexicalFallbackWanted = false;
+/** 设置程序兜底开关(桥侧 /api/qqbot-settings/local-model/status 同步) */
+export function setLexicalFallback(v) { lexicalFallbackWanted = v === true; }
+/** 读取程序兜底开关 */
+export function isLexicalFallback() { return lexicalFallbackWanted; }
 const embedders = new Map();
 /**
  * 创建(或复用)本地嵌入器。同 modelDir 单例复用 —— 模型只加载一次。
@@ -70,6 +77,8 @@ export function createLocalEmbedder(opts = {}) {
         return cached;
     const logger = opts.logger;
     let extractor;
+    /** 程序兜底嵌入器(模型不可用且开关打开时启用) */
+    let lexical;
     // ⚠️ 2026-09-27 修（主人反馈"智能回复失效、评分窗口只剩图片"）：
     //   原来是 `let failed = false` —— **一次加载失败就永久关闭**，之后 load() 永远直接返回 false，
     //   所有评分静默变成 undefined（只有"无分也记录"的图片条目还留在 value-scores.jsonl 里，
@@ -85,7 +94,18 @@ export function createLocalEmbedder(opts = {}) {
     async function load() {
         if (extractor)
             return true;
+        if (lexical && (lexicalFallbackWanted || opts.lexicalFallback === true))
+            return true; // 程序兜底已生效
+        if (lexical)
+            lexical = undefined; // 开关关掉 → 回到模型优先
         if (failedAt) {
+            // 兜底开关打开且模型已经失败过 → 直接走兜底, 不再每 60s 重试模型(安卓上模型必然失败, 白等窗口)
+            if (lexicalFallbackWanted || opts.lexicalFallback === true) {
+                lexical = createLexicalEmbedder({ dims: 512 });
+                dims = lexical.dims;
+                logger?.info('[im-qqbot] 智能回复: 模型此前已失败 → 直接使用程序兜底(不再重试小模型)');
+                return true;
+            }
             const waited = Date.now() - failedAt;
             if (waited < RETRY_BACKOFF_MS)
                 return false; // 退避中
@@ -117,6 +137,15 @@ export function createLocalEmbedder(opts = {}) {
                 failedAt = Date.now();
                 failureReason = e instanceof Error ? e.message : String(e);
                 logger?.warn(`[im-qqbot] 智能回复不可用(本地小模型 ${modelDir}): ${failureReason}`);
+                // 程序兜底(2026-09-30): 小模型不可用(如安卓缺 onnxruntime-node 的 android 原生绑定)时,
+                // 改用零依赖的字符 n-gram 向量 —— 价值评分/语义搜索在无模型环境下仍可用(仅字面相似)
+                if (lexicalFallbackWanted || opts.lexicalFallback === true) {
+                    lexical = createLexicalEmbedder({ dims: 512 });
+                    dims = lexical.dims;
+                    loadMs = Date.now() - t0;
+                    logger?.info(`[im-qqbot] 智能回复: 本地小模型不可用(${failureReason}) → 已启用程序兜底(字符 n-gram, ${lexical.dims} 维, 仅字面相似; 门槛建议先用「只记录」观察)`);
+                    return true;
+                }
                 return false;
             }
             finally {
@@ -130,6 +159,15 @@ export function createLocalEmbedder(opts = {}) {
             return undefined;
         if (!(await load()))
             return undefined;
+        if (!extractor && lexical) {
+            try {
+                return texts.map((t) => lexical.embedOne(t));
+            }
+            catch (e) {
+                logger?.warn(`[im-qqbot] 智能回复(程序兜底)失败: ${e instanceof Error ? e.message : String(e)}`);
+                return undefined;
+            }
+        }
         try {
             const input = texts.map((t) => (isQuery ? QUERY_PREFIX + t : t));
             // bge-zh: CLS pooling + 归一化(点积即余弦)
@@ -149,6 +187,7 @@ export function createLocalEmbedder(opts = {}) {
         failedAt = 0;
         failureReason = '';
         extractor = undefined;
+        lexical = undefined;
         loading = undefined;
         dims = undefined;
         loadMs = undefined;
@@ -159,6 +198,8 @@ export function createLocalEmbedder(opts = {}) {
         reset,
         status() {
             const assets = checkModelAssets(modelDir);
+            if (lexical)
+                return { available: true, modelDir, dims, loadMs, mode: 'lexical', reason: '程序兜底(字符 n-gram; 仅字面相似)' };
             if (failedAt) {
                 const left = Math.max(0, RETRY_BACKOFF_MS - (Date.now() - failedAt));
                 return {
@@ -167,7 +208,7 @@ export function createLocalEmbedder(opts = {}) {
                 };
             }
             if (extractor)
-                return { available: true, modelDir, dims, loadMs };
+                return { available: true, modelDir, dims, loadMs, mode: 'model' };
             if (!assets.ok) {
                 return { available: false, modelDir, reason: `模型文件缺失(${assets.missing.join(', ')})` };
             }
@@ -176,6 +217,8 @@ export function createLocalEmbedder(opts = {}) {
         available() {
             if (opts.enabled === false)
                 return false;
+            if (lexical)
+                return true;
             if (failedAt && Date.now() - failedAt < RETRY_BACKOFF_MS)
                 return false;
             return extractor !== undefined || checkModelAssets(modelDir).ok;

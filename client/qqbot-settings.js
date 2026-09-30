@@ -269,6 +269,9 @@ window.__ModuleLoader__.load({
             visionCli: cfg.sticker.visionCli,
           },
           injectRules: cfg.injectRules,
+          // 2026-09-30 修: 这两个开关原来漏写进 patch → 面板勾了/取消了都存不下去(读得到、写不回)
+          imageHint: cfg.imageHint !== false,
+          messageReference: cfg.messageReference !== false,
           // 定时唤醒(④)已并入「定时任务」页编辑; 这里原样带过不丢即可
           schedule: cfg.schedule && Array.isArray(cfg.schedule.targets) ? cfg.schedule : { targets: [] },
           groupPrompt: typeof gpOverride === 'string' ? gpOverride : (typeof cfg.groupPrompt === 'string' ? cfg.groupPrompt : ''),
@@ -2348,6 +2351,10 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           var cur = (d && d.value) || {}
           var lm = Object.assign({}, cur.localModel || {})
           if (dirEl) lm.modelDir = String(dirEl.value || '').trim()      // 账号级
+          {
+            var fbEl = panel ? panel.querySelector('#dk-lm-fb') : null
+            if (fbEl) lm.lexicalFallback = !!fbEl.checked                  // 账号级(程序兜底开关)
+          }
           // 附件唤醒开关（账号级，2026-09-15）：勾了 = 该类附件无视分数直接唤醒
           {
             var apEls = panel ? panel.querySelectorAll('.dk-lm-ap') : []
@@ -3644,6 +3651,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             var minV = (typeof ov.valueMinScore === 'number') ? ov.valueMinScore
               : ((typeof lmCfg.valueMinScore === 'number') ? lmCfg.valueMinScore
                 : (typeof lm.valueMinScore === 'number' ? lm.valueMinScore : 0.5))
+            var fbV = (lmCfg.lexicalFallback === true) || (lm.lexicalFallback === true)
             var onV = (typeof ov.enabled === 'boolean') ? ov.enabled
               : ((typeof lmCfg.enabled === 'boolean') ? lmCfg.enabled : (lm.enabled !== false))
             body += '<div class="dk-row" style="font-weight:700;font-size:13px;margin:10px 0 2px">🧠 智能回复（本地小模型） · bge-small-zh-v1.5</div>'
@@ -3656,6 +3664,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
               + '</div>'
             body += '<div class="dk-row" style="gap:8px;flex-wrap:wrap;align-items:center">'
               + '<label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;cursor:pointer"><input type="checkbox" id="dk-lm-on"' + (onV ? ' checked' : '') + '> 启用智能回复(省 token)</label>'
+              + '<label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;cursor:pointer" title="本地小模型跑不起来时(例如安卓缺 ONNX 原生后端)的兜底: 用纯程序按字符 n-gram 算向量 —— 零依赖、微秒级; 只衡量字面相似(不是真语义), 门槛建议先用「只记录」观察"><input type="checkbox" id="dk-lm-fb"' + (fbV ? ' checked' : '') + '> 🧮 程序兜底(不依赖小模型)</label>'
               + '<span class="dk-msg" style="font-size:12px;color:' + (lm.available ? '#2f9e44' : '#c23131') + '">' + esc(lmState) + '</span>'
               + '</div>'
             body += '<div class="dk-row" style="gap:6px;margin:4px 0;flex-wrap:wrap">'
