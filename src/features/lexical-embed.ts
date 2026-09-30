@@ -38,10 +38,11 @@ function normalize(text: string): string {
 }
 /** 把一个特征词按符号哈希累加进桶(符号哈希可让碰撞相互抵消，减少偏置) */
 function addFeature(v: Float64Array, feat: string, weight: number, dims: number): void {
+    if (!feat) return;                                  // noUncheckedIndexedAccess: 下标取值可能是 undefined
     const h = fnv1a(feat);
     const idx = h % dims;
     const sign = ((h >>> 8) & 1) === 1 ? 1 : -1;
-    v[idx] += sign * weight;
+    v[idx] = (v[idx] ?? 0) + sign * weight;
 }
 /** 文本 → L2 归一化后的稠密向量(点积即余弦) */
 export function lexicalVector(text: string, dims: number = LEXICAL_DIMS): number[] {
@@ -49,7 +50,7 @@ export function lexicalVector(text: string, dims: number = LEXICAL_DIMS): number
     const s = normalize(text);
     const acc = new Float64Array(d);
     for (let i = 0; i < s.length; i++) {
-        addFeature(acc, s[i], W1, d);
+        addFeature(acc, s[i] ?? '', W1, d);
         if (i + 1 < s.length)
             addFeature(acc, s.slice(i, i + 2), W2, d);
         if (i + 2 < s.length)
@@ -57,7 +58,7 @@ export function lexicalVector(text: string, dims: number = LEXICAL_DIMS): number
     }
     let sum = 0;
     for (let i = 0; i < d; i++) {
-        const a = acc[i];
+        const a = acc[i] ?? 0;
         const t = a === 0 ? 0 : Math.sign(a) * (1 + Math.log(1 + Math.abs(a))); // 亚线性 TF
         acc[i] = t;
         sum += t * t;
@@ -65,7 +66,7 @@ export function lexicalVector(text: string, dims: number = LEXICAL_DIMS): number
     const norm = Math.sqrt(sum) || 1;
     const out = new Array<number>(d);
     for (let i = 0; i < d; i++)
-        out[i] = acc[i] / norm;
+        out[i] = (acc[i] ?? 0) / norm;
     return out;
 }
 /** 兜底嵌入器接口(与 local-embed 的嵌入器对齐) */

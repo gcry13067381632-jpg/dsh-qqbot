@@ -1,5 +1,5 @@
 /**
- * lexical-embed — 零依赖「程序兜底」文本向量 (2026-09-30)
+ * lexical-embed.ts — 零依赖「程序兜底」文本向量 (2026-09-30)
  *
  * 为什么需要它：本地小模型走 `@huggingface/transformers`(v4) + `onnxruntime-node`，
  * 而该原生后端只发布 darwin / linux / win32 预编译 —— **没有 android**。
@@ -10,12 +10,12 @@
  * 于是手机版必然「模型资产齐全但跑不起来」。
  *
  * 本模块用 **字符 n-gram + 哈希桶 + 亚线性 TF + L2 归一化** 给出一份「字面相似度」向量：
- * 纯 CPU、微秒级、零依赖、与向量维度对齐(dims 默认 512，与 bge-small-zh 一致)，
- * 让 ① 群聊价值评分(KNN) ② 表情包语义搜索 ③ notifyWhen 粗筛 在无模型环境下仍然可用。
+ * 纯 CPU、微秒级、零依赖、维度与 bge-small-zh 对齐(dims 默认 512)，让
+ * ① 群聊价值评分(KNN) ② 表情包语义搜索 ③ notifyWhen 粗筛 在无模型环境下仍然可用。
  *
- * ⚠️ 与 bge-small 的**语义**能力不同：它只衡量字面重合。
- *    「开心」vs「高兴」这类同义改写分数会偏低 —— 门槛(valueMinScore)需按新分布重标，
- *    默认 0.5 对字面相似度偏严，建议先按默认档 `log` 观察 value-scores.jsonl 再定。
+ * ⚠️ 与 bge-small 的**语义**能力不同：它只衡量字面重合 —— 「开心」vs「高兴」这类同义改写
+ *    分数会偏低，门槛(valueMinScore)需按新分布重标；默认 0.5 对字面相似度偏严，
+ *    建议先用默认档 `log` 观察 value-scores.jsonl 再收紧。
  */
 /** 向量维度(与 bge-small-zh-v1.5 对齐，便于同一套 KNN 代码直接复用) */
 export const LEXICAL_DIMS = 512;
@@ -32,16 +32,18 @@ function fnv1a(str) {
     }
     return h >>> 0;
 }
-/** 归一化：小写、去空白与标点，只留字母/数字/汉字(emoji 归入 \p{L} 之外会丢，可接受) */
+/** 归一化：小写、去空白与标点，只留字母/数字/汉字 */
 function normalize(text) {
     return String(text ?? '').toLowerCase().replace(/[\s]+/g, '').replace(/[^\p{L}\p{N}]+/gu, '');
 }
 /** 把一个特征词按符号哈希累加进桶(符号哈希可让碰撞相互抵消，减少偏置) */
 function addFeature(v, feat, weight, dims) {
+    if (!feat)
+        return; // noUncheckedIndexedAccess: 下标取值可能是 undefined
     const h = fnv1a(feat);
     const idx = h % dims;
     const sign = ((h >>> 8) & 1) === 1 ? 1 : -1;
-    v[idx] += sign * weight;
+    v[idx] = (v[idx] ?? 0) + sign * weight;
 }
 /** 文本 → L2 归一化后的稠密向量(点积即余弦) */
 export function lexicalVector(text, dims = LEXICAL_DIMS) {
@@ -49,7 +51,7 @@ export function lexicalVector(text, dims = LEXICAL_DIMS) {
     const s = normalize(text);
     const acc = new Float64Array(d);
     for (let i = 0; i < s.length; i++) {
-        addFeature(acc, s[i], W1, d);
+        addFeature(acc, s[i] ?? '', W1, d);
         if (i + 1 < s.length)
             addFeature(acc, s.slice(i, i + 2), W2, d);
         if (i + 2 < s.length)
@@ -57,7 +59,7 @@ export function lexicalVector(text, dims = LEXICAL_DIMS) {
     }
     let sum = 0;
     for (let i = 0; i < d; i++) {
-        const a = acc[i];
+        const a = acc[i] ?? 0;
         const t = a === 0 ? 0 : Math.sign(a) * (1 + Math.log(1 + Math.abs(a))); // 亚线性 TF
         acc[i] = t;
         sum += t * t;
@@ -65,11 +67,11 @@ export function lexicalVector(text, dims = LEXICAL_DIMS) {
     const norm = Math.sqrt(sum) || 1;
     const out = new Array(d);
     for (let i = 0; i < d; i++)
-        out[i] = acc[i] / norm;
+        out[i] = (acc[i] ?? 0) / norm;
     return out;
 }
 /**
- * 创建词面兜底嵌入器 —— 接口与 local-embed 的嵌入器一致(embedQuery/embedPassages/available)，可直接替换。
+ * 创建词面兜底嵌入器 —— 接口与 local-embed 的嵌入器一致，可直接替换。
  */
 export function createLexicalEmbedder(opts = {}) {
     const dims = Number.isFinite(opts.dims) && opts.dims > 0 ? Math.floor(opts.dims) : LEXICAL_DIMS;
@@ -81,6 +83,7 @@ export function createLexicalEmbedder(opts = {}) {
         embedOne: (text) => lexicalVector(text, dims),
         embedQuery: async (text) => lexicalVector(text, dims),
         embedPassages: async (texts) => (texts || []).map((t) => lexicalVector(t, dims)),
-        reset() { /* 无状态，无需重置 */ },
+        reset() { },
     };
 }
+//# sourceMappingURL=lexical-embed.js.map

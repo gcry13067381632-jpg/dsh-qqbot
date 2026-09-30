@@ -761,8 +761,7 @@ export async function apply(ctx) {
                 type: 'object', additionalProperties: false,
                 properties: { ok: { type: 'boolean', required: true } },
             },
-            // ⚠️ 2026-09-30 修: 原来 render 空文本 → DSH 发出空 tool_result → DeepSeek 400 INVALID_REQUEST
-            //   (实测 text_break 21 次调用 21 次空返回, 群里多段连发时必炸)
+            // ⚠️ 2026-09-30 修: render 空文本 → 空 tool_result → DeepSeek 400 INVALID_REQUEST
             render: () => [{ type: 'text', text: '·' }],
         },
         async execute() {
@@ -789,7 +788,7 @@ export async function apply(ctx) {
                 },
             },
             render: (_a, v) => [
-                { type: 'text', text: v.stopped ? '(已静默: 本回合终止, 不再回复)' : '(继续回复)' },   // 同上: 空文本会触发 400
+                { type: 'text', text: v.stopped ? '(已静默: 本回合终止, 不再回复)' : '(继续回复)' },
             ],
         },
         async execute(args, exec) {

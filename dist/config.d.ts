@@ -252,6 +252,8 @@ export interface EditableConfig {
         /** 价值评分门槛(0~1): 近邻相似度低于此值视为不值得回应 */
         valueMinScore?: number;
         /** 单会话覆盖(2026-09-13): key = "group:<群openid>" / "c2c:<私聊openid>"; 未覆盖则继承账号默认 */
+        /** 兜底: 小模型不可用时改用纯程序(字符 n-gram)算向量(安卓等无 ONNX 环境仍可用) */
+        lexicalFallback?: boolean;
         overrides?: Record<string, {
             enabled?: boolean;
             valueGate?: 'off' | 'log' | 'block';
@@ -367,6 +369,8 @@ export interface ImQQBotConfig {
         /** 价值评分门槛(0~1) */
         valueMinScore?: number;
         /** 单会话覆盖: key = "group:<群openid>" / "c2c:<私聊openid>" */
+        /** 兜底: 小模型不可用时改用纯程序(字符 n-gram)算向量(安卓等无 ONNX 环境仍可用) */
+        lexicalFallback?: boolean;
         overrides?: Record<string, {
             enabled?: boolean;
             valueGate?: 'off' | 'log' | 'block';

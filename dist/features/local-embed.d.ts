@@ -20,6 +20,8 @@ export interface EmbedderStatus {
     modelDir: string;
     /** 不可用原因 */
     reason?: string;
+    /** 实际生效的模式(2026-09-30): model=本地小模型 / lexical=程序兜底 */
+    mode?: 'model' | 'lexical';
     /** 向量维度(加载后可知) */
     dims?: number;
     /** 加载耗时 ms */
@@ -40,6 +42,10 @@ export interface LocalEmbedder {
     /** 后台预热(不阻塞, 失败静默) */
     warmup(): void;
 }
+/** 设置程序兜底开关(桥侧 /api/qqbot-settings/local-model/status 同步) */
+export declare function setLexicalFallback(v: boolean): void;
+/** 读取程序兜底开关 */
+export declare function isLexicalFallback(): boolean;
 /**
  * 创建(或复用)本地嵌入器。同 modelDir 单例复用 —— 模型只加载一次。
  */
@@ -47,5 +53,6 @@ export declare function createLocalEmbedder(opts?: {
     modelDir?: string;
     logger?: Logger;
     enabled?: boolean;
+    lexicalFallback?: boolean;
 }): LocalEmbedder;
 //# sourceMappingURL=local-embed.d.ts.map

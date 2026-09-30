@@ -4,6 +4,27 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [1.5.19] - 2026-09-29
+
+### 新功能
+- **「程序兜底」向量（字符 n-gram）** —— 让**安卓 / 无 ONNX 环境**也能用智能回复评分。
+  本地小模型（ONNX）不可用时，自动改用无依赖的字符 n-gram + 亚线性 TF 向量
+  （`词面相似`，衡量字面重合而非语义），接口与 ONNX 嵌入器一致，可无缝替换。
+  新增 `src/features/lexical-embed.ts`。
+- **兜底开关三处同步**（启动 / 桥事件 / settings 服务）—— 此前不打开设置面板就不生效。
+
+### 修复
+- **`text_break` / `reply_gate` 的 render 返回空文本 → 空 tool_result → DeepSeek 400**
+  这类"只用来打断/闸门、不产出内容"的工具返回空串时，会向上游发一个空 tool_result，
+  DeepSeek 侧直接 400。现改为返回一个最小占位文本。
+- **设置页保存漏写 `imageHint` / `messageReference`** —— 面板上勾了却存不下去。
+- **`local-embed` 失败后的 60 秒空窗**：模型失败过且兜底已开时，跳过重试直接走兜底。
+
+### 其他
+- `inbound`：`textNoScore` 判据改用 `msg.content`（语义等价、更少依赖），并补齐 TS 源。
+- `inbound`：观察期内"纯文字未算出分"也记一行（标无分），避免误以为评分没工作。
+- 补修 `lexical-embed.ts` 在 `noUncheckedIndexedAccess` 下的 4 处类型错误（否则 `tsc` 编译不过、发布链会失败）。
+
 ## [1.5.18] - 2026-09-29
 
 ### 修复（**全新安装必崩**的致命问题）
