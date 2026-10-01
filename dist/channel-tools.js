@@ -2255,6 +2255,16 @@ export async function apply(ctx) {
                             sender: sess?.ch.sender,
                             replyTarget: sess?.rec.replyTarget,
                             exec,
+                            // ⚠️ 2026-10-01 加：把宿主 ctx 与方法暴露给扩展工具。
+                            //   起因（主人需求）：想让扩展工具**自助**调用宿主的上下文压缩
+                            //   （`ctx.compaction.compactNow(agent, signal, cmdId)`，用法见 dsh-command-compact），
+                            //   并在压缩后把"想说的话"拼回上下文。原来 env 只有
+                            //   {cwd, manager, sender, replyTarget, exec}，扩展工具拿不到任何宿主服务，
+                            //   只能做"纯本地/纯发消息"的事。
+                            //   安全性：与内置工具同等权限（同源于插件自身的 ctx），
+                            //   且只对本机文件系统里的 .qqbot-extensions/tools/*.mjs 生效 —— 即"主人自己写的代码"。
+                            ctx,
+                            logger: ctx.logger,
                         };
                         try {
                             const r = await def.run(args, env);
