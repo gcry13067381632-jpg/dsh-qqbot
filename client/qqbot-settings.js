@@ -4327,8 +4327,11 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           state.chatMore = d.hasMore === true
           state.chatErr = ''
           state.chatOldest = state.chatItems.length ? state.chatItems[0].seq : 0
-          // 2026-10-01: 记住"已加载到的最新事件 seq" —— 滚轮增量刷新(loadChatNewer)的起点
-          if (typeof d.tailSeq === 'number') state.chatNewest = d.tailSeq
+          // 2026-10-01: 记住"已加载到的**最新事件 seq**" —— 滚轮增量刷新(loadChatNewer)的起点。
+          //   ⚠️ 不能拿 d.tailSeq(= sess.seq = 下一个可用 seq): 正扫是 afterSeq+1 起, 记大会**漏一条/取不到**。
+          var _maxSeq = 0
+          state.chatItems.forEach(function (x) { var n = Number(x.seq); if (n > _maxSeq) _maxSeq = n })
+          state.chatNewest = _maxSeq
           renderChatList(mode === 'more' ? keep : null)
         }).catch(function () {
           state.chatBusy = ''
@@ -4497,12 +4500,19 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           var keyOf = function (x) { return String(x.seq) + '|' + String(x.dir) + '|' + String(x.text || '').slice(0, 24) }
           var have = {}
           state.chatItems.forEach(function (x) { have[keyOf(x)] = 1 })
-          var fresh = list.filter(function (x) { return !have[keyOf(x)] })
+          // ⚠️ 2026-10-01 主人实测「向下滚后最新消息后面冒出历史消息」：
+          //   群打包块([历史]…[/历史])会被拆成多条挂在**同一个新 seq** 上, 内容却是**更早**的消息;
+          //   不过滤就会被当新事件整块接到列表尾部。只收"时间不早于列表尾部那条"的条目。
+          var _tailT = state.chatItems.length ? (Number(state.chatItems[state.chatItems.length - 1].time) || 0) : 0
+          var fresh = list.filter(function (x) {
+            return !have[keyOf(x)] && (Number(x.time) || 0) >= _tailT
+          })
           if (fresh.length) {
             state.chatItems = state.chatItems.concat(fresh)
             appendChatRows(fresh)          // ★ 增量追加: 不重绘、不闪、不跳位置
           }
-          if (typeof d.tailSeq === 'number' && d.tailSeq > state.chatNewest) state.chatNewest = d.tailSeq
+          // 已加载位置 = 列表里最大的事件 seq（同 ①：不能用 tailSeq）
+          state.chatItems.forEach(function (x) { var n = Number(x.seq); if (n > state.chatNewest) state.chatNewest = n })
           updateChatStatus()
         }).catch(function () { state.chatBusy = ''; updateChatStatus() })
       }
