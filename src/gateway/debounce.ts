@@ -55,6 +55,9 @@ interface DebounceEntry {
 
 interface DebounceWindow {
   entries: DebounceEntry[];
+  /** 2026-10-01: 窗口内最新一条消息的**引用**（quoteRef 解析好的 ctx.state.quote）——
+   *  flush 时必须带给 handleInbound，否则当前消息的引用块永远是空的（见下方 patch 注释）。 */
+  quote?: unknown;
   timer: NodeJS.Timeout | null;
   /** 是否因「LLM 回合中」defer 过(主人定 2026-09-07): 只有这类聚合才带系统时间提示;
    *  原版 debounce 的"等用户连发完综合回"是正常对话, 不加提示。 */
@@ -340,6 +343,10 @@ export function debounceLayer(
         };
         // 系统时间提示只在「LLM 回合中 defer 攒批」时带; 普通连发聚合(等用户停口)不带
         const state: Record<string, unknown> = { history: hist, aggregated: w.turnDeferred === true };
+        // ⚠️ 2026-10-01 修：原来这里新建 state 只带 history/aggregated → 上游解析好的
+        //   `ctx.state.quote` 被丢掉，**当前消息的引用块因此永远是空的**（历史行反而有，
+        //   因为那是 media-history 在中间件链里记的）。踩了很久，勿删。
+        if (w.quote) state.quote = w.quote;
         if (cur.wasMentioned) {
           // current 本身就是 @ 消息 → 走正常 mention, AI 见 (@you)
           state.mention = { wasMentioned: true };
@@ -378,7 +385,10 @@ export function debounceLayer(
           attachments: allAtts.length > 0 ? allAtts : undefined,
         };
         logger.debug(`[debounce] flush(c2c ${String(base.senderId ?? '')}) ${entries.length}条 → handleInbound`);
-        await handleInbound(merged, manager, config, logger, { aggregated: w.turnDeferred === true });
+        await handleInbound(merged, manager, config, logger, {
+          aggregated: w.turnDeferred === true,
+          ...(w.quote ? { quote: w.quote } : {}),
+        });
       }
     } catch (err) {
       logger.error(`[debounce] flush 失败: ${err instanceof Error ? err.message : String(err)}`);
@@ -491,6 +501,9 @@ export function debounceLayer(
     }
     const isNewer = ts >= maxTs;
     w.entries.push({ msg: { ...msg }, wasMentioned, ts });
+    // 2026-10-01: 把上游 quoteRef 解析好的引用存到窗口上（flush 时用）
+    const _q = (ctx.state as { quote?: unknown }).quote;
+    if (_q) w.quote = _q;
     dbg(`  win=${w.entries.length} new=${isNewer} order=[${w.entries.map(e => JSON.stringify(String(e.msg.content ?? '').slice(0, 16))).join(',')}]`);
     if (isNewer) {
       // 最近说话者(按服务器时间)刚又开口 → 重新等 ta 停口 silenceMs
