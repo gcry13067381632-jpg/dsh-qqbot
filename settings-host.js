@@ -3326,9 +3326,20 @@ export function apply(ctx) {
     const time = typeof ev.time === 'number' ? ev.time : 0;
     if (ev.type === 'user/message') {
       const src = data.source && typeof data.source === 'object' ? data.source : {};
-      if (src.kind === 'plugin') return null; // runtime context / 系统注入等, 非真人对话
+      // ⚠️ 2026-10-01 修(主人截图: 整段 `<system-reminder>` 系统提示词漏进了 dock 聊天界面):
+      //   `user/message` 在 dsh 会话里**不只承载真人发言** —— 插件/宿主的运行时注入也走它:
+      //     · 固定通道规则 + 群守则 → source.kind `qqbot:group-rules`(session-manager 拼的 <system-reminder>)
+      //     · QQ 审批提醒            → source.kind `plugin:qqbot-approval`
+      //     · 上下文压缩检查点        → source.kind `compact-checkpoint`
+      //     · 其它插件/扩展工具       → source.kind `plugin:<name>`
+      //   原实现只挡了 `kind === 'plugin'`(还是会话格式 V4 已废弃的写法) → 以上全漏。
+      //   真人发言的 kind 是 `user`; 这里按"插件自有 kind 前缀"黑名单 + 内容特征双保险。
+      const srcKind = typeof src.kind === 'string' ? src.kind : '';
+      if (srcKind === 'plugin' || srcKind.startsWith('plugin:') || srcKind.startsWith('qqbot:') || srcKind === 'compact-checkpoint') return null;
       const raw0 = chatTextOf(data.content);
       if (!raw0) return null;
+      // 兜底: 运行时上下文(user-role 快照)一律包在 <system-reminder> 里 → 不是对方说的话, 不进聊天视图
+      if (/^\s*<system-reminder>/.test(raw0)) return null;
       chatRawDiag(raw0);
       const raw = chatPeelTimeHead(raw0);
       const isRelay = /^用户代你发送: /.test(raw);

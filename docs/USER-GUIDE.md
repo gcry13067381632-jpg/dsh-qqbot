@@ -399,7 +399,7 @@ export default {
   inputSchema: {                  // ⚠️ 可选参数不要写 required; 必填才写 required: true
     sides: { type: 'integer', description: '骰子面数, 默认 6' },
   },
-  // env: { cwd, manager, sender, replyTarget, exec } —— sender/replyTarget 可发 QQ 消息
+  // env: { cwd, manager, sender, replyTarget, exec, ctx, logger } —— sender/replyTarget 可发 QQ 消息; ctx 是宿主上下文
   run: async (args, env) => {
     const sides = Math.max(2, Math.min(1000, Math.round(Number(args.sides) || 6)));
     return { ok: true, msg: `🎲 ${1 + Math.floor(Math.random() * sides)}` };
@@ -412,8 +412,11 @@ export default {
 1. 命令/工具文件都放**账号数据目录**的 `.qqbot-extensions/` 下(dataRoot 优先, 无则 cwd), 别放插件包内。
    → **升级/重装插件(换 node_modules)只动插件本体, 不会覆盖扩展目录**, 用户的扩展永久保留。
 2. 工具入参 schema 用 JSON Schema 风格; **可选参数不带 required 字段**。
-3. `run(args, env)` 的 `env = { cwd, manager, sender, replyTarget, exec }`:
+3. `run(args, env)` 的 `env = { cwd, manager, sender, replyTarget, exec, ctx, logger }`:
    - `sender` + `replyTarget` 就是内置 `send_media` 用的发送器 → **工具可以自己发 markdown 卡片 / 图片 / 语音 / 文件**, 不用把内容再交回 AI。
+   - `ctx` 是**宿主的插件上下文**(与内置工具同源, 1.5.30 起提供) → 扩展工具能自助调用宿主能力, 例如
+     `ctx.compaction.compactNow(agent, exec.signal, id)` 压缩上下文、`ctx.get('服务名')` 探测可选服务; `logger` 是对应日志器。
+     ⚠️ 权限与内置工具**同级** —— 只适合**你自己写在 dataRoot 里的**扩展, 别把 `ctx` 转手给不可信代码。
    - 工具返回 `{ ok, msg }`(msg 作为工具结果回给 AI); 命令返回纯文本。
 4. 卡片正文由**你(AI)直接写 markdown**(标题/加粗/`![说明](url)`/代码块), **本插件没有模板引擎, 不需要也不会用配置型模板**。
 5. 生效方式: 工具发 `/tools-reload` 或调 `tools_reload` —— 新工具即时生效; **同名工具改内容会被工具注册表跳过(`already registered`) → 换名或重启宿主**; 命令一律需重启宿主(`/bot-restart`)。
