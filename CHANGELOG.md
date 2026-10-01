@@ -4,6 +4,26 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [1.5.26] - 2026-10-01
+
+### 变更
+- **`engines.dsh` 改为范围式声明**：`0.1.5-rc.2 || 0.1.6-alpha.2 || 0.1.7-rc.1 || … || 0.2.0-rc.2`
+  → **`>=0.1.5-rc.2`**
+  原来用枚举列出"已知可用版本"，宿主每发一个新版就要手动补一行，一忘就被判
+  `installation rejected: Plugin @zaofan/dsh-qqbot@x.y.z is incompatible`
+  （issue #5 就是这么来的）。改用范围后，宿主再发新版也不会误拒。
+  依据：本插件只依赖 `cordis` / `dsh-settings` / 客户端 `slots`·`sessions`，
+  这几项在 0.1.5 → 0.2.0 之间一次都没有破坏过。
+
+### 文档
+- **README（中/英）新增「📱 手机部署」亮点与章节**
+  推荐社区的 [dsh-mobile-apk](https://github.com/kelai141/dsh-mobile-apk)（dsh 安卓壳 APK：
+  WebView UI + 内嵌 Termux 运行时快照，解压即跑）——
+  把 dsh 与本插件一起装进手机，就是一台**随身 7×24 在线**的 QQ 机器人，不必为挂机常开电脑。
+  同时写明安卓上必须打开的两个开关：
+  ① 智能回复里勾「程序兜底（不依赖小模型）」（手机通常无 ONNX 运行时，走字符 n-gram 字面相似）
+  ② 系统电池里允许后台运行 / 加入省电白名单（否则息屏即被杀进程）
+
 ## [1.5.25] - 2026-09-30
 
 ### 改进

@@ -31,6 +31,9 @@ The little ball at the corner of the settings panel opens a whole control deck: 
 
 **📦 Clean & lean** — drive image sending / recall from plain text (`[MEDIA:image|path]` / `[RECALL]`); the repo contains no bot credentials or private data.
 
+**📱 No PC needed — she runs 24/7 on your phone**
+Pair her with the community [dsh-mobile-apk](https://github.com/kelai141/dsh-mobile-apk) (an **Android shell APK for dsh**: WebView UI + a bundled Termux runtime snapshot, unzip-and-run) and you get a QQ bot that stays online from your pocket — no dedicated computer to keep running. (Android usually has no ONNX runtime, so remember to tick **“Program fallback (no small model)”** in Settings — see the Android section below.)
+
 ### 📸 Showcase
 
 Left: the dsh runtime backend — reasoning, tool calls and token usage are fully visible (paired with the `reply_gate` gate tool, the bot decides on its own whether to speak or stay silently idle);
@@ -145,6 +148,26 @@ npm install --legacy-peer-deps     # install-time resolution only; runtime behav
 ```
 
 > Tracked: once upstream #37 is fixed and version lines converge, this section can be removed.
+
+### 📱 Deploy on Android — the pocket 24/7 setup
+
+[dsh-mobile-apk](https://github.com/kelai141/dsh-mobile-apk) is a community-built **Android shell APK for dsh**
+(WebView UI + a bundled Termux runtime snapshot — unzip and run). Install dsh there, then install this plugin
+into that dsh exactly as documented above, and you end up with a QQ bot that runs **24/7 from your phone**,
+with no PC left on.
+
+```
+Download APK:  https://github.com/kelai141/dsh-mobile-apk/releases
+(pick arm64 / x86_64 to match your phone's CPU)
+```
+
+> ⚠️ **Two switches you must turn on for Android** (otherwise she silently stops replying):
+>
+> 1. **Settings → Smart reply → tick “Program fallback (no small model)”**
+>    Phones usually have no ONNX runtime, so the real embedding model fails to load. With the fallback on,
+>    scoring switches to **character n-gram lexical similarity** (zero dependencies, zero tokens) and works.
+> 2. **System settings → Battery → allow background activity / add to the power-saving whitelist**
+>    Otherwise the OS kills the Termux process once the screen is off and the bot goes offline.
 
 ### First launch & binding
 
