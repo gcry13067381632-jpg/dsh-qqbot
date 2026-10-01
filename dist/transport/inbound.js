@@ -859,9 +859,32 @@ function assembleAgentBody(msg, state, scope, logger, downloaded, enableRef, msg
         //   `msg_elements` 的**原串** —— `=== 消息 1 === [消息内容] … [消息类型] 引用消息 …` 模板串，
         //   原来没剥壳就直接塞进上下文（还会被 trimQuoteBlock 按"519 字"截断＋缓存，看着莫名其妙）。
         //   这里跟 buildQuoteBlock 用**同一套清洗**：剥模板壳 + 只留最外层那句 + 表情转可读。
+        const lines = [];
         const slim = quoted ? slimQuoteText(quoted, 0) : '';
         if (slim)
-            quotePart = `${MK.QUOTE_BEGIN}\n${escapeBlockMarkers(slim)}\n${MK.QUOTE_END}\n${MK.CURRENT}\n`;
+            lines.push(escapeBlockMarkers(slim));
+        // ⚠️ 2026-10-01 补（主人问"多图+文本混合考虑了吗"时发现的缺口）：
+        //   SDK 连 quote 都没解析出来时，**也要查我们自己的内容台账** —— 否则"引用一条图片表情 /
+        //   纯图片消息"永远是空的（QQ 那边只给一个空表情标签，没有任何媒体标识）。
+        //   被引用消息的索引藏在 `message_scene.ext` 的 `ref_msg_idx=` 里。
+        //   台账天然支持**多图 + 文本混合**（imgs 是数组，逐张出行）。
+        const _ext = Array.isArray(msg.message_scene?.ext) ? msg.message_scene.ext : [];
+        const _refRaw = _ext.find((x) => typeof x === 'string' && x.startsWith('ref_msg_idx='));
+        const refIdx = typeof _refRaw === 'string' ? _refRaw.slice('ref_msg_idx='.length).trim() : '';
+        if (refIdx) {
+            const hit = lookupMsgContent(dataRoot, quotePeer, refIdx);
+            if (hit) {
+                if (!slim && hit.t)
+                    lines.push(escapeBlockMarkers(slimQuoteText(hit.t, 0)));
+                for (const p of hit.imgs ?? []) {
+                    const line = describeQuoteAttachment({ contentType: 'image/*', url: p }, stickerDir);
+                    if (line)
+                        lines.push(line);
+                }
+            }
+        }
+        if (lines.length > 0)
+            quotePart = `${MK.QUOTE_BEGIN}\n${lines.join('\n')}\n${MK.QUOTE_END}\n${MK.CURRENT}\n`;
     }
     // ⚠️ 2026-09-13 主人要求(省 token): 引用原文只给**前 QUOTE_KEEP 字**,
     //   完整原文进本地缓存(每会话最多 10 条) → AI 需要时用 `quote_view` 工具取。
