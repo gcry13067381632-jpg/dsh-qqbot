@@ -936,7 +936,12 @@ function assembleAgentBody(
   // 引用消息(2026-09-13): SDK 中间件没解析出 quote 时, 自己从 103/msg_elements 提取被引用原文
   if (!quotePart && enableRef) {
     const quoted = extractQuotedContent(msg);
-    if (quoted) quotePart = `${MK.QUOTE_BEGIN}\n${escapeBlockMarkers(quoted)}\n${MK.QUOTE_END}\n${MK.CURRENT}\n`;
+    // ⚠️ 2026-10-01 主人实测抓到的**漏网之鱼**：这条路（SDK 没解析出 quote 时的兜底）拿到的是
+    //   `msg_elements` 的**原串** —— `=== 消息 1 === [消息内容] … [消息类型] 引用消息 …` 模板串，
+    //   原来没剥壳就直接塞进上下文（还会被 trimQuoteBlock 按"519 字"截断＋缓存，看着莫名其妙）。
+    //   这里跟 buildQuoteBlock 用**同一套清洗**：剥模板壳 + 只留最外层那句 + 表情转可读。
+    const slim = quoted ? slimQuoteText(quoted, 0) : '';
+    if (slim) quotePart = `${MK.QUOTE_BEGIN}\n${escapeBlockMarkers(slim)}\n${MK.QUOTE_END}\n${MK.CURRENT}\n`;
   }
   // ⚠️ 2026-09-13 主人要求(省 token): 引用原文只给**前 QUOTE_KEEP 字**,
   //   完整原文进本地缓存(每会话最多 10 条) → AI 需要时用 `quote_view` 工具取。
