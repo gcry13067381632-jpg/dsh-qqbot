@@ -112,6 +112,30 @@ interface ProcessedAttachment {
   size?: number;
 }
 
+/** 每会话"上次注入的群时间头"（同分钟不重复注入，省 token） */
+const lastGroupTimeHead = new Map<string, string>();
+
+/**
+ * 群消息时间头：同一会话**同一分钟内只注入一次**。
+ *
+ * 2026-10-01 主人要求（省 token）：「同一分钟的消息或聚合消息不重复显示时间」。
+ * 原来每轮入站都无条件在最前面加 `[YYYY-MM-DD 周X HH:MM]` —— 同一分钟里连发几轮 / 聚合一波，
+ * 上下文里就堆出好几行一模一样的时间头（每行 ~25 字符，纯浪费）。
+ * 现在同分钟内的后续回合不再重复注入：时间信息不变（最近那条时间头就是当前时间），信息量零损失。
+ *
+ * @param cache 会话 → 上次时间头（进程内缓存，重启自然清空 → 重启后第一条会重新带上）
+ * @returns 要注入的时间行（形如 `[2026-10-01 周四 20:47]`），本次不需注入时返回 null
+ */
+export function groupTimeHead(cache: Map<string, string>, scope: string, peerId: string, now: Date = new Date()): string | null {
+  const p = (n: number): string => String(n).padStart(2, '0');
+  const wd = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][now.getDay()];
+  const stamp = `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())} ${wd} ${p(now.getHours())}:${p(now.getMinutes())}`;
+  const key = `${scope}:${peerId}`;
+  if (cache.get(key) === stamp) return null;
+  cache.set(key, stamp);
+  return `[${stamp}]`;
+}
+
 // ── 主处理函数 ──
 
 /**
@@ -243,11 +267,11 @@ export async function handleInbound(
   // 群聊时间戳(原"群守则"拼接位): 守则已迁 systemPrompt.section(session-manager 装配期注册,
   // 每请求进 system, 不再每轮塞 user 历史); 此处改为注入当前系统时间, 让 AI 每轮知道日期/星期/时刻。
   // 2026-09-15 省 token: 去掉"当前时间"四个字(上下文里一看就懂), 一条省 ~4 token。
+  // 2026-10-01 省 token(主人要求): **同一分钟只注入一次** —— 同分钟连发几轮/聚合一波时,
+  //   重复的时间头(每行 ~25 字符)没有信息量, 直接省掉。见 groupTimeHead()。
   if (scope === 'group') {
-    const _now = new Date();
-    const _p = (n: number): string => String(n).padStart(2, '0');
-    const _wd = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][_now.getDay()];
-    agentBody = `[${_now.getFullYear()}-${_p(_now.getMonth() + 1)}-${_p(_now.getDate())} ${_wd} ${_p(_now.getHours())}:${_p(_now.getMinutes())}]\n\n${agentBody}`;
+    const _head = groupTimeHead(lastGroupTimeHead, scope, peerId, new Date());
+    if (_head) agentBody = `${_head}\n\n${agentBody}`;
   }
 
   logger.debug(`Processing: scope=${scope} peerId=${peerId} body="${agentBody.slice(0, 200)}"`);
