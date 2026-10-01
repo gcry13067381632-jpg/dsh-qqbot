@@ -3268,7 +3268,12 @@ export function apply(ctx) {
       // 2026-09-12 适配(token 瘦身后历史行变成 "[昵称]"): id 段设为**可选**, 老格式 "[昵称 (openid)]" 仍认;
       // 同时排除含冒号的方括号(如 "[图片: url]"), 免得把附件标记当成发送者。
       const m = s.match(/^\[([^\]\n:]*?)(?:\s*\([A-Za-z0-9_-]{6,}\))?\](.*)$/);
-      if (m) { flush(); cur = { sender: m[1].trim(), lines: [m[2].trim(), ...pendingMeta].filter(Boolean) }; pendingMeta = []; }
+      // ⚠️ 2026-10-01 修（主人实测：dock 聊天界面冒出个叫「引」的人发消息）：
+      //   `[引]` / `[/引]` / `[引用]` 是**块标记**而不是昵称壳 —— 命中它们时不能开新气泡，
+      //   要当普通行并入当前段（真昵称在后面几行，交给 chatPolishOne 去找）。
+      //   与 chatPolishOne 的 RE_MARKER_WORD 同款防御，此处之前漏了。
+      const isNick = m && m[1].trim() && !RE_MARKER_WORD.test(m[1].trim());
+      if (isNick) { flush(); cur = { sender: m[1].trim(), lines: [m[2].trim(), ...pendingMeta].filter(Boolean) }; pendingMeta = []; }
       else { if (cur) cur.lines.push(...pendingMeta, s); else { flush(); cur = { sender: '', lines: [...pendingMeta, s] }; } pendingMeta = []; }
     }
     flush();
