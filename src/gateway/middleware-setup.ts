@@ -111,6 +111,15 @@ export async function setupMiddlewares(
     },
   }));
 
+  // 3.9. 引用消息解析（记录每条消息 + 解析被引用原文）
+  //   ⚠️ 2026-10-01 **前移**（原在第 11 步）: 群历史缓冲在第 4 步, 而它记 content 时要读
+  //   `ctx.state.quote` —— 顺序反了的话这里永远是 undefined, 历史行里就永远没有 `[引]…[/引]`,
+  //   聚合打包给 AI 时"他引用了什么"整段丢失(主人实测: 当前消息有、历史里没有)。
+  bot.use(quoteRef({
+    maxSize: 500,
+    preferMsgElements: true,
+  }));
+
   // 4. 群历史缓冲 — 放在门控之前，确保所有消息（含未 @bot）都计入上下文
   //    store 按 appId 独立(getHistoryStore(config.appId)), groupKey 带 appId 前缀, 供回复后清空
   //    ⚠️ 用增强版 mediaHistoryBuffer(本地手改，替代 SDK historyBuffer)：
@@ -129,6 +138,7 @@ export async function setupMiddlewares(
     // 2026-09-15: 本中间件在 mentionGate **之前**, 读不到 ctx.state.mention(那正是 mentionGate 赋的值)
     //   → 改由本中间件自己判定"这条 @ 了她", appId 用于内容兜底扫描 <@{appId}>。见 media-history.ts。
     appId: config.appId,
+    stickerDir: stickerDirOf(config),
   }));
 
   // 4.5. 表情包自动收藏（P0）：群图片 → 本地图库（fire-and-forget，不阻塞主链）
@@ -288,11 +298,8 @@ export async function setupMiddlewares(
   // 10. C2C 输入状态指示
   bot.use(typingIndicator());
 
-  // 11. 引用消息解析（记录 + 解析被引用原文）
-  bot.use(quoteRef({
-    maxSize: 500,
-    preferMsgElements: true,
-  }));
+  // 11. 引用消息解析 —— ⚠️ 2026-10-01 已**前移到第 3.9 步**（必须在群历史缓冲之前,
+  //     否则 mediaHistoryBuffer 读不到 ctx.state.quote → 历史里的引用块永远是空的）。
 
   // 11.5. 附件下载（file 附件下载到本地，供 @提及 / 工具访问）
   bot.use(attachmentProcessor(config, logger));

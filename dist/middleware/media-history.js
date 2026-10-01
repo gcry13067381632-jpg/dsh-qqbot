@@ -1,5 +1,6 @@
 import { inferMediaKind } from '../transport/media-kind.js';
 import { replaceBotMention } from '../shared/mention-clean.js';
+import { buildQuoteBlock } from '../transport/inbound.js';
 /** 文本 + 带 URL 附件折叠为一行段。
  *  ⚠️ 2026-09-10 主人纠正两点:
  *  ① **语音 URL 不能跳过** —— dock 的仿 QQ 聊天界面靠它调 /chat/voice-play 把 SILK 转 mp3 播放;
@@ -8,8 +9,15 @@ import { replaceBotMention } from '../shared/mention-clean.js';
  *  格式约定(与 dock chatSplitMedia 对齐):
  *    转录独立成一行纯文本 → dock 当普通文本显示(不套 📎 附件样式);
  *    `[语音: <url>]` 单独一行 → dock 的 chatAttachmentKind 认 `[语音` 判 voice 并建播放器。 */
-function foldMedia(msg) {
+export function foldMedia(msg, quote, stickerDir = '') {
     const parts = [];
+    // ⚠️ 2026-10-01 修（主人实测: **聚合进历史**的那条消息里没有引用块 —— 当前消息有、历史里没有）:
+    //   本中间件是链上第 4 步, 而 SDK 的 quoteRef 原来挂第 11 步 ⇒ 记历史时 ctx.state.quote 还没赋值。
+    //   修法两半: ① quoteRef 前移到本中间件之前(见 middleware-setup.ts); ② 这里把引用块拼进历史 content。
+    //   压成一行 —— 历史行是"一条一行"的形状(和 [图片: path] 的处理一致), 多行会看不出是谁说的。
+    const qb = quote ? buildQuoteBlock(quote, stickerDir).replace(/\n+/g, ' ').trim() : '';
+    if (qb)
+        parts.push(qb);
     // 2026-09-11 主人要求: 历史里的 @bot 长 id 也清洗成 @bot(省 token)
     const text = replaceBotMention((msg.content ?? '').trim(), msg.mentions, msg.wasMentioned);
     if (text)
@@ -68,7 +76,7 @@ function detectWasMentioned(msg, appId) {
  *   2. 向下游暴露 ctx.state.history = 已缓冲历史（不含当前消息，旧→新）。
  */
 export function mediaHistoryBuffer(options) {
-    const { limit, store, recordOnSkip, groupKey, skipWhen, appId } = options;
+    const { limit, store, recordOnSkip, groupKey, skipWhen, appId, stickerDir = '' } = options;
     return async (ctx, next) => {
         const key = groupKey(ctx);
         if (!key) {
@@ -91,7 +99,7 @@ export function mediaHistoryBuffer(options) {
         const entry = {
             senderId: ctx.message.senderId,
             senderName: ctx.message.senderName,
-            content: foldMedia(raw),
+            content: foldMedia(raw, ctx.state.quote, stickerDir),
             timestamp: Date.parse(ctx.message.timestamp) || Date.now(),
             messageId: ctx.message.messageId,
             ...(wasMentioned ? { mentioned: true } : {}),

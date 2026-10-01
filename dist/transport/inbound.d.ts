@@ -31,6 +31,11 @@ export declare function handleInbound(rawMsg: unknown, manager: SessionManager, 
  *   → 现在把被引用消息的附件**内联进引用块**，图片给「**本地路径优先、URL 兜底**」的可读目标
  *     （本地路径模型能用视觉工具直接读图；QQ 链接又长又会过期），语音给 ASR 转写，文件给文件名+URL。
  */
+export declare function buildQuoteBlock(quote: ResolvedQuote | undefined, stickerDir: string): string;
+/**
+ * Layer 2 成品：引用块 + 紧随其后的 `[当前]`（短标记见 markers.ts）。
+ * ⚠️ 历史行请用 {@link buildQuoteBlock} —— 那边不该出现 `[当前]` 标记。
+ */
 export declare function buildQuotePart(quote: ResolvedQuote | undefined, stickerDir: string): string;
 /**
  * Layer 3: 带发送者标签的用户消息

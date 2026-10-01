@@ -13,6 +13,7 @@ import type { Middleware, MiddlewareContext } from '@tencent-connect/qqbot-nodej
 import type { HistoryEntry, HistoryStore } from '@tencent-connect/qqbot-nodejs';
 import { inferMediaKind } from '../transport/media-kind.js';
 import { replaceBotMention, type MentionLike } from '../shared/mention-clean.js';
+import { buildQuoteBlock, type ResolvedQuote } from '../transport/inbound.js';
 
 export interface MediaHistoryOptions {
   /** 每群保留的最大条数 */
@@ -27,10 +28,12 @@ export interface MediaHistoryOptions {
   skipWhen?: (ctx: MiddlewareContext) => boolean;
   /** bot 自身 appId —— 判定"这条 @ 了她"时做内容兜底扫描用 */
   appId?: string;
+  /** 图库目录: 引用块里"被引用的图片"转本地路径用(缺省只走 URL→路径缓存) */
+  stickerDir?: string;
 }
 
 /** 消息最小形状（只读所需字段，避免依赖 SDK 完整类型） */
-interface FoldableMsg {
+export interface FoldableMsg {
   content?: string;
   attachments?: Array<{ content_type?: string; url?: string; asr_refer_text?: string }>;
   /** QQ mentions 数组(含 is_you 标记 bot 自身), 用于入站 @bot 长 id 清洗 */
@@ -48,8 +51,14 @@ interface FoldableMsg {
  *  格式约定(与 dock chatSplitMedia 对齐):
  *    转录独立成一行纯文本 → dock 当普通文本显示(不套 📎 附件样式);
  *    `[语音: <url>]` 单独一行 → dock 的 chatAttachmentKind 认 `[语音` 判 voice 并建播放器。 */
-function foldMedia(msg: FoldableMsg): string {
+export function foldMedia(msg: FoldableMsg, quote?: ResolvedQuote, stickerDir = ''): string {
   const parts: string[] = [];
+  // ⚠️ 2026-10-01 修（主人实测: **聚合进历史**的那条消息里没有引用块 —— 当前消息有、历史里没有）:
+  //   本中间件是链上第 4 步, 而 SDK 的 quoteRef 原来挂第 11 步 ⇒ 记历史时 ctx.state.quote 还没赋值。
+  //   修法两半: ① quoteRef 前移到本中间件之前(见 middleware-setup.ts); ② 这里把引用块拼进历史 content。
+  //   压成一行 —— 历史行是"一条一行"的形状(和 [图片: path] 的处理一致), 多行会看不出是谁说的。
+  const qb = quote ? buildQuoteBlock(quote, stickerDir).replace(/\n+/g, ' ').trim() : '';
+  if (qb) parts.push(qb);
   // 2026-09-11 主人要求: 历史里的 @bot 长 id 也清洗成 @bot(省 token)
   const text = replaceBotMention((msg.content ?? '').trim(), msg.mentions, msg.wasMentioned);
   if (text) parts.push(text);
@@ -105,7 +114,7 @@ function detectWasMentioned(msg: FoldableMsg, appId: string | undefined): boolea
  *   2. 向下游暴露 ctx.state.history = 已缓冲历史（不含当前消息，旧→新）。
  */
 export function mediaHistoryBuffer(options: MediaHistoryOptions): Middleware {
-  const { limit, store, recordOnSkip, groupKey, skipWhen, appId } = options;
+  const { limit, store, recordOnSkip, groupKey, skipWhen, appId, stickerDir = '' } = options;
   return async (ctx: MiddlewareContext, next: () => Promise<void>) => {
     const key = groupKey(ctx);
     if (!key) {
@@ -128,7 +137,7 @@ export function mediaHistoryBuffer(options: MediaHistoryOptions): Middleware {
     const entry: HistoryEntry & { mentioned?: boolean } = {
       senderId: ctx.message.senderId,
       senderName: ctx.message.senderName,
-      content: foldMedia(raw),
+      content: foldMedia(raw, (ctx.state as { quote?: ResolvedQuote }).quote, stickerDir),
       timestamp: Date.parse(ctx.message.timestamp) || Date.now(),
       messageId: ctx.message.messageId,
       ...(wasMentioned ? { mentioned: true } : {}),

@@ -1011,7 +1011,7 @@ function cleanTextForScore(raw: string): string {
  *   → 现在把被引用消息的附件**内联进引用块**，图片给「**本地路径优先、URL 兜底**」的可读目标
  *     （本地路径模型能用视觉工具直接读图；QQ 链接又长又会过期），语音给 ASR 转写，文件给文件名+URL。
  */
-export function buildQuotePart(quote: ResolvedQuote | undefined, stickerDir: string): string {
+export function buildQuoteBlock(quote: ResolvedQuote | undefined, stickerDir: string): string {
   const atts = Array.isArray(quote?.attachments) ? quote.attachments : [];
   const rawText = String(quote?.text ?? quote?.entry?.content ?? '').trim();
   // SDK 由附件拼出的占位文本（纯 `[image]` / `[voice: xx]`…）在有附件行时不必重复一遍
@@ -1026,8 +1026,16 @@ export function buildQuotePart(quote: ResolvedQuote | undefined, stickerDir: str
   }
   if (lines.length === 0) return '';
 
-  // 短标记(2026-09-15 省 token): [引]…[/引][当前] —— 见 markers.ts
-  return `${MK.QUOTE_BEGIN}\n${lines.join('\n')}\n${MK.QUOTE_END}\n${MK.CURRENT}\n`;
+  return `${MK.QUOTE_BEGIN}\n${lines.join('\n')}\n${MK.QUOTE_END}`;
+}
+
+/**
+ * Layer 2 成品：引用块 + 紧随其后的 `[当前]`（短标记见 markers.ts）。
+ * ⚠️ 历史行请用 {@link buildQuoteBlock} —— 那边不该出现 `[当前]` 标记。
+ */
+export function buildQuotePart(quote: ResolvedQuote | undefined, stickerDir: string): string {
+  const blk = buildQuoteBlock(quote, stickerDir);
+  return blk ? `${blk}\n${MK.CURRENT}\n` : '';
 }
 
 /** SDK 的附件占位文本（整段只有 `[image]`/`[video: x]`/`[voice: x]`/`[file: x]` 这类行） */
