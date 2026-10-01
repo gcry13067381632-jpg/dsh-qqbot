@@ -124,7 +124,10 @@ export async function handleInbound(rawMsg, manager, config, logger, state) {
                 const _url = String(_a?.url ?? '').trim();
                 if (!_url)
                     continue;
-                const _lp = lookupImagePath(_url);
+                // ⚠️ 2026-10-01: 用**两级解析**（内存缓存 → 图库台账反查）——
+                //   台账是落盘的、跨重启/超 TTL 也命中；只查内存缓存的话（TTL 1h），
+                //   稍早的图就记不下本地路径了（主人实测：引用的图明明在图库里，却没转成本地路径）。
+                const _lp = resolveImageLocalPath(_url, stickerDirOf(config));
                 if (_lp && !_imgs.includes(_lp))
                     _imgs.push(_lp);
             }
