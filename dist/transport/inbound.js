@@ -887,8 +887,10 @@ function assembleAgentBody(msg, state, scope, logger, downloaded, enableRef, msg
                 }
             }
         }
+        // ⚠️ 2026-10-01：这里**不再自带** `[当前]` —— 它由 Layer 5(buildAgentBody) 统一输出，
+        //   否则群聊带引用时会出现两个 `[当前]`，引用块被夹在中间（主人实测："引用被塞到当前外面"）。
         if (lines.length > 0)
-            quotePart = `${MK.QUOTE_BEGIN}\n${lines.join('\n')}\n${MK.QUOTE_END}\n${MK.CURRENT}\n`;
+            quotePart = `${MK.QUOTE_BEGIN}\n${lines.join('\n')}\n${MK.QUOTE_END}\n`;
     }
     // ⚠️ 2026-09-13 主人要求(省 token): 引用原文只给**前 QUOTE_KEEP 字**,
     //   完整原文进本地缓存(每会话最多 10 条) → AI 需要时用 `quote_view` 工具取。
@@ -1110,7 +1112,9 @@ export function buildQuoteBlock(quote, stickerDir) {
  */
 export function buildQuotePart(quote, stickerDir) {
     const blk = buildQuoteBlock(quote, stickerDir);
-    return blk ? `${blk}\n${MK.CURRENT}\n` : '';
+    // ⚠️ 2026-10-01：`[当前]` 由 Layer 5 统一输出 —— 引用块与正文都属于当前消息，
+    //   引用块自己再带一个会让 `[当前]` 重复、引用块看起来"在当前消息之外"（主人实测）。
+    return blk ? `${blk}\n` : '';
 }
 /** SDK 的附件占位文本（整段只有 `[image]`/`[video: x]`/`[voice: x]`/`[file: x]` 这类行） */
 function isPlaceholderQuoteText(t) {

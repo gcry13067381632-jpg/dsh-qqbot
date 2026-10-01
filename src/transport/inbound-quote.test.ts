@@ -20,7 +20,7 @@ describe('buildQuotePart — 被引用消息的附件', () => {
     };
     const out = buildQuotePart(q, NO_LIB);
     expect(out).toContain('[引]');
-    expect(out).toContain('[当前]');
+    expect(out).not.toContain('[当前]');   // 2026-10-01: [当前] 由 Layer 5 统一输出, 引用块不再自带
     expect(out).toContain('📷 被引用的图片: https://multimedia.example.com/a.png');
   });
 
