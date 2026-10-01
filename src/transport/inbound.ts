@@ -1179,7 +1179,9 @@ export function buildQuoteBlock(quote: ResolvedQuote | undefined, stickerDir: st
   }
   if (lines.length === 0) return '';
 
-  return `${MK.QUOTE_BEGIN}\n${lines.join('\n')}\n${MK.QUOTE_END}`;
+  // 排版(2026-10-01 专家团共识): 引用内容整体退 2 格 —— 视觉上从属, 不再和正文同权重
+  const indented = lines.map((l) => '  ' + l).join('\n');
+  return `${MK.QUOTE_BEGIN}\n${indented}\n${MK.QUOTE_END}`;
 }
 
 /**
@@ -1276,7 +1278,7 @@ function localizeHistoryImages(text: string, stickerDir: string): string {
  */
 /** 引用块里的"附件行"（`📷 被引用的图片: …` 等）—— 截断豁免标记，别被 60 字上限挤掉
  *  ⚠️ 别写成字符类 `[📷🎵🎬📎]` —— emoji 是代理对，在字符类里会被拆成单个 UTF-16 码元，匹配不上。 */
-const QUOTE_ATT_LINE_RE = /^(?:📷|🎵|🎬|📎)\s*被引用的/;
+const QUOTE_ATT_LINE_RE = /^\s*(?:📷|🎵|🎬|📎)\s*被引用的/;
 
 function trimQuoteBlock(quotePart: string, dataRoot: string, msg: ProcessedMessage, logger: Logger): string {
   if (!quotePart) return quotePart;
@@ -1349,7 +1351,9 @@ export function buildUserMessage(
   const idPart = wasMentioned ? ` (${senderId})` : '';
   const refPart = msgRef ? ` #${msgRef}` : '';
   const senderTag = `[${displayName}${idPart}${refPart}]`;
-  return `${quotePart}${senderTag} ${userContent}${mentionTag}`;
+  // 排版: 多行正文才缩进(单行保持原样, 不徒增视觉噪声)
+  const body = userContent.includes('\n') ? userContent.split('\n').map((l) => '  ' + l).join('\n') : userContent;
+  return `${quotePart}${senderTag} ${body}${mentionTag}`;
 }
 
 /**
@@ -1430,7 +1434,10 @@ function buildAgentBody(
     // 2026-09-12 token 瘦身(主人定): 历史行默认**只给昵称**; 只有"当时 @ 过 bot 的那条"带 openid ——
     // 32 位 openid 每行占 20+ token, limit=20 时每轮白烧 ~640; 要 id 时用 session_list / 台账反查。
     const mentioned = (h as { mentioned?: boolean }).mentioned === true;
-    return mentioned && h.senderId ? `[${name} (${h.senderId})] ${h.content}` : `[${name}] ${h.content}`;
+    // 排版: 多行 content 退 2 格 —— 让"一条消息"视觉成块
+    const raw = String(h.content ?? '');
+    const c = raw.includes('\n') ? raw.split('\n').map((l) => '  ' + l).join('\n') : raw;
+    return mentioned && h.senderId ? `[${name} (${h.senderId})] ${c}` : `[${name}] ${c}`;
   });
 
   return [

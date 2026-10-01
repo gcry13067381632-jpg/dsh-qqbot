@@ -70,7 +70,8 @@ export function foldMedia(msg: FoldableMsg, quote?: ResolvedQuote, stickerDir = 
     stickerDir,
     gid,
   );
-  if (text) parts.push(text);
+  // 排版: 多行正文退 2 格(单行不缩进)
+  if (text) parts.push(text.includes('\n') ? text.split('\n').map((l) => '  ' + l).join('\n') : text);
   for (const att of msg.attachments ?? []) {
     if (!att.url) continue;
     // ⚠️ 2026-09-10: 类型一律走 inferMediaKind 推断 —— QQ 群聊图片/视频的 content_type

@@ -25,8 +25,9 @@ export function foldMedia(msg, quote, stickerDir = '', gid) {
     // 2026-10-01 主人实测：@**别人**的 `<@openid>` 在上下文里是 32 位 id（谁也看不出 @ 的是谁）→
     //   查群成员台账换成 `@昵称`（台账目录就是表情包目录 = stickerDir）；查不到退化成 @短id。
     const text = resolveMentionNames(replaceBotMention((msg.content ?? '').trim(), msg.mentions, msg.wasMentioned), stickerDir, gid);
+    // 排版: 多行正文退 2 格(单行不缩进)
     if (text)
-        parts.push(text);
+        parts.push(text.includes('\n') ? text.split('\n').map((l) => '  ' + l).join('\n') : text);
     for (const att of msg.attachments ?? []) {
         if (!att.url)
             continue;
