@@ -1,6 +1,7 @@
 import { inferMediaKind } from '../transport/media-kind.js';
 import { replaceBotMention } from '../shared/mention-clean.js';
 import { buildQuoteBlock } from '../transport/inbound.js';
+import { slimQuoteBlockOneLine } from '../transport/quote-text.js';
 /** 文本 + 带 URL 附件折叠为一行段。
  *  ⚠️ 2026-09-10 主人纠正两点:
  *  ① **语音 URL 不能跳过** —— dock 的仿 QQ 聊天界面靠它调 /chat/voice-play 把 SILK 转 mp3 播放;
@@ -15,7 +16,8 @@ export function foldMedia(msg, quote, stickerDir = '') {
     //   本中间件是链上第 4 步, 而 SDK 的 quoteRef 原来挂第 11 步 ⇒ 记历史时 ctx.state.quote 还没赋值。
     //   修法两半: ① quoteRef 前移到本中间件之前(见 middleware-setup.ts); ② 这里把引用块拼进历史 content。
     //   压成一行 —— 历史行是"一条一行"的形状(和 [图片: path] 的处理一致), 多行会看不出是谁说的。
-    const qb = quote ? buildQuoteBlock(quote, stickerDir).replace(/\n+/g, ' ').trim() : '';
+    // 压成一行 + 限长 140 字（“📷 被引用的图片: <路径>” 这类附件行**豁免截断** —— 那是唯一线索）
+    const qb = quote ? slimQuoteBlockOneLine(buildQuoteBlock(quote, stickerDir), 140) : '';
     if (qb)
         parts.push(qb);
     // 2026-09-11 主人要求: 历史里的 @bot 长 id 也清洗成 @bot(省 token)

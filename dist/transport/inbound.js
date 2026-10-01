@@ -12,6 +12,8 @@ import { registerMsgIndex } from './msg-index.js';
 import { createValueScorer, appendScoreLog, OTHER_MENTION_PENALTY } from '../features/value-score.js';
 import { getStickerStore, computeDHash } from '../features/sticker-store.js';
 import { lookupImagePath, rememberImagePath } from '../features/image-path-cache.js';
+import { slimQuoteText } from './quote-text.js';
+import { lookupMsgContent, rememberMsgContent } from './msg-content-cache.js';
 import { recordImageUrl, lookupStickerIdByUrl } from '../features/image-url-ledger.js';
 import { pushQuote } from '../features/quote-cache.js';
 import { computeRelevance, touchAffinity, classifyEmo, getAffinityEntry, memoryStrength } from '../features/local-signals.js';
@@ -111,6 +113,29 @@ export async function handleInbound(rawMsg, manager, config, logger, state) {
     catch (e) {
         logger.warn(`im-qqbot: 拼消息前的图片预检失败(不影响主流程): ${e instanceof Error ? e.message : String(e)}`);
     }
+    // 2026-10-01: 登记"这条消息的文本 + 图片本地路径"，供**别人引用它**时还原
+    //   （QQ 引用纯图片给不出图，只能自己记；见 transport/msg-content-cache.ts）
+    //   ⚠️ 位置讲究：必须在上面那次"图片预检"(会 rememberImagePath) **之后** —— 那时查缓存才有本地路径。
+    try {
+        const _mi = String(msg.msgIdx ?? '').trim();
+        if (_mi) {
+            const _imgs = [];
+            for (const _a of (Array.isArray(msg.attachments) ? msg.attachments : [])) {
+                const _url = String(_a?.url ?? '').trim();
+                if (!_url)
+                    continue;
+                const _lp = lookupImagePath(_url);
+                if (_lp && !_imgs.includes(_lp))
+                    _imgs.push(_lp);
+            }
+            const _txt = String(msg.content ?? '').trim();
+            rememberMsgContent(dataRootOf(config), `${scope}:${peerId}`, _mi, {
+                ...(_txt ? { t: _txt.slice(0, 200) } : {}),
+                ...(_imgs.length ? { imgs: _imgs } : {}),
+            });
+        }
+    }
+    catch { /* 台账失败不影响主链 */ }
     let agentBody = assembleAgentBody(msg, mwState, scope, logger, downloaded, refEnabled, msgRef, dataRootOf(config), stickerDirOf(config));
     if (!agentBody)
         return;
@@ -815,7 +840,10 @@ function assembleAgentBody(msg, state, scope, logger, downloaded, enableRef, msg
     const userContent = buildUserContent(msg, state, logger);
     if (!userContent && (!msg.attachments || msg.attachments.length === 0))
         return null;
-    let quotePart = buildQuotePart(state.quote, stickerDir);
+    // ⚠️ 2026-10-01: QQ 引用**纯图片**时 msg_elements 给不出图 —— 先用本地台账补一把（见 msg-content-cache.ts）
+    const quotePeer = `${scope}:${scope === 'group' ? (msg.groupOpenid ?? msg.senderId) : msg.senderId}`;
+    const quote = enrichQuoteFromCache(state.quote, dataRoot, quotePeer);
+    let quotePart = buildQuotePart(quote, stickerDir);
     // 引用消息(2026-09-13): SDK 中间件没解析出 quote 时, 自己从 103/msg_elements 提取被引用原文
     if (!quotePart && enableRef) {
         const quoted = extractQuotedContent(msg);
@@ -948,6 +976,35 @@ function cleanTextForScore(raw) {
  *   → 现在把被引用消息的附件**内联进引用块**，图片给「**本地路径优先、URL 兜底**」的可读目标
  *     （本地路径模型能用视觉工具直接读图；QQ 链接又长又会过期），语音给 ASR 转写，文件给文件名+URL。
  */
+/**
+ * 用本地台账补齐 QQ 没给全的被引用内容（2026-10-01 主人实测：引用**纯图片**看不到是哪张图）。
+ *   QQ 引用纯图时 msg_elements 可能只给个文件名、甚至什么都不给 → 按 SDK 给的 refKey（= 被引用消息的 msg_idx）
+ *   回查我们**入站时**记下的台账（见 msg-content-cache.ts），补出图片**本地路径**（AI 能直接读）。
+ *   已经够了（有正文 + 有附件）就直接原样返回，零开销。
+ */
+function enrichQuoteFromCache(q, dataRoot, peerKey) {
+    if (!q)
+        return q;
+    const refKey = String(q.refKey ?? '').trim();
+    if (!refKey)
+        return q;
+    const rawText = String(q.text ?? q.entry?.content ?? '').trim();
+    const hasText = Boolean(rawText) && !isPlaceholderQuoteText(rawText);
+    const hasAtt = Array.isArray(q.attachments) && q.attachments.length > 0;
+    if (hasText && hasAtt)
+        return q;
+    const hit = lookupMsgContent(dataRoot, peerKey, refKey);
+    if (!hit)
+        return q;
+    const out = { ...q };
+    if (!hasText && hit.t)
+        out.text = hit.t;
+    if (!hasAtt && hit.imgs && hit.imgs.length) {
+        // 走"本机路径"分支：describeQuoteAttachment 会原样给出路径（图库/缓存查不到也不会坏）
+        out.attachments = hit.imgs.map((p) => ({ contentType: 'image/*', url: p }));
+    }
+    return out;
+}
 export function buildQuoteBlock(quote, stickerDir) {
     const atts = Array.isArray(quote?.attachments) ? quote.attachments : [];
     const rawText = String(quote?.text ?? quote?.entry?.content ?? '').trim();
@@ -956,8 +1013,10 @@ export function buildQuoteBlock(quote, stickerDir) {
     if (!text && atts.length === 0)
         return '';
     const lines = [];
+    // 2026-10-01: 剥掉 QQ 的引用模板壳（`=== 消息 N === [消息内容]…[消息类型] 引用消息 …`）并压平，
+    //   只去噪声不限长 —— 限长交给调用方（当前消息走 trimQuoteBlock 的 60 字+缓存，历史行走媒体历史那边）
     if (text)
-        lines.push(escapeBlockMarkers(text));
+        lines.push(escapeBlockMarkers(slimQuoteText(text, 0)));
     for (const a of atts) {
         const line = describeQuoteAttachment(a, stickerDir);
         if (line)
@@ -1055,8 +1114,9 @@ function localizeHistoryImages(text, stickerDir) {
  *   截断切错位置、外层的 `[Quoted message ends]` 反而留在后面。
  *   现在: ①取**第一个 begin + 最后一个 end**(认外层) ②引用原文里的标记先转义(见 escapeQuoteMarkers)。
  */
-/** 引用块里的"附件行"（`📷 被引用的图片: …` 等）—— 截断豁免标记，别被 60 字上限挤掉 */
-const QUOTE_ATT_LINE_RE = /^[📷🎵🎬📎]\s*被引用的/;
+/** 引用块里的"附件行"（`📷 被引用的图片: …` 等）—— 截断豁免标记，别被 60 字上限挤掉
+ *  ⚠️ 别写成字符类 `[📷🎵🎬📎]` —— emoji 是代理对，在字符类里会被拆成单个 UTF-16 码元，匹配不上。 */
+const QUOTE_ATT_LINE_RE = /^(?:📷|🎵|🎬|📎)\s*被引用的/;
 function trimQuoteBlock(quotePart, dataRoot, msg, logger) {
     if (!quotePart)
         return quotePart;
