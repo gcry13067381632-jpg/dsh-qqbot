@@ -4,6 +4,28 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [1.5.28] - 2026-10-01
+
+### 修复
+- **安卓上 dock 悬浮球完全拖不动**（桌面/网页正常）
+  拖动原先只绑了 **鼠标事件** `mousedown / mousemove / mouseup` ——
+  触摸屏按住手指**不会触发 `mousemove`**（浏览器只在轻点时合成 `click`），
+  所以在 [dsh-mobile-apk](https://github.com/kelai141/dsh-mobile-apk) 这类安卓 WebView 里，球按下去毫无反应。
+  → 全部改用 **Pointer Events**（`pointerdown / pointermove / pointerup / pointercancel`）：
+  **鼠标 / 触摸 / 触控笔一套通吃**，桌面行为完全不变。
+  配套加固：
+    · `touch-action:none` —— 不让浏览器把拖动误当页面滚动手势
+    · `setPointerCapture` —— 手指滑出球体范围也不丢事件
+    · `pointercancel` —— 触摸被系统打断（来电/手势）也能正确收尾并落盘位置
+    · 面板头部拖动同样改 Pointer Events（展开态也能用手指拖）
+- **拖完松手会顺手把面板打开**
+  拖拽结束与 `click` 之间没有屏蔽窗 → 拖完一松手面板就弹出来。
+  → 增加 350ms 屏蔽窗（`lastDragEndedAt`），拖拽后不再误触发开/关面板。
+
+### 说明
+- 本版同时包含 1.5.27 的**窄屏适配**（tab 横向滚动、面板贴边、输入框 16px 防缩放、
+  全屏态吸顶+安全区、悬浮球缩小），桌面端仍完全不受影响（媒体查询只在 ≤560px 生效）。
+
 ## [1.5.27] - 2026-10-01
 
 ### 修复

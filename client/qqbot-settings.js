@@ -1751,11 +1751,18 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
       var _y = Math.max(0, Math.min(Math.max(0, window.innerHeight - _bh), Number(pos.y) || 0))
       wrap.style.left = _x + 'px'; wrap.style.top = _y + 'px'; wrap.style.right = 'auto'; wrap.style.bottom = 'auto'
       var dragState = null
-      ball.addEventListener('mousedown', function (e) {
-        dragState = { sx: e.clientX, sy: e.clientY, ox: wrap.offsetLeft, oy: wrap.offsetTop, moved: false }
+      // ⚠️ 2026-10-01 修（安卓上拖不动悬浮球）：原用 mousedown/mousemove/mouseup ——
+      //   那是【鼠标事件】，触摸屏按住不会触发 move（浏览器只在 tap 时合成 click），
+      //   所以在 dsh-mobile-apk 这类安卓 WebView 里球完全拖不动。
+      //   改用 Pointer Events：鼠标 / 触摸 / 触控笔一套通吃。
+      var lastDragEndedAt = 0   // 拖完的短暂屏蔽窗，避免"松手顺手把面板也打开"
+      try { ball.style.touchAction = 'none' } catch (eT) {}   // 别让浏览器把触摸当滚动手势
+      ball.addEventListener('pointerdown', function (e) {
+        dragState = { sx: e.clientX, sy: e.clientY, ox: wrap.offsetLeft, oy: wrap.offsetTop, moved: false, pid: e.pointerId }
+        try { ball.setPointerCapture(e.pointerId) } catch (eC) {}   // 手指移出球体也不丢事件
         e.preventDefault()
       })
-      document.addEventListener('mousemove', function (e) {
+      document.addEventListener('pointermove', function (e) {
         if (!dragState) return
         var dx = e.clientX - dragState.sx, dy = e.clientY - dragState.sy
         if (Math.abs(dx) + Math.abs(dy) > 3) dragState.moved = true
@@ -1764,16 +1771,21 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         wrap.style.top = Math.max(0, Math.min(window.innerHeight - 60, dragState.oy + dy)) + 'px'
         wrap.style.right = 'auto'; wrap.style.bottom = 'auto'
         syncPanelPos()
+        e.preventDefault()
       })
-      document.addEventListener('mouseup', function (e) {
+      function endBallDrag() {
         if (!dragState) return
         var moved = dragState.moved
+        var pid = dragState.pid
         dragState = null
+        try { if (pid != null) ball.releasePointerCapture(pid) } catch (eR) {}
         if (moved) {
-          try { localStorage.setItem('qqs-dock-pos', JSON.stringify({ x: wrap.offsetLeft, y: wrap.offsetTop })) } catch (err) {}
+          lastDragEndedAt = Date.now()
+          try { localStorage.setItem('qqs-dock-pos', JSON.stringify({ x: wrap.offsetLeft, y: wrap.offsetTop })) } catch (eS) {}
         }
-        if (moved && e.target === ball) return
-      })
+      }
+      document.addEventListener('pointerup', endBallDrag)
+      document.addEventListener('pointercancel', endBallDrag)   // 触摸被系统打断也要收尾
       function syncPanelPos() {
         if (!panel || !open) return
         layoutPanel()
@@ -1823,8 +1835,10 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         if (!panel || !open) return
         var h = panel.querySelector('.dk-h')
         if (!h) return
-        h.onmousedown = function (e) {
-          if (e.button !== 0) return
+        // ⚠️ 2026-10-01 修：改 Pointer Events —— 触摸屏（安卓 WebView）也能拖动面板
+        try { h.style.touchAction = 'none' } catch (eT) {}
+        h.onpointerdown = function (e) {
+          if (e.pointerType === 'mouse' && e.button !== 0) return
           var t = e.target
           if (t && t.closest && t.closest('button,select,input,textarea,a,.qqs-sel,.qqs-txt')) return
           e.preventDefault()
@@ -1840,12 +1854,14 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             panel.style.bottom = 'auto'
           }
           var mu = function () {
-            document.removeEventListener('mousemove', mm)
-            document.removeEventListener('mouseup', mu)
+            document.removeEventListener('pointermove', mm)
+            document.removeEventListener('pointerup', mu)
+            document.removeEventListener('pointercancel', mu)
             if (moved) manualPanelPos = { x: panel.offsetLeft, y: panel.offsetTop }
           }
-          document.addEventListener('mousemove', mm)
-          document.addEventListener('mouseup', mu)
+          document.addEventListener('pointermove', mm)
+          document.addEventListener('pointerup', mu)
+          document.addEventListener('pointercancel', mu)
         }
         // 双击头部 → 取消手动固定, 恢复自动贴球定位
         h.ondblclick = function (e) {
@@ -1861,6 +1877,8 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         ball.style.display = 'block'
       }
       function togglePanel() {
+        // 刚拖拽过 → 这次 click 只是"松手"，不要顺手把面板打开
+        if (Date.now() - (typeof lastDragEndedAt === 'number' ? lastDragEndedAt : 0) < 350) return
         if (dragState && dragState.moved) return
         if (open) { closePanel(); return }
         if (!panel) {
