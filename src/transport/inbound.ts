@@ -11,9 +11,7 @@
 import type { ContentBlock } from '@deepseek-ai/dsh-llm';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { createHash } from 'node:crypto';
-import { appendFileSync, existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { homedir } from 'node:os';
+import { existsSync, readFileSync } from 'node:fs';
 import type { SessionManager } from '../session/index.js';
 import type { ImQQBotConfig } from '../config.js';
 import type { ChatScope, Logger, RawAttachment, ReplyTarget } from '../types.js';
@@ -239,7 +237,6 @@ export async function handleInbound(
       });
     }
   } catch { /* 台账失败不影响主链 */ }
-
 
   let agentBody = assembleAgentBody(msg, mwState, scope, logger, downloaded, refEnabled, msgRef, dataRootOf(config), stickerDirOf(config));
 
@@ -1125,8 +1122,6 @@ function enrichQuoteFromCache(q: ResolvedQuote | undefined, dataRoot: string, pe
     out.attachments = hit.imgs.map((p) => ({ contentType: 'image/*', url: p }));
   }
   return out;
-}
-
 }
 
 export function buildQuoteBlock(quote: ResolvedQuote | undefined, stickerDir: string): string {
