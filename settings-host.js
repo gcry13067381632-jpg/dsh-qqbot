@@ -3260,7 +3260,12 @@ export function apply(ctx) {
     for (const line of String(body || '').split('\n')) {
       const s = line.trim();
       if (!s) continue;
-      if (RE_HIST_BEGIN_LINE.test(s) || RE_HIST_END_LINE.test(s) || RE_CURRENT_LINE.test(s) || isTimeHeadLine(s)) continue;
+      // ⚠️ 2026-10-01 修（主人实测："当前消息引用的消息显示给上一个人了"）：
+      //   `[当前]` 是**分段点** —— 它之前属于历史（该收尾结算），之后的"引用块 + 正文"才是当前消息。
+      //   原来这里直接 continue 不 flush，导致当前消息的 `[引]…[/引]` 被并进**上一条历史消息**里
+      //   （于是界面上引用块挂在别人气泡上）。
+      if (RE_CURRENT_LINE.test(s)) { flush(); continue; }
+      if (RE_HIST_BEGIN_LINE.test(s) || RE_HIST_END_LINE.test(s) || isTimeHeadLine(s)) continue;
       if (/^\[系统提示\]/.test(s)) { flush(); return out; } // 系统注入段, 之后都不属于群聊内容
       // 媒体元数据行: 暂存, 等归属给下面那条带昵称的消息
       // (Layer 4 现输出 `- Image:/- Video:/- Voice:/- File:` 单数前缀, 此处一并覆盖)
@@ -3273,7 +3278,18 @@ export function apply(ctx) {
       //   要当普通行并入当前段（真昵称在后面几行，交给 chatPolishOne 去找）。
       //   与 chatPolishOne 的 RE_MARKER_WORD 同款防御，此处之前漏了。
       const isNick = m && m[1].trim() && !RE_MARKER_WORD.test(m[1].trim());
-      if (isNick) { flush(); cur = { sender: m[1].trim(), lines: [m[2].trim(), ...pendingMeta].filter(Boolean) }; pendingMeta = []; }
+      if (isNick) {
+        // ⚠️ 2026-10-01：当前消息的引用块会先形成一个 sender 为空的段 —— 紧随的 [昵称] 行要**接管**它
+        //   （引用块 + 正文同属一条消息），否则引用块会独立成一个没有名字的气泡。
+        if (cur && !cur.sender) {
+          cur.sender = m[1].trim();
+          cur.lines.push(...[m[2].trim(), ...pendingMeta].filter(Boolean));
+        } else {
+          flush();
+          cur = { sender: m[1].trim(), lines: [m[2].trim(), ...pendingMeta].filter(Boolean) };
+        }
+        pendingMeta = [];
+      }
       else { if (cur) cur.lines.push(...pendingMeta, s); else { flush(); cur = { sender: '', lines: [...pendingMeta, s] }; } pendingMeta = []; }
     }
     flush();
