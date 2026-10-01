@@ -3406,6 +3406,10 @@ export function apply(ctx) {
       const limit = Math.max(1, Math.min(200, Math.round(Number(u.searchParams.get('limit'))) || 50));
       const bRaw = Number(u.searchParams.get('beforeSeq'));
       const beforeSeq = Number.isFinite(bRaw) && bRaw > 0 ? Math.floor(bRaw) : undefined;
+      // 2026-10-01 新增 afterSeq：**往后取更新的消息**（dock 聊天页滚轮增量刷新用 ——
+      //   只 append 新气泡，不重绘不闪、不跳滚动位置）。与 beforeSeq 互斥：给了 afterSeq 就正扫。
+      const aRaw = Number(u.searchParams.get('afterSeq'));
+      const afterSeq = Number.isFinite(aRaw) && aRaw >= 0 ? Math.floor(aRaw) : undefined;
       const bot = nsBot(ns);
       if (!bot) return writeJson(res, 400, { error: '找不到该账号实例(请先在账号页配置 appId/appSecret)' });
       const reg = await import('./dist/features/session-registry.js');
@@ -3434,9 +3438,30 @@ export function apply(ctx) {
       const fallbackSender = scope === 'c2c' ? ((ledger.get('c2c:' + peerId) || {}).name || '') : '';
       // 尾部倒扫: 默认从最新一条事件 seq 往前; beforeSeq=加载更早(beforeSeq 之前的)
       const items = [];
-      let high = beforeSeq !== undefined ? Math.max(0, beforeSeq - 1) : Math.max(0, sess.seq - 1);
-      let reachedEnd = false;
       const STEP = 500;
+      let reachedEnd = false;
+      if (afterSeq !== undefined) {
+        // ★ 正扫：从 afterSeq+1 扫到最新（升序）—— 只取"比前端已有的更新"的那批
+        const top = Math.max(0, sess.seq - 1);
+        let low = afterSeq + 1;
+        while (low <= top && items.length < limit) {
+          const hi = Math.min(top, low + STEP - 1);
+          let evs = [];
+          if (snap) { try { evs = snap(low, hi + 1) || []; } catch { evs = []; } }
+          if (!evs.length) { const all = sess.events; if (Array.isArray(all) && all.length && all.length > low) evs = all.slice(low, hi + 1); }
+          for (const ev of evs) {
+            const got = chatDecodeEvent(ev, scope, nameByMid, fallbackSender);
+            if (got) {
+              if (Array.isArray(got)) { for (const g of got) items.push(g); }
+              else items.push(got);
+            }
+            if (items.length >= limit) break;
+          }
+          low = hi + 1;
+        }
+        reachedEnd = low > top;
+      } else {
+      let high = beforeSeq !== undefined ? Math.max(0, beforeSeq - 1) : Math.max(0, sess.seq - 1);
       while (high >= 0 && items.length < limit) {
         const low = Math.max(0, high - STEP + 1);
         let evs = [];
@@ -3454,12 +3479,13 @@ export function apply(ctx) {
         if (low === 0) { reachedEnd = true; break; }
         high = low - 1;
       }
+      }
       // ⚠️ 2026-09-10 修复(主人实测"同一批次的历史消息会倒序"):
       //   原为 items.reverse() —— 倒扫时同一打包块([Chat history begins]…[Chat history ends])
       //   拆出的多条共用同一个 ev.seq, 块内本就是旧→新; 整体 reverse 会把"块内顺序"也翻反,
       //   表现为"整批之间顺序对、批内倒序"。
       //   改为: 按 seq 分块 → 块间倒序(旧→新), 块内保持原顺序。
-      {
+      if (afterSeq === undefined) {
         const blocks = [];
         for (const it of items) {
           const last = blocks[blocks.length - 1];

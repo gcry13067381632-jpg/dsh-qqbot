@@ -3985,7 +3985,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           if (now - (state.chatWheelAt || 0) < 400) return
           state.chatWheelAt = now
           if (state.chatBusy) return
-          loadChat(true)
+          loadChatNewer()   // ★ 增量: 只把新消息接在下面, 不重绘不闪不跳位置
         }
         var cinput = panel.querySelector('#dk-chat-input')
         if (cinput) {
@@ -4327,6 +4327,8 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           state.chatMore = d.hasMore === true
           state.chatErr = ''
           state.chatOldest = state.chatItems.length ? state.chatItems[0].seq : 0
+          // 2026-10-01: 记住"已加载到的最新事件 seq" —— 滚轮增量刷新(loadChatNewer)的起点
+          if (typeof d.tailSeq === 'number') state.chatNewest = d.tailSeq
           renderChatList(mode === 'more' ? keep : null)
         }).catch(function () {
           state.chatBusy = ''
@@ -4374,26 +4376,21 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         try { dd = curDataDir() || '' } catch (e) { dd = '' }
         return '/api/qqbot-settings/sticker-img?id=' + encodeURIComponent(idm[1]) + (dd ? '&dataDir=' + encodeURIComponent(dd) : '')
       }
-      function renderChatList(keepScrollOffset) {
-        var box = document.getElementById('dk-chat-box')
-        if (!box) return
+      // 2026-10-01: 状态行单独成函数 —— 增量追加新消息后只更新这行, 不重绘整个列表
+      function updateChatStatus() {
         var st = document.getElementById('dk-chat-status')
-        if (st) {
-          if (state.chatBusy === 'send') st.textContent = '发送中…'
-          else if (chatFlash) st.textContent = chatFlash
-          else if (state.chatBusy) st.textContent = state.chatBusy === 'chat' ? '加载中…' : '加载更早…'
-          else if (state.chatErr) st.textContent = state.chatErr
-          else if (!state.chatItems.length) st.textContent = '暂无记录 —— 机器人和该目标聊过后会显示在这里'
-          else st.textContent = '共 ' + state.chatItems.length + ' 条 · ' + chatPeerName() + (state.chatMore ? ' · 上滑加载更早' : ' · 已到最早')
-        }
-        if (!state.chatItems.length) {
-          var emptyTxt = state.chatErr || (!chatPeerReady() ? '先选一个群/私聊目标' : '还没有聊天记录(该目标暂无活跃会话)')
-          box.innerHTML = '<div class="dk-empty" style="padding:26px 0">' + esc(emptyTxt) + '</div>'
-          return
-        }
-        var html = ''
-        if (state.chatMore) html += '<div class="dk-chat-top">↑ 上滑加载更早消息</div>'
-        html += state.chatItems.map(function (it) {
+        if (!st) return
+        if (state.chatBusy === 'send') st.textContent = '发送中…'
+        else if (chatFlash) st.textContent = chatFlash
+        else if (state.chatBusy === 'new') st.textContent = '检查新消息…'
+        else if (state.chatBusy) st.textContent = state.chatBusy === 'chat' ? '加载中…' : '加载更早…'
+        else if (state.chatErr) st.textContent = state.chatErr
+        else if (!state.chatItems.length) st.textContent = '暂无记录 —— 机器人和该目标聊过后会显示在这里'
+        else st.textContent = '共 ' + state.chatItems.length + ' 条 · ' + chatPeerName() + (state.chatMore ? ' · 上滑加载更早' : ' · 已到最早')
+      }
+      // 2026-10-01: 单条气泡 HTML 抽成函数 —— renderChatList 与"增量追加"共用同一套渲染
+      function chatRowHTML(it) {
+        {
           var isOut = it.dir === 'out'
           var who = isOut ? '我' : (it.sender || (state.sendScope === 'c2c' ? c2cSelName() : '群友'))
           var ava = isOut ? '🐳' : chatAvaOf(who)
@@ -4424,11 +4421,13 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             + '<div class="dk-cbubble">' + imgs + txt + '</div>'
             + '</div>'
             + '</div>'
-        }).join('')
-        html += '<div class="dk-chat-bottom">—— 会话尾部 · ' + esc(chatPeerName()) + ' ——</div>'
-        box.innerHTML = html
+        }
+      }
+      // 2026-10-01: 图片交互绑定抽成函数(增量追加的新节点也要绑; 属性赋值 → 幂等)
+      function bindChatImgs(root) {
+        if (!root) return
         // 图片: 单击/右键 → 灯箱放大(右键不再弹浏览器菜单, 避免误触发 onerror 变加载失败)
-        box.querySelectorAll('img.dk-img').forEach(function (img) {
+        root.querySelectorAll('img.dk-img').forEach(function (img) {
           var lbOf = function () { return img.getAttribute('data-lb') || img.src }
           img.onclick = function (e) { e.preventDefault(); e.stopPropagation(); openLightbox(lbOf()) }
           img.oncontextmenu = function (e) { e.preventDefault(); e.stopPropagation(); openLightbox(lbOf()) }
@@ -4446,9 +4445,66 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             img.outerHTML = '<span style="color:#888">[图加载失败]</span>'
           }
         })
+      }
+      function renderChatList(keepScrollOffset) {
+        var box = document.getElementById('dk-chat-box')
+        if (!box) return
+        updateChatStatus()
+        if (!state.chatItems.length) {
+          var emptyTxt = state.chatErr || (!chatPeerReady() ? '先选一个群/私聊目标' : '还没有聊天记录(该目标暂无活跃会话)')
+          box.innerHTML = '<div class="dk-empty" style="padding:26px 0">' + esc(emptyTxt) + '</div>'
+          return
+        }
+        var html = ''
+        if (state.chatMore) html += '<div class="dk-chat-top">↑ 上滑加载更早消息</div>'
+        html += state.chatItems.map(chatRowHTML).join('')
+        html += '<div class="dk-chat-bottom">—— 会话尾部 · ' + esc(chatPeerName()) + ' ——</div>'
+        box.innerHTML = html
+        bindChatImgs(box)
         // 滚动: 刷新/切目标 → 滚到底; 上滚加载更早 → 保持视口
         if (keepScrollOffset == null) box.scrollTop = box.scrollHeight
         else box.scrollTop = box.scrollHeight - keepScrollOffset
+      }
+      // 2026-10-01 主人要求：滚轮向下 → **增量**追加新消息
+      //   · 只 append 新气泡（不 box.innerHTML 重绘 → **不闪**）
+      //   · **不动 scrollTop**（不跳位置；想看最新的自己继续滑）
+      function appendChatRows(list) {
+        var box = document.getElementById('dk-chat-box')
+        if (!box || !Array.isArray(list) || !list.length) return
+        var html = list.map(chatRowHTML).join('')
+        var tail = box.querySelector('.dk-chat-bottom')
+        if (tail) tail.insertAdjacentHTML('beforebegin', html)
+        else box.insertAdjacentHTML('beforeend', html)
+        bindChatImgs(box)
+      }
+      // 滚轮触发的"取更新的消息"：afterSeq = 当前已加载的最新位置
+      function loadChatNewer() {
+        if (!state.ns || !chatPeerReady() || state.chatBusy) return
+        var after = Number(state.chatNewest || 0)
+        if (!(after > 0)) { loadChat(true); return }   // 还没加载过 → 走整页首屏
+        state.chatBusy = 'new'
+        updateChatStatus()
+        var peerId = state.sendScope === 'c2c' ? state.sendTo : state.gid
+        var q = 'ns=' + encodeURIComponent(state.ns) + '&scope=' + state.sendScope
+          + '&peerId=' + encodeURIComponent(peerId) + '&afterSeq=' + after + '&limit=100'
+        api('chat/history', q).then(function (d) {
+          state.chatBusy = ''
+          if (!d || !d.ok) { updateChatStatus(); return }
+          var list = (Array.isArray(d.items) ? d.items : []).filter(function (it) {
+            return it && ((typeof it.text === 'string' && it.text) || (Array.isArray(it.images) && it.images.length))
+          })
+          // 去重键含 seq+方向+正文前缀 —— 群历史打包块里多条共用同一 seq, 只按 seq 去重会误删
+          var keyOf = function (x) { return String(x.seq) + '|' + String(x.dir) + '|' + String(x.text || '').slice(0, 24) }
+          var have = {}
+          state.chatItems.forEach(function (x) { have[keyOf(x)] = 1 })
+          var fresh = list.filter(function (x) { return !have[keyOf(x)] })
+          if (fresh.length) {
+            state.chatItems = state.chatItems.concat(fresh)
+            appendChatRows(fresh)          // ★ 增量追加: 不重绘、不闪、不跳位置
+          }
+          if (typeof d.tailSeq === 'number' && d.tailSeq > state.chatNewest) state.chatNewest = d.tailSeq
+          updateChatStatus()
+        }).catch(function () { state.chatBusy = ''; updateChatStatus() })
       }
       // 聊天文本渲染(2026-09-13 引用消息功能): 把引用块渲染成"引用样式"气泡(左边框+灰底), 其余正文照常。
       //   2026-09-15 标记改短([引]…[/引][当前]) —— **新旧都认**, 否则老会话里的英文标记会显示成裸文本。
