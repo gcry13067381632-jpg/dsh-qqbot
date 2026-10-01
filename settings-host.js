@@ -2898,7 +2898,7 @@ export function apply(ctx) {
   // 历史块标记(新旧), 出现在正文里就整段抹掉 —— 内容已由 chatSplitHistoryBlock 拆成独立气泡
   const RE_HIST_MARK_ANY = /\[(?:\/?历史|\/?(?:Chat history begins|Chat history ends))\]/gi;
   // 这些词是**标记**不是昵称: 误当发送者时气泡会显示"历史"/"引用"(头像也跟着取错首字)
-  const RE_MARKER_WORD = /^(?:历|历史|当前|引|引用|Quoted message(?: begins| ends)?|Current message|Chat history(?: begins| ends)?)$/i;
+  const RE_MARKER_WORD = /^\/?(?:历|历史|当前|引|引用|Quoted message(?: begins| ends)?|Current message|Chat history(?: begins| ends)?)$/i;
   // ⚠️ 2026-10-01 修(主人 dock 聊天页截图暴露):
   //   原实现拿**整段 body.trim()** 去套"整行 == [历史]"的正则 → 对
   //   "[历史]\n[昵称] …\n[/历史]\n[当前]\n…" 永远不命中 → 历史打包分支形同虚设, 后果三连:
@@ -3279,15 +3279,32 @@ export function apply(ctx) {
   function chatPolishOne(body, fallbackSender, nameByMid) {
     let sender = fallbackSender;
     let b = String(body || '');
-    b = b.replace(RE_CURRENT_ANY, '');
+    b = b.replace(RE_CURRENT_ANY, ' ');
     // 2026-10-01: 历史块标记(新旧)先抹掉 —— 内容已被 chatSplitHistoryBlock 拆成独立气泡,
     //   残留标记会被下面的 tagM 当发送者(气泡显示"历史"), 也会在末尾显示成裸文本
     b = b.replace(RE_HIST_MARK_ANY, ' ');
-    b = b.replace(new RegExp(`${RE_QUOTE_BEGIN.source}\\s*[\\s\\S]*?${RE_QUOTE_END.source}\\s*`, 'g'), '[引用]');
-    // 2026-09-12 适配: 同上 —— "[昵称]" 与 "[昵称 (openid)]" 都认; 排除含冒号的方括号(附件标记)
-    // 2026-10-01: `[引用]`(上一步生成) 这类**标记词**不算昵称, 否则气泡发送者变成"引用"
-    const tagM = b.match(/\[([^\]\n:]*?)(?:\s*\([A-Za-z0-9_-]{6,}\))?\]/);
-    if (tagM && tagM[1].trim() && !RE_MARKER_WORD.test(tagM[1].trim())) { sender = tagM[1].trim(); b = b.replace(tagM[0], ''); }
+    // 2026-10-01: 引用块**不再折叠成 `[引用]`**(v0.8.0 的老做法) —— 前端 chatRenderText 本来就有
+    //   `[引]…[/引]` 的引用气泡样式(左边框+灰底), 折叠后原文丢失、只剩一个裸方括号,
+    //   还会被下面的昵称提取当成发送者(气泡显示"引用")。这里先"摘出来占位",
+    //   等昵称壳剥完再原样放回; 超长截断(被引用的原文可能有几百字)。
+    const quotes = [];
+    b = b.replace(new RegExp(`${RE_QUOTE_BEGIN.source}\\s*([\\s\\S]*?)\\s*${RE_QUOTE_END.source}`, 'g'), (_all, inner) => {
+      const q = String(inner || '').trim();
+      quotes.push('[引]' + (q.length > 300 ? q.slice(0, 300) + '…' : q) + '[/引]');
+      return '\u0000Q' + (quotes.length - 1) + '\u0000';
+    });
+    // 2026-09-12 适配: "[昵称]" 与 "[昵称 (openid)]" 都认; 排除含冒号的方括号(附件标记)
+    // 2026-10-01: **标记词**(`[引]`/`[历史]`/`[当前]`…)不算昵称, 跳过它继续往后找真昵称
+    const reTag = /\[([^\]\n:]*?)(?:\s*\([A-Za-z0-9_-]{6,}\))?\]/g;
+    let tmm;
+    while ((tmm = reTag.exec(b)) !== null) {
+      const nm = tmm[1].trim();
+      if (!nm || RE_MARKER_WORD.test(nm)) continue;
+      sender = nm;
+      b = b.replace(tmm[0], '');
+      break;
+    }
+    if (quotes.length) b = b.replace(/\u0000Q(\d+)\u0000/g, (_all, i) => quotes[Number(i)] || '');
     const sysIdx = b.indexOf('[系统提示]');
     if (sysIdx >= 0) b = b.slice(0, sysIdx).replace(/\s*$/, '');
     const mm = chatSplitMedia(chatDisplayClean(b, nameByMid));
