@@ -4465,7 +4465,20 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         box.innerHTML = html
         bindChatImgs(box)
         // 滚动: 刷新/切目标 → 滚到底; 上滚加载更早 → 保持视口
-        if (keepScrollOffset == null) box.scrollTop = box.scrollHeight
+        if (keepScrollOffset == null) {
+          box.scrollTop = box.scrollHeight
+          // 2026-10-01 主人实测「打开 dock 显示的不是最新消息」：
+          //   气泡里的图是 loading="lazy"，刚渲染时高度还没撑开 → 首次贴底其实只贴到"半截"，
+          //   等图加载完内容变高，视口就停在中间了。这里随后再补贴几次；
+          //   用户一旦手动滚（wheel）立刻停手，不跟他抢滚动条。
+          var stickCancel = false
+          try { box.addEventListener('wheel', function () { stickCancel = true }, { once: true, passive: true }) } catch (e) { /* 老浏览器忽略 */ }
+          var stickBottom = function () { if (!stickCancel) box.scrollTop = box.scrollHeight }
+          setTimeout(stickBottom, 80)
+          setTimeout(stickBottom, 240)
+          setTimeout(stickBottom, 600)
+          setTimeout(stickBottom, 1200)
+        }
         else box.scrollTop = box.scrollHeight - keepScrollOffset
       }
       // 2026-10-01 主人要求：滚轮向下 → **增量**追加新消息
