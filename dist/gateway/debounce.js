@@ -191,7 +191,12 @@ export function debounceLayer(config, manager, logger, cooldownAt) {
                 }
                 merged.sort((a, b) => a.ts - b.ts);
                 // current 恒取时间序最后一条(纯时间序, 上下文永不倒置)。
-                const cur = merged[merged.length - 1];
+                // ⚠️ 2026-10-01 修（主人实测：引用块挂到上一条消息上）：
+                //   cur 必须是**触发本次派发的那条**（= 窗口最后入队的那条），不能拿"时间最大"的 ——
+                //   同批两条时间戳相同/乱序时它可能选错，于是 A 的附件(- Image:) 和 B 的引用被拼进同一条消息。
+                const lastEntry = entries[entries.length - 1];
+                const lastMid = String(lastEntry?.msg?.messageId ?? '');
+                const cur = (lastMid ? merged.find((m) => String(m.messageId) === lastMid) : undefined) ?? merged[merged.length - 1];
                 if (!cur)
                     return;
                 // 忠实还原 store 原文进 history; 窗口内曾 @ 机器人的消息(时间上早于 current)
@@ -233,7 +238,12 @@ export function debounceLayer(config, manager, logger, cooldownAt) {
                 // ⚠️ 2026-10-01 修：原来这里新建 state 只带 history/aggregated → 上游解析好的
                 //   `ctx.state.quote` 被丢掉，**当前消息的引用块因此永远是空的**（历史行反而有，
                 //   因为那是 media-history 在中间件链里记的）。踩了很久，勿删。
-                if (w.quote)
+                // ⚠️ 2026-10-01: 引用要按**当前这条**的消息 id 取，不能用"窗口最后一次见到的 quote"
+                //   （那可能是上一条消息的 → 引用块挂到别人头上）。
+                const curQuote = lastMid && w.quoteByMsg ? w.quoteByMsg.get(lastMid) : undefined;
+                if (curQuote)
+                    state.quote = curQuote;
+                else if (w.quote)
                     state.quote = w.quote;
                 if (cur.wasMentioned) {
                     // current 本身就是 @ 消息 → 走正常 mention, AI 见 (@you)
@@ -402,8 +412,16 @@ export function debounceLayer(config, manager, logger, cooldownAt) {
         w.entries.push({ msg: { ...msg }, wasMentioned, ts });
         // 2026-10-01: 把上游 quoteRef 解析好的引用存到窗口上（flush 时用）
         const _q = ctx.state.quote;
-        if (_q)
+        if (_q) {
             w.quote = _q;
+            // 2026-10-01: 同时按本条消息 id 绑一份 —— flush 时只认"当前这条"的引用
+            const _mid = String(msg.messageId ?? '');
+            if (_mid) {
+                if (!w.quoteByMsg)
+                    w.quoteByMsg = new Map();
+                w.quoteByMsg.set(_mid, _q);
+            }
+        }
         dbg(`  win=${w.entries.length} new=${isNewer} order=[${w.entries.map(e => JSON.stringify(String(e.msg.content ?? '').slice(0, 16))).join(',')}]`);
         if (isNewer) {
             // 最近说话者(按服务器时间)刚又开口 → 重新等 ta 停口 silenceMs

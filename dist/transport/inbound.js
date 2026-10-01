@@ -1,8 +1,6 @@
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { createHash } from 'node:crypto';
-import { appendFileSync, existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { homedir } from 'node:os';
+import { existsSync, readFileSync } from 'node:fs';
 import { clearGroupHistory } from '../features/history-store.js';
 import { traceContextless } from '../features/contextless-store.js';
 import { applyInjectRules } from './inject-rules.js';
@@ -142,8 +140,6 @@ export async function handleInbound(rawMsg, manager, config, logger, state) {
         }
     }
     catch { /* 台账失败不影响主链 */ }
-    // 🔍 临时诊断(2026-10-01): 查 QQ 引用字段, 查完删
-    quoteDiagDump(rawMsg);
     let agentBody = assembleAgentBody(msg, mwState, scope, logger, downloaded, refEnabled, msgRef, dataRootOf(config), stickerDirOf(config));
     if (!agentBody)
         return;
@@ -1046,28 +1042,6 @@ function enrichQuoteFromCache(q, dataRoot, peerKey) {
         out.attachments = hit.imgs.map((p) => ({ contentType: 'image/*', url: p }));
     }
     return out;
-}
-/**
- * 🔍 临时诊断(2026-10-01): 引用相关字段落盘 —— 查清 QQ 到底给哪些字段（排查完删）
- *   落盘：`~/.dsh/qqbot-quote-diag.jsonl`
- */
-function quoteDiagDump(rawMsg) {
-    try {
-        const m = (rawMsg && typeof rawMsg === 'object' ? rawMsg : {});
-        const rec = {
-            t: Date.now(),
-            kind: m.kind ?? null,
-            messageId: m.messageId ?? null,
-            msgIdx: m.msgIdx ?? null,
-            refMsgIdx: m.refMsgIdx ?? null,
-            messageScene: m.message_scene ?? m.messageScene ?? null,
-            msgElements: m.msgElements ?? m.msg_elements ?? null,
-            messageReference: m.message_reference ?? m.messageReference ?? null,
-            content: String(m.content ?? '').slice(0, 300),
-        };
-        appendFileSync(join(homedir(), '.dsh', 'qqbot-quote-diag.jsonl'), JSON.stringify(rec) + '\n');
-    }
-    catch { /* 诊断失败绝不影响主链 */ }
 }
 export function buildQuoteBlock(quote, stickerDir) {
     const atts = Array.isArray(quote?.attachments) ? quote.attachments : [];
