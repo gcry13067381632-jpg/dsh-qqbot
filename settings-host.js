@@ -2888,13 +2888,28 @@ export function apply(ctx) {
   //   ⚠️ **两套都要认**: 老会话里的历史消息是渲染时解析的, 只认新标记会让旧记录显示成一堆裸标记。
   const RE_TIME_HEAD = /^\s*\[(?:\d{4}-\d{2}-\d{2}\s[^\]]*|当前时间[^\]]*)\]\s*\r?\n?/;
   const isTimeHeadLine = (s) => /^\[(?:\d{4}-\d{2}-\d{2}\s|当前时间)/.test(s);
-  const RE_HIST_BEGIN_LINE = /^\[(?:历史|Chat history begins)\]$/;
-  const RE_HIST_END_LINE = /^\[\/(?:历史|Chat history ends)\]$/;   // 老标记没有斜杠
-  const RE_CURRENT_LINE = /^\[(?:当前|Current message)\]$/;
+  //   ⚠️ 标记行一律**大小写不敏感**(老英文标记会被写成小写), 且老结束标记 `[Chat history ends]` **没有斜杠**。
+  const RE_HIST_BEGIN_LINE = /^\[(?:历史|Chat history begins)\]$/i;
+  const RE_HIST_END_LINE = /^\[\/?(?:历史|Chat history ends)\]$/i;
+  const RE_CURRENT_LINE = /^\[(?:当前|Current message)\]$/i;
   const RE_QUOTE_BEGIN = /\[(?:引|Quoted message begins)\]/i;
   const RE_QUOTE_END = /\[\/(?:引|Quoted message ends)\]/i;
-  const RE_CURRENT_ANY = /\[(?:当前|Current message)\]\s*/g;
-  const hasHistoryBlock = (s) => RE_HIST_BEGIN_LINE.test(String(s || '').trim()) || String(s || '').indexOf('[Chat history begins]') >= 0;
+  const RE_CURRENT_ANY = /\[(?:当前|Current message)\]\s*/gi;
+  // 历史块标记(新旧), 出现在正文里就整段抹掉 —— 内容已由 chatSplitHistoryBlock 拆成独立气泡
+  const RE_HIST_MARK_ANY = /\[(?:\/?历史|\/?(?:Chat history begins|Chat history ends))\]/gi;
+  // 这些词是**标记**不是昵称: 误当发送者时气泡会显示"历史"/"引用"(头像也跟着取错首字)
+  const RE_MARKER_WORD = /^(?:历|历史|当前|引|引用|Quoted message(?: begins| ends)?|Current message|Chat history(?: begins| ends)?)$/i;
+  // ⚠️ 2026-10-01 修(主人 dock 聊天页截图暴露):
+  //   原实现拿**整段 body.trim()** 去套"整行 == [历史]"的正则 → 对
+  //   "[历史]\n[昵称] …\n[/历史]\n[当前]\n…" 永远不命中 → 历史打包分支形同虚设, 后果三连:
+  //     ① tagM 把第一个方括号 `[历史]` 当成发送者 → 气泡发送者显示"历史"(头像"历");
+  //     ② `[/历史]` 原样留在末尾(前端只认 [当前]/[引]…[/引], 不认它);
+  //     ③ `[昵称] [图片: D:\…\x.gif]` 整行当正文 → 裸文本 + **本机绝对路径外泄**。
+  //   改为**逐行**判定(老英文标记在行内任意位置也算)。
+  const hasHistoryBlock = (s) => String(s || '').split(/\r?\n/).some((line) => {
+    const t = line.trim();
+    return RE_HIST_BEGIN_LINE.test(t) || /\[Chat history begins\]/i.test(t);
+  });
   function chatPeelTimeHead(text) {
     // QQ 入站文本头形如 "[2026-09-15 周二 11:06]\n\n"（老版是 "[当前时间 2026-09-05 周六 19:08]"）, 整体剥掉
     return String(text || '').replace(RE_TIME_HEAD, '');
@@ -3036,6 +3051,12 @@ export function apply(ctx) {
     // 优先取 "→ " 之后到行尾(路径里可能有空格); 没有箭头就在行内找绝对路径
     const arrow = l.match(/→\s*([\s\S]+?)\s*$/);
     let cand = arrow ? arrow[1].trim() : '';
+    if (!cand) {
+      // 2026-10-01: `[图片: <本机路径>]` / `[File: <本机路径>]` 整行 —— 路径可能含空格,
+      //   下面按空白截断的正则会切坏它, 所以先按"冒号后到右括号"整体取一次
+      const br = l.match(/^\s*\[[^\]:：]+[:：]\s*([\s\S]+?)\s*\]\s*$/);
+      if (br && /(?:[A-Za-z]:[\\/]|^\\\\|\/)/.test(br[1])) cand = br[1].trim();
+    }
     if (!cand) {
       const m2 = l.match(/([A-Za-z]:[\\/][^\s]+)/);
       cand = m2 ? m2[1] : '';
@@ -3259,10 +3280,14 @@ export function apply(ctx) {
     let sender = fallbackSender;
     let b = String(body || '');
     b = b.replace(RE_CURRENT_ANY, '');
+    // 2026-10-01: 历史块标记(新旧)先抹掉 —— 内容已被 chatSplitHistoryBlock 拆成独立气泡,
+    //   残留标记会被下面的 tagM 当发送者(气泡显示"历史"), 也会在末尾显示成裸文本
+    b = b.replace(RE_HIST_MARK_ANY, ' ');
     b = b.replace(new RegExp(`${RE_QUOTE_BEGIN.source}\\s*[\\s\\S]*?${RE_QUOTE_END.source}\\s*`, 'g'), '[引用]');
     // 2026-09-12 适配: 同上 —— "[昵称]" 与 "[昵称 (openid)]" 都认; 排除含冒号的方括号(附件标记)
+    // 2026-10-01: `[引用]`(上一步生成) 这类**标记词**不算昵称, 否则气泡发送者变成"引用"
     const tagM = b.match(/\[([^\]\n:]*?)(?:\s*\([A-Za-z0-9_-]{6,}\))?\]/);
-    if (tagM) { if (tagM[1].trim()) sender = tagM[1].trim(); b = b.replace(tagM[0], ''); }
+    if (tagM && tagM[1].trim() && !RE_MARKER_WORD.test(tagM[1].trim())) { sender = tagM[1].trim(); b = b.replace(tagM[0], ''); }
     const sysIdx = b.indexOf('[系统提示]');
     if (sysIdx >= 0) b = b.slice(0, sysIdx).replace(/\s*$/, '');
     const mm = chatSplitMedia(chatDisplayClean(b, nameByMid));

@@ -2641,7 +2641,10 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
       }
       function groupSelName() {
         var g = null; state.groups.forEach(function (x) { if (x.gid === state.gid) g = x })
-        return g ? g.name || state.gid.slice(0, 10) : '(未选群)'
+        if (g) return g.name || state.gid.slice(0, 10)
+        // 2026-10-01: gid 有值但没在台账里(群未登记/刚切实例还没拉到列表)时, 别硬显示"(未选群)"
+        //   —— 那会让人以为没选中目标; 退化成 gid 前段更好定位
+        return state.gid ? state.gid.slice(0, 10) : '(未选群)'
       }
       function c2cSelName() {
         if (state.sendName) return state.sendName
@@ -4436,7 +4439,24 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
       // 聊天文本渲染(2026-09-13 引用消息功能): 把引用块渲染成"引用样式"气泡(左边框+灰底), 其余正文照常。
       //   2026-09-15 标记改短([引]…[/引][当前]) —— **新旧都认**, 否则老会话里的英文标记会显示成裸文本。
       function chatRenderText(t) {
-        var src = String(t || '').replace(/\[(?:当前|Current message)\]\s*/g, '')
+        var src = String(t || '')
+          .replace(/\[(?:当前|Current message)\]\s*/gi, '')
+          // 2026-10-01: 历史块标记(新旧)一律剥掉 —— 后端已把历史段拆成独立气泡, 这里兜底老会话/异常残留
+          .replace(/\[(?:\/?历史|\/?(?:Chat history begins|Chat history ends))\]/gi, '')
+          // 后端把引用块折叠成 `[引用]` → 渲染成灰色提示文字, 别显示成裸方括号(也不该被当发送者)
+          .replace(/\[引用\]/g, '↩ 引用上文')
+          // 媒体标记残留兜底(后端已抽成缩略图/播放器): **只显文件名, 不把本机绝对路径暴露在气泡里**
+          .replace(/\[(图片|附件|文件|语音|视频|音频|Image|Video|Voice|File|Attachment):\s*([^\]]*)\]/gi, function (all, tag, inner) {
+            var s = String(inner || '').trim()
+            if (!s) return ''
+            var tg = String(tag).toLowerCase()
+            var icon = (tg === '图片' || tg === 'image') ? '🖼'
+              : (tg === '视频' || tg === 'video') ? '🎬'
+                : (tg === '语音' || tg === '音频' || tg === 'voice') ? '🎵' : '📎'
+            if (/^https?:/i.test(s)) return icon + ' 媒体'
+            var nm = s.replace(/[?#].*$/, '').split(/[\\/]/).pop() || s
+            return icon + ' ' + nm
+          })
         var re = /\[(?:引|Quoted message begins)\]([\s\S]*?)\[\/(?:引|Quoted message ends)\]/g
         var parts = []
         var m, last = 0
@@ -4454,6 +4474,9 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
       function chatAvaOf(who) {
         var s = String(who || '').trim()
         if (!s) return '?'
+        // 脏数据兜底(2026-10-01): 万一 sender 还是块标记/方括号壳, 别把 "[" 当头像字
+        s = s.replace(/^[\[［(（【]+|[\]］)）】]+$/g, '').trim()
+        if (!s || /^(?:历|历史|当前|引|引用|(?:Chat history|Quoted message|Current message)(?:\s+begins|\s+ends)?)$/i.test(s)) return '❔'
         try { return Array.from(s)[0] } catch (e) { return s[0] || '?' }
       }
       function setChatStatus(msg) {
