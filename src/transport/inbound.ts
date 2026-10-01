@@ -11,7 +11,9 @@
 import type { ContentBlock } from '@deepseek-ai/dsh-llm';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 import type { SessionManager } from '../session/index.js';
 import type { ImQQBotConfig } from '../config.js';
 import type { ChatScope, Logger, RawAttachment, ReplyTarget } from '../types.js';
@@ -237,6 +239,9 @@ export async function handleInbound(
       });
     }
   } catch { /* 台账失败不影响主链 */ }
+
+  // 🔍 临时诊断(2026-10-01): 查 QQ 引用字段, 查完删
+  quoteDiagDump(rawMsg);
 
   let agentBody = assembleAgentBody(msg, mwState, scope, logger, downloaded, refEnabled, msgRef, dataRootOf(config), stickerDirOf(config));
 
@@ -1120,6 +1125,28 @@ function enrichQuoteFromCache(q: ResolvedQuote | undefined, dataRoot: string, pe
     out.attachments = hit.imgs.map((p) => ({ contentType: 'image/*', url: p }));
   }
   return out;
+}
+
+/**
+ * 🔍 临时诊断(2026-10-01): 引用相关字段落盘 —— 查清 QQ 到底给哪些字段（排查完删）
+ *   落盘：`~/.dsh/qqbot-quote-diag.jsonl`
+ */
+function quoteDiagDump(rawMsg: unknown): void {
+  try {
+    const m = (rawMsg && typeof rawMsg === 'object' ? rawMsg : {}) as Record<string, unknown>;
+    const rec = {
+      t: Date.now(),
+      kind: m.kind ?? null,
+      messageId: m.messageId ?? null,
+      msgIdx: m.msgIdx ?? null,
+      refMsgIdx: m.refMsgIdx ?? null,
+      messageScene: m.message_scene ?? m.messageScene ?? null,
+      msgElements: m.msgElements ?? m.msg_elements ?? null,
+      messageReference: m.message_reference ?? m.messageReference ?? null,
+      content: String(m.content ?? '').slice(0, 300),
+    };
+    appendFileSync(join(homedir(), '.dsh', 'qqbot-quote-diag.jsonl'), JSON.stringify(rec) + '\n');
+  } catch { /* 诊断失败绝不影响主链 */ }
 }
 
 export function buildQuoteBlock(quote: ResolvedQuote | undefined, stickerDir: string): string {
