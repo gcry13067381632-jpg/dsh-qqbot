@@ -66,9 +66,24 @@ export function slimQuoteBlockOneLine(block, max = 140) {
     if (!raw)
         return '';
     const lines = raw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const isBegin = (l) => /^\[(?:引|Quoted message begins)\]$/i.test(l);
+    const isEnd = (l) => /^\[\/(?:引|Quoted message ends)\]$/i.test(l);
+    const hasBegin = lines.some(isBegin);
+    const hasEnd = lines.some(isEnd);
+    // ⚠️ 2026-10-01 主人实测抓到：附件行**必须留在 `[引]…[/引]` 里面**。
+    //   原实现把「正文」和「附件」分成两段各自拼，附件被甩到 `[引] [/引]` **之后** →
+    //   引用块看着是空的、图却挂在块外（`[引] [/引] 📷 被引用的图片: …`）。
     const att = lines.filter((l) => ATT_LINE_RE.test(l));
-    const body = lines.filter((l) => !ATT_LINE_RE.test(l)).join(' ').replace(/\s+/g, ' ').trim();
+    const body = lines
+        .filter((l) => !isBegin(l) && !isEnd(l) && !ATT_LINE_RE.test(l))
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim();
     const clipped = max > 0 && body.length > max ? body.slice(0, max) + '…' : body;
-    return [clipped, ...att].filter(Boolean).join(' ').trim();
+    const inner = [clipped, ...att].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+    if (!hasBegin && !hasEnd)
+        return inner;
+    // 老英文标记（[Quoted message begins]…）也归一成短标记
+    return `[引] ${inner} [/引]`.replace(/\s+/g, ' ').trim();
 }
 //# sourceMappingURL=quote-text.js.map

@@ -51,6 +51,9 @@ describe('slimQuoteBlockOneLine — 历史行用（一行 + 附件行豁免截�
     expect(out).toContain('D:\\pics\\a.jpg');   // 关键线索不能被截掉
     expect(out.split('\n').length).toBe(1);    // 一行
     expect(out).toContain('[引]');
+    // ⚠️ 附件行必须在块**里面**（主人实测抓到过它被甩到 `[引] [/引]` 之后）
+    expect(out.indexOf('[引]')).toBeLessThan(out.indexOf('D:\\pics\\a.jpg'));
+    expect(out.indexOf('D:\\pics\\a.jpg')).toBeLessThan(out.indexOf('[/引]'));
   });
 
   it('空块 → 空串', () => {

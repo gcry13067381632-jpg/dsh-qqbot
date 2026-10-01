@@ -24,6 +24,7 @@ import type { Logger } from '../types.js';
 import { buildCommandList } from '../commands/index.js';
 import { attachmentProcessor } from '../middleware/attachment.js';
 import { mediaHistoryBuffer } from '../middleware/media-history.js';
+import { prefetchQuoteImages } from '../transport/quote-images.js';
 import { stickerCapture } from '../middleware/sticker-capture.js';
 import { getHistoryStore, historyGroupKey } from '../features/history-store.js';
 import { loadExtensionCommands } from '../features/extension-store.js';
@@ -119,6 +120,19 @@ export async function setupMiddlewares(
     maxSize: 500,
     preferMsgElements: true,
   }));
+
+  // 3.95. 被引用图片**预取**（2026-10-01 主人要求"尽可能转换成本地路径"）：
+  //   有人引用一张图问"这是啥"时，那张图我们可能从没收藏过 → 缓存/图库都查不到，
+  //   引用块只能回退 QQ 长链接(带 rkey、还会过期, AI 读不了)。
+  //   这里在**拼上下文之前**先把被引用的图片下载落盘并记好 URL→本地路径，
+  //   后面同步的引用块（当前消息 + 历史行）就都能给出本地路径了。
+  bot.use(async (ctx, next) => {
+    try {
+      const q = (ctx.state as { quote?: Parameters<typeof prefetchQuoteImages>[0] }).quote;
+      await prefetchQuoteImages(q, dataRootOf(config), logger);
+    } catch { /* 预取失败不影响主链 */ }
+    await next();
+  });
 
   // 4. 群历史缓冲 — 放在门控之前，确保所有消息（含未 @bot）都计入上下文
   //    store 按 appId 独立(getHistoryStore(config.appId)), groupKey 带 appId 前缀, 供回复后清空
