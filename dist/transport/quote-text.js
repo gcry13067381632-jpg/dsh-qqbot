@@ -1,19 +1,16 @@
 /**
- * 引用文本清洗（2026-10-01 主人实测：「历史里包含引用的排版太乱了」）。
+ * 引用文本清洗（2026-10-01 主人实测：「历史里包含引用的排版太乱了」+「引用的是表情包？」）。
  *
- * QQ 的「引用消息」在 `msg_elements` 里是一段**模板串**，形如：
- *   `=== 消息 1 === [消息内容] 呜哇~… [消息类型] 引用消息 [关联消息] --- 第1条 ---
- *      [消息内容] 还敢说话，再干干你 [消息类型] 引用消息 [关联消息] --- 第1条 ---
- *      [消息内容] 必须好好调教 …`
- * 嵌套几层就重复几段，每段还夹着 `[消息类型]` / `[关联消息]` / `引用消息` 这种**纯噪声** ——
- * 原样塞进上下文又长又乱（主人：看不懂是谁引用了什么）。
- *
- * 这里做两件事：
- *   ① {@link stripQqQuoteTemplate} 剥壳：只留各层正文，按 `最外层 → … → 更早` 的顺序返回；
- *   ② {@link slimQuoteText} 压平：把链压成 `A ← B ← C`（← 读作"引用了"），并限长。
- *
- * ⚠️ 只去噪声、不去信息：非模板串（普通引用原文）原样按行返回。
+ * 两个数据源问题都在这里修：
+ *   ① QQ 的引用在 `msg_elements` 里是一段**模板串**：
+ *      `=== 消息 1 === [消息内容] A [消息类型] 引用消息 [关联消息] --- 第1条 --- [消息内容] B …`
+ *      嵌套几层就重复几段，夹着一堆纯噪声 —— 原样喂给 AI 又长又乱。
+ *   ② 引用一条**表情消息**时，内容是一个 QQ 表情标签：
+ *      `<faceType=6,faceId="0",ext="eyJ0ZXh0IjoiIn0=">`（ext 是 base64 的 `{"text":""}`）。
+ *      原样显示谁也看不懂 —— 这里转成 `【表情: 微笑】`；并顺手把 ext 里**可能藏着**的图片 URL
+ *      （图片表情 / 收藏表情的其它端形态）挖出来当附件用。
  */
+import { resolveFaceTags } from '../features/face-tags.js';
 /** 判断是不是 QQ 的引用模板串 */
 function looksLikeQqTemplate(s) {
     return /===+\s*消息|\[消息内容\]|\[消息类型\]|\[关联消息\]|引用消息|第\s*\d+\s*条/.test(s);
@@ -41,15 +38,48 @@ export function stripQqQuoteTemplate(s) {
         .filter(Boolean);
 }
 /**
- * 引用块正文瘦身：剥模板壳 → 多层压成 `A ← B ← C` → 压平空白 → 限长。
- * @param max 最大字数（默认 160；超出截断加 `…`）
+ * 从 QQ 表情标签里挖**图片线索**。
+ *
+ * 背景（2026-10-01 主人实测：「图片收藏进了表情里，依然是图片」）：
+ *   QQ 的「图片表情 / 收藏表情」在消息里只给一个 `<faceType=…,ext="base64">` 标签。
+ *   实测那条 ext = `eyJ0ZXh0IjoiIn0=` → `{"text":""}` —— **里面没有图**（QQ 官方文档也没定义 faceType，
+ *   SDK 同样只解 ext.text），所以光靠标签解析不出图；真正的出路是"那条消息入站时的附件"
+ *   （走本地台账回查，见 msg-content-cache.ts / quote-images.ts 的预取）。
+ *   但不同端/版本的 ext 里**可能**带 url 之类字段 —— 这里全部扫一遍，挖到就当真图片附件用。
+ */
+export function extractFaceImageUrls(text) {
+    const src = String(text ?? '');
+    if (src.indexOf('<faceType=') < 0)
+        return [];
+    const out = [];
+    const re = /<faceType=\d+,faceId="[^"]*",ext="([^"]*)">/g;
+    let m;
+    while ((m = re.exec(src)) !== null) {
+        const b64 = m[1] ?? '';
+        if (!b64)
+            continue;
+        try {
+            const obj = JSON.parse(Buffer.from(b64, 'base64').toString('utf-8'));
+            for (const v of Object.values(obj ?? {})) {
+                if (typeof v === 'string' && /^https?:\/\//i.test(v) && !out.includes(v))
+                    out.push(v);
+            }
+        }
+        catch { /* ext 不是 JSON / 解不开 → 跳过 */ }
+    }
+    return out;
+}
+/**
+ * 引用块正文瘦身：剥模板壳 → **只取最外层那一句** → 表情标签转可读 → 压平空白 → 限长。
+ *
+ * ⚠️ 只取最外层 —— 那才是"他引用的内容"。QQ 给的嵌套链（`[关联消息] --- 第1条 --- [消息内容] …`）
+ *   全是"那句话又引用了谁"，又长又乱（主人：「不止是排版乱的问题，这是内容就乱了」）。
+ * @param max 最大字数（默认 160；传 0 = 不限长）
  */
 export function slimQuoteText(s, max = 160) {
     const lines = stripQqQuoteTemplate(s);
-    // ⚠️ 只取**最外层**那一句 —— 那才是"他引用的内容"。
-    //   QQ 给的嵌套链（`[关联消息] --- 第1条 --- [消息内容] …`）全是"那句话又引用了谁"，
-    //   又长又乱，对"看懂他引用的是哪句"毫无帮助（主人 2026-10-01：「不止是排版乱的问题，这是内容就乱了」）。
-    let out = (lines[0] ?? '').replace(/\s+/g, ' ').trim();
+    // 表情标签 → `【表情: 微笑】`（原来是 `<faceType=6,faceId="0",ext="…">` 这种谁也看不懂的串）
+    let out = resolveFaceTags(lines[0] ?? '').replace(/\s+/g, ' ').trim();
     if (max > 0 && out.length > max)
         out = out.slice(0, max) + '…';
     return out;

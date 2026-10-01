@@ -51,7 +51,7 @@ export interface FoldableMsg {
  *  格式约定(与 dock chatSplitMedia 对齐):
  *    转录独立成一行纯文本 → dock 当普通文本显示(不套 📎 附件样式);
  *    `[语音: <url>]` 单独一行 → dock 的 chatAttachmentKind 认 `[语音` 判 voice 并建播放器。 */
-export declare function foldMedia(msg: FoldableMsg, quote?: ResolvedQuote, stickerDir?: string): string;
+export declare function foldMedia(msg: FoldableMsg, quote?: ResolvedQuote, stickerDir?: string, gid?: string): string;
 /**
  * 构建增强版群历史缓冲中间件（API 对齐 SDK historyBuffer）：
  *   1. 把当前群消息(媒体 URL 折叠进 content)记入 store（去重按 messageId）；

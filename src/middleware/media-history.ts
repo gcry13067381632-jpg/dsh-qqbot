@@ -15,6 +15,7 @@ import { inferMediaKind } from '../transport/media-kind.js';
 import { replaceBotMention, type MentionLike } from '../shared/mention-clean.js';
 import { buildQuoteBlock, type ResolvedQuote } from '../transport/inbound.js';
 import { slimQuoteBlockOneLine } from '../transport/quote-text.js';
+import { resolveMentionNames } from '../features/chat-ledger.js';
 
 export interface MediaHistoryOptions {
   /** 每群保留的最大条数 */
@@ -52,7 +53,7 @@ export interface FoldableMsg {
  *  格式约定(与 dock chatSplitMedia 对齐):
  *    转录独立成一行纯文本 → dock 当普通文本显示(不套 📎 附件样式);
  *    `[语音: <url>]` 单独一行 → dock 的 chatAttachmentKind 认 `[语音` 判 voice 并建播放器。 */
-export function foldMedia(msg: FoldableMsg, quote?: ResolvedQuote, stickerDir = ''): string {
+export function foldMedia(msg: FoldableMsg, quote?: ResolvedQuote, stickerDir = '', gid?: string): string {
   const parts: string[] = [];
   // ⚠️ 2026-10-01 修（主人实测: **聚合进历史**的那条消息里没有引用块 —— 当前消息有、历史里没有）:
   //   本中间件是链上第 4 步, 而 SDK 的 quoteRef 原来挂第 11 步 ⇒ 记历史时 ctx.state.quote 还没赋值。
@@ -62,7 +63,13 @@ export function foldMedia(msg: FoldableMsg, quote?: ResolvedQuote, stickerDir = 
   const qb = quote ? slimQuoteBlockOneLine(buildQuoteBlock(quote, stickerDir), 140) : '';
   if (qb) parts.push(qb);
   // 2026-09-11 主人要求: 历史里的 @bot 长 id 也清洗成 @bot(省 token)
-  const text = replaceBotMention((msg.content ?? '').trim(), msg.mentions, msg.wasMentioned);
+  // 2026-10-01 主人实测：@**别人**的 `<@openid>` 在上下文里是 32 位 id（谁也看不出 @ 的是谁）→
+  //   查群成员台账换成 `@昵称`（台账目录就是表情包目录 = stickerDir）；查不到退化成 @短id。
+  const text = resolveMentionNames(
+    replaceBotMention((msg.content ?? '').trim(), msg.mentions, msg.wasMentioned),
+    stickerDir,
+    gid,
+  );
   if (text) parts.push(text);
   for (const att of msg.attachments ?? []) {
     if (!att.url) continue;
@@ -139,7 +146,8 @@ export function mediaHistoryBuffer(options: MediaHistoryOptions): Middleware {
     const entry: HistoryEntry & { mentioned?: boolean } = {
       senderId: ctx.message.senderId,
       senderName: ctx.message.senderName,
-      content: foldMedia(raw, (ctx.state as { quote?: ResolvedQuote }).quote, stickerDir),
+      content: foldMedia(raw, (ctx.state as { quote?: ResolvedQuote }).quote, stickerDir,
+        ctx.message.kind === 'group' ? ctx.message.groupOpenid : undefined),
       timestamp: Date.parse(ctx.message.timestamp) || Date.now(),
       messageId: ctx.message.messageId,
       ...(wasMentioned ? { mentioned: true } : {}),

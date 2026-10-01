@@ -6,13 +6,14 @@ import { traceContextless } from '../features/contextless-store.js';
 import { applyInjectRules } from './inject-rules.js';
 import { inferMediaKind, mediaKindLabel } from './media-kind.js';
 import { replaceBotMention, mentionsOthers } from '../shared/mention-clean.js';
+import { resolveMentionNames } from '../features/chat-ledger.js';
 import { MK, QUOTE_BEGIN_ALL, QUOTE_END_ALL, findFirstMarker, findLastMarker, escapeBlockMarkers, stripBlockMarkers } from './markers.js';
 import { dataRootOf, stickerDirOf } from '../gateway/data-root.js';
 import { registerMsgIndex } from './msg-index.js';
 import { createValueScorer, appendScoreLog, OTHER_MENTION_PENALTY } from '../features/value-score.js';
 import { getStickerStore, computeDHash } from '../features/sticker-store.js';
 import { lookupImagePath, rememberImagePath } from '../features/image-path-cache.js';
-import { slimQuoteText } from './quote-text.js';
+import { extractFaceImageUrls, slimQuoteText } from './quote-text.js';
 import { lookupMsgContent, rememberMsgContent } from './msg-content-cache.js';
 import { recordImageUrl, lookupStickerIdByUrl } from '../features/image-url-ledger.js';
 import { pushQuote } from '../features/quote-cache.js';
@@ -840,7 +841,11 @@ export async function handleInbound(rawMsg, manager, config, logger, state) {
  * 组装 agentBody — AI 实际看到的完整上下文
  */
 function assembleAgentBody(msg, state, scope, logger, downloaded, enableRef, msgRef, dataRoot, stickerDir) {
-    const userContent = buildUserContent(msg, state, logger);
+    const userContentRaw = buildUserContent(msg, state, logger);
+    // 2026-10-01 主人实测「别人 @ 别人怎么没转换成昵称，依然是 id」：
+    //   正文里 @ 别人的 `<@openid>` 查**群成员台账**换成 `@昵称`（查不到退化成 @短id）；
+    //   顺手省 token —— `<@07B470BDA5052489D2D0532C2CC2A2EB>`(35 字符) → `@难崩`(3 字符)。
+    const userContent = resolveMentionNames(userContentRaw, stickerDir, scope === 'group' ? msg.groupOpenid : undefined);
     if (!userContent && (!msg.attachments || msg.attachments.length === 0))
         return null;
     // ⚠️ 2026-10-01: QQ 引用**纯图片**时 msg_elements 给不出图 —— 先用本地台账补一把（见 msg-content-cache.ts）
@@ -1011,17 +1016,31 @@ function enrichQuoteFromCache(q, dataRoot, peerKey) {
 export function buildQuoteBlock(quote, stickerDir) {
     const atts = Array.isArray(quote?.attachments) ? quote.attachments : [];
     const rawText = String(quote?.text ?? quote?.entry?.content ?? '').trim();
+    // 2026-10-01: 表情消息（图片表情 / 收藏表情）在 msg_elements 里只给一个 `<faceType=…,ext="base64">` ——
+    //   先把 ext 里**可能藏着**的图片 URL 挖出来当附件用；实测常见形态 ext=`{"text":""}` 是空的，
+    //   那种只能靠"那条消息入站时登记的台账"回查（见 msg-content-cache.ts / enrichQuoteFromCache）。
+    const faceImgs = extractFaceImageUrls(rawText);
     // SDK 由附件拼出的占位文本（纯 `[image]` / `[voice: xx]`…）在有附件行时不必重复一遍
-    const text = atts.length > 0 && isPlaceholderQuoteText(rawText) ? '' : rawText;
-    if (!text && atts.length === 0)
+    const text = (atts.length > 0 || faceImgs.length > 0) && isPlaceholderQuoteText(rawText) ? '' : rawText;
+    if (!text && atts.length === 0 && faceImgs.length === 0)
         return '';
     const lines = [];
     // 2026-10-01: 剥掉 QQ 的引用模板壳（`=== 消息 N === [消息内容]…[消息类型] 引用消息 …`）并压平，
     //   只去噪声不限长 —— 限长交给调用方（当前消息走 trimQuoteBlock 的 60 字+缓存，历史行走媒体历史那边）
-    if (text)
-        lines.push(escapeBlockMarkers(slimQuoteText(text, 0)));
+    if (text) {
+        // 表情标签在这里转成 `【表情: 微笑】`（原样是 `<faceType=6,faceId="0",ext="…">`，谁也看不懂）
+        const slim = slimQuoteText(text, 0);
+        if (slim)
+            lines.push(escapeBlockMarkers(slim));
+    }
     for (const a of atts) {
         const line = describeQuoteAttachment(a, stickerDir);
+        if (line)
+            lines.push(line);
+    }
+    // 表情标签 ext 里挖到的图片 URL（图片表情的其它端形态）→ 同样给一行"被引用的图片"
+    for (const u of faceImgs) {
+        const line = describeQuoteAttachment({ contentType: 'image/*', url: u }, stickerDir);
         if (line)
             lines.push(line);
     }

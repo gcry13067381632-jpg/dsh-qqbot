@@ -212,6 +212,58 @@ export function removeGroupMember(dataDir, gid, mid) {
     }
     catch { /* 忽略 */ }
 }
+/** (台账文件 → gid+mid → 昵称) 索引缓存（按 mtime/size 失效，避免每条消息重读整个文件） */
+const memberNameCache = new Map();
+/** mid → 昵称（查群成员台账；查不到返回 undefined） */
+export function lookupGroupMemberName(dataDir, gid, mid) {
+    const g = String(gid || '');
+    const m = String(mid || '');
+    if (!g || !m)
+        return undefined;
+    const file = groupMembersPath(dataDir);
+    let key = 'missing';
+    try {
+        const st = statSync(file);
+        key = `${st.mtimeMs}:${st.size}`;
+    }
+    catch { /* 还没有台账 */ }
+    const hit = memberNameCache.get(file);
+    let index;
+    if (hit && hit.key === key) {
+        index = hit.index;
+    }
+    else {
+        index = new Map();
+        try {
+            for (const r of readGroupMembers(dataDir)) {
+                if (r.gid && r.mid && r.name)
+                    index.set(`${r.gid}\u0000${r.mid}`, r.name);
+            }
+        }
+        catch { /* 台账读不出就当空 */ }
+        memberNameCache.set(file, { key, index });
+    }
+    return index.get(`${g}\u0000${m}`);
+}
+/**
+ * 把正文里 @ **别人**的 `<@openid>` 换成 `@昵称`。
+ *
+ * 2026-10-01 主人实测：「别人 @ 别人怎么没转换成昵称，依然是 id」——
+ *   群消息里 @ 别人时 content 带 32 位 openid，原样喂给 AI 谁也看不出 @ 的是谁（而且吃 token）。
+ *   · 昵称查**群成员台账**（在群里发过言的人都有）；查不到退化成 `@` + id 前 6 位（与 dock 侧 chatDisplayClean 同口径）。
+ *   · **省 token**：`<@07B470BDA5052489D2D0532C2CC2A2EB>`(35 字符) → `@难崩`(3 字符)。
+ *   · @**我自己**的标记早被 `replaceBotMention` 换成了 `@bot`，这里不会再碰到。
+ *   · 只在群聊（有 gid）生效；查不到台账就不动（宁可留 id 也别瞎猜）。
+ */
+export function resolveMentionNames(text, dataDir, gid) {
+    const s = String(text ?? '');
+    if (!s || s.indexOf('<@') < 0 || !gid)
+        return s;
+    return s.replace(/<@!?([A-Za-z0-9_-]{6,})>/g, (_all, id) => {
+        const nm = lookupGroupMemberName(dataDir, gid, id);
+        return nm ? `@${nm}` : `@${id.slice(0, 6)}`;
+    });
+}
 /** 中间件: 记录见过的群/私聊 + 群内发言成员(放 mentionGate 之前, 未@消息也流经) */
 export function chatLedgerRecorder(dataDir) {
     return async (ctx, next) => {
