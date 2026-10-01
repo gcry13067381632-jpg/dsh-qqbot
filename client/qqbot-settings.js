@@ -3973,6 +3973,20 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           if (state.tab !== 'chat' || !state.chatMore || state.chatBusy) return
           if (cbox.scrollTop <= 4) loadChat(false) // 顶部 → 加载更早
         }
+        // 2026-10-01 主人要求：「滚轮向下滚一次就刷新一下」——**不管有没有滚动成功**
+        //   （已经停在底部也刷：方便随时确认有没有新消息，比每个来回点 🔄 刷新省事）。
+        //   向上滚不拦（交给上面的"到顶部加载更早"，两个功能不打架）。
+        //   ⚠️ 一次滚轮会连发多个 wheel 事件 → 按 400ms 时间窗合并成一次，避免刷爆；
+        //   ⚠️ 加载中(busy)直接跳过，别打断正在进行的请求。
+        if (cbox) cbox.onwheel = function (e) {
+          if (state.tab !== 'chat') return
+          if (e && e.deltaY <= 0) return
+          var now = Date.now()
+          if (now - (state.chatWheelAt || 0) < 400) return
+          state.chatWheelAt = now
+          if (state.chatBusy) return
+          loadChat(true)
+        }
         var cinput = panel.querySelector('#dk-chat-input')
         if (cinput) {
           cinput.oninput = function (e) {
