@@ -791,7 +791,7 @@ function assembleAgentBody(msg, state, scope, logger, downloaded, enableRef, msg
     const userContent = buildUserContent(msg, state, logger);
     if (!userContent && (!msg.attachments || msg.attachments.length === 0))
         return null;
-    let quotePart = buildQuotePart(state.quote);
+    let quotePart = buildQuotePart(state.quote, stickerDir);
     // 引用消息(2026-09-13): SDK 中间件没解析出 quote 时, 自己从 103/msg_elements 提取被引用原文
     if (!quotePart && enableRef) {
         const quoted = extractQuotedContent(msg);
@@ -806,7 +806,7 @@ function assembleAgentBody(msg, state, scope, logger, downloaded, enableRef, msg
     const batchDispatch = state.batchDispatch === true;
     const aggregated = state.aggregated === true;
     const userMessage = buildUserMessage(userContent, quotePart, msg.senderId, msg.senderName, isGroup, wasMentioned, msgRef);
-    const dynamicCtx = buildDynamicCtx(msg, state, downloaded);
+    const dynamicCtx = buildDynamicCtx(msg, downloaded);
     const base = dynamicCtx ? `${dynamicCtx}${userMessage}` : userMessage;
     // ⚠️ 2026-09-10 去重(主人: "图片链接重复两次"): 聚合/冷却重新派发时, 同一条消息会**既被
     //   mediaHistoryBuffer 记进历史、又作为当前消息出现** → 同一条消息(含媒体 URL)在上下文里出现
@@ -913,13 +913,65 @@ function cleanTextForScore(raw) {
 }
 /**
  * Layer 2: 引用消息块
+ *
+ * ⚠️ 2026-10-01 修（主人实测：群里有人**引用一张表情包**回话，AI 完全不知道引用的是哪张图 → 答非所问）：
+ *   两个叠在一起的坑：
+ *     ① 原判空只看 `text`/`entry.content` —— 对方引用纯图（自己没有文字）时整块引用**直接消失**；
+ *     ② 即使非空，SDK 的 `quote-ref` 中间件把附件**降级成占位文本**（`[image]` / `[image: a.png]`，
+ *        见 `@tencent-connect/qqbot-nodejs/src/middleware/quote-ref.ts` 的 `buildText`）——
+ *        **URL 被丢掉了**，模型对着 4 个字干瞪眼。
+ *   好在 `quote.attachments[].url` 一直都在手边（SDK 已解析，只是没人用）。
+ *   → 现在把被引用消息的附件**内联进引用块**，图片给「**本地路径优先、URL 兜底**」的可读目标
+ *     （本地路径模型能用视觉工具直接读图；QQ 链接又长又会过期），语音给 ASR 转写，文件给文件名+URL。
  */
-function buildQuotePart(quote) {
-    if (!quote?.text && !quote?.entry?.content)
+export function buildQuotePart(quote, stickerDir) {
+    const atts = Array.isArray(quote?.attachments) ? quote.attachments : [];
+    const rawText = String(quote?.text ?? quote?.entry?.content ?? '').trim();
+    // SDK 由附件拼出的占位文本（纯 `[image]` / `[voice: xx]`…）在有附件行时不必重复一遍
+    const text = atts.length > 0 && isPlaceholderQuoteText(rawText) ? '' : rawText;
+    if (!text && atts.length === 0)
         return '';
-    const quoteText = escapeBlockMarkers(quote.text || quote.entry?.content || 'Original content unavailable');
+    const lines = [];
+    if (text)
+        lines.push(escapeBlockMarkers(text));
+    for (const a of atts) {
+        const line = describeQuoteAttachment(a, stickerDir);
+        if (line)
+            lines.push(line);
+    }
+    if (lines.length === 0)
+        return '';
     // 短标记(2026-09-15 省 token): [引]…[/引][当前] —— 见 markers.ts
-    return `${MK.QUOTE_BEGIN}\n${quoteText}\n${MK.QUOTE_END}\n${MK.CURRENT}\n`;
+    return `${MK.QUOTE_BEGIN}\n${lines.join('\n')}\n${MK.QUOTE_END}\n${MK.CURRENT}\n`;
+}
+/** SDK 的附件占位文本（整段只有 `[image]`/`[video: x]`/`[voice: x]`/`[file: x]` 这类行） */
+function isPlaceholderQuoteText(t) {
+    if (!t)
+        return true;
+    return t.split('\n').every((l) => /^\[(image|video|voice|file)(:\s*[^\]]*)?\]$/i.test(l.trim()));
+}
+/** 被引用消息的附件 → 一行可读描述（图片优先给**本地路径**，模型能直接读图） */
+function describeQuoteAttachment(a, stickerDir) {
+    const ct = String(a?.contentType ?? '').toLowerCase();
+    const name = String(a?.filename ?? '').trim();
+    const url = String(a?.url ?? '').trim();
+    const ext = (name.split('.').pop() ?? '').toLowerCase();
+    const isImg = ct.startsWith('image/') || /^(jpe?g|png|gif|webp|bmp)$/.test(ext);
+    const isVoice = ct.startsWith('audio/') || ct.includes('voice') || /^(silk|amr|ogg|mp3|wav|m4a|aac|opus)$/.test(ext);
+    const isVideo = ct.startsWith('video/') || /^(mp4|webm|mov|m4v)$/.test(ext);
+    if (isVoice) {
+        const asr = String(a?.asrText ?? '').trim();
+        return asr ? `🎵 被引用的语音转写: ${asr}` : `🎵 被引用的语音${name ? ': ' + name : ''}`;
+    }
+    if (isImg) {
+        // 与历史图片瘦身同一条解析链(缓存 → 图库台账 → 当前真实路径); 命中就给本地路径, 否则保留 QQ 原链
+        const local = url ? resolveImageLocalPath(url, stickerDir) : undefined;
+        const target = local ?? url;
+        return target ? `📷 被引用的图片: ${target}` : `📷 被引用的图片${name ? ': ' + name : ''}`;
+    }
+    if (isVideo)
+        return `🎬 被引用的视频${name ? ': ' + name : ''}${url ? ' → ' + url : ''}`;
+    return `📎 被引用的文件${name ? ': ' + name : ''}${url ? ' → ' + url : ''}`;
 }
 /**
  * (转义实现已搬到 `markers.ts` 的 `escapeBlockMarkers` —— 新旧两套标记一起转义, 见那里的注释)
@@ -972,6 +1024,8 @@ function localizeHistoryImages(text, stickerDir) {
  *   截断切错位置、外层的 `[Quoted message ends]` 反而留在后面。
  *   现在: ①取**第一个 begin + 最后一个 end**(认外层) ②引用原文里的标记先转义(见 escapeQuoteMarkers)。
  */
+/** 引用块里的"附件行"（`📷 被引用的图片: …` 等）—— 截断豁免标记，别被 60 字上限挤掉 */
+const QUOTE_ATT_LINE_RE = /^[📷🎵🎬📎]\s*被引用的/;
 function trimQuoteBlock(quotePart, dataRoot, msg, logger) {
     if (!quotePart)
         return quotePart;
@@ -981,13 +1035,19 @@ function trimQuoteBlock(quotePart, dataRoot, msg, logger) {
     if (!b || !e || e.idx <= b.idx)
         return quotePart;
     const full = quotePart.slice(b.idx + b.len, e.idx).trim();
-    if (full.length <= QUOTE_KEEP)
+    // ⚠️ 2026-10-01: 附件行**不参与 60 字截断** —— 那是"被引用的是哪张图"的唯一线索,
+    //   被前面的文字挤掉就等于白修(见 buildQuotePart 的注释)。
+    const allLines = full.split('\n');
+    const attLines = allLines.filter((l) => QUOTE_ATT_LINE_RE.test(l.trim()));
+    const textPart = allLines.filter((l) => !QUOTE_ATT_LINE_RE.test(l.trim())).join('\n').trim();
+    // 文字部分没超长 → 整块原样返回（附件行照旧留着，也不必打"已缓存"提示）
+    if (textPart.length <= QUOTE_KEEP)
         return quotePart;
     const key = `${msg.kind === 'group' ? 'group' : 'c2c'}:${(msg.kind === 'group' ? msg.groupOpenid : undefined) ?? msg.senderId}`;
     try {
         const hit = pushQuote(dataRoot, key, full, msg.senderName);
-        const head = full.slice(0, QUOTE_KEEP).replace(/\s+/g, ' ');
-        logger.debug(`[引用] 原文 ${full.length} 字 → 只给前 ${QUOTE_KEEP} 字(缓存 #${hit.id})`);
+        const head = [textPart.slice(0, QUOTE_KEEP).replace(/\s+/g, ' '), ...attLines].filter(Boolean).join('\n');
+        logger.debug(`[引用] 原文 ${full.length} 字 → 只给前 ${QUOTE_KEEP} 字(缓存 #${hit.id}); 附件行 ${attLines.length} 条不截断`);
         return `${quotePart.slice(0, b.idx)}${quotePart.slice(b.idx, b.idx + b.len)}\n${head}…[引用#${hit.id}: 全文 ${full.length} 字已缓存, 需要时用 quote_view 查]\n${quotePart.slice(e.idx)}`;
     }
     catch {
@@ -1037,7 +1097,7 @@ export function buildUserMessage(userContent, quotePart, senderId, senderName, i
 /**
  * Layer 4: 媒体元数据上下文
  */
-function buildDynamicCtx(msg, state, downloaded) {
+function buildDynamicCtx(msg, downloaded) {
     const lines = [];
     if (!msg.attachments || msg.attachments.length === 0)
         return '';
@@ -1078,14 +1138,6 @@ function buildDynamicCtx(msg, state, downloaded) {
     }
     if (lines.length === 0)
         return '';
-    const quoteAttachments = state.quote?.attachments;
-    if (quoteAttachments && quoteAttachments.length > 0) {
-        lines.push('[Reference attachments]');
-        for (const qa of quoteAttachments) {
-            const label = qa.asrText ? `Voice: ${qa.asrText}` : (qa.filename ?? qa.contentType ?? 'attachment');
-            lines.push(`  - ${label}`);
-        }
-    }
     return lines.join('\n') + '\n\n';
 }
 /**
