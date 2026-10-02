@@ -121,17 +121,6 @@ export class SessionManager {
         this.agents = agents;
         this.config = config;
         this.logger = logger;
-        // 规范化用户配置里的路径（修 issue #7：手机/POSIX 下反斜杠相对路径会让会话创建必失败）
-        try {
-            const cfg = this.config;
-            if (cfg && typeof cfg === 'object') {
-                if (cfg.cwd)
-                    cfg.cwd = normalizeUserPath(cfg.cwd);
-                if (cfg.dataRoot)
-                    cfg.dataRoot = normalizeUserPath(cfg.dataRoot);
-            }
-        }
-        catch { /* ignore */ }
         this.modelResolver = new ModelResolver(ctx, config, logger);
         this.evictor = new IdleEvictor(this.sessions, config.sessionIdleTimeout, (key, record) => {
             this.logger.info(`evicting idle session: key=${key}`);
@@ -851,12 +840,17 @@ export class SessionManager {
      *  每个实例在 patch 里配自己的 cwd + settingsNs, 即自动分流;
      *  其他实例/项目(web、别的 cwd)的 agent 一律不注入, 避免群守则污染非本 bot 会话。 */
     nsForCwd(cwd) {
-        const selfCwd = String(this.config.cwd ?? '').trim().replace(/[\\/]+$/, '');
+        // ⚠️ 2026-10-02 修 issue #7：两边都规范化再比 ——
+        //   用户手写反斜杠/相对路径（手机常见）也能与 agent 的 cwd 匹配上；
+        //   **不能去改 config.cwd**（那会打断本匹配，导致群守则/小传/智能提示全部不注入）。
+        const rawSelf = String(this.config.cwd ?? '').trim().replace(/[\\/]+$/, '');
+        const selfCwd = rawSelf ? normalizeUserPath(rawSelf) : '';
         const ns = String(this.config.settingsNs ?? '').trim() || 'im-qqbot';
         if (!selfCwd)
             return ns; // 未配 cwd → 对本实例所有 agent 注入(保守)
-        const norm = String(cwd ?? '').replace(/[\\/]+$/, '');
-        if (norm === selfCwd || norm.startsWith(selfCwd + '\\') || norm.startsWith(selfCwd + '/'))
+        const rawNorm = String(cwd ?? '').replace(/[\\/]+$/, '');
+        const norm = rawNorm ? normalizeUserPath(rawNorm) : '';
+        if (norm === selfCwd || norm.startsWith(selfCwd + '/') || norm.startsWith(selfCwd + '\\'))
             return ns;
         return '';
     }
