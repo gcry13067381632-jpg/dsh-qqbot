@@ -2073,6 +2073,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           state.ctxless = d || null
           if (on) on.checked = !!(d && d.enabled)
           if (win && d && typeof d.window === 'number') win.value = String(d.window)
+          try { var _mmEl = document.getElementById('dk-ctxless-memomax'); if (_mmEl) _mmEl.value = String((d && typeof d.memoMax === 'number') ? d.memoMax : 20) } catch (e) { /* ignore */ }
           // 2026-10-01: 同步 radio（原来只更新了条数框 —— 面板先渲染后拉数据，radio 会停在默认的"按条数"）
           try {
             var _isSmart = !!(d && d.smart === true)
@@ -2099,7 +2100,8 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         // 2026-10-01: 模式单选 → smart；smart=true 时 window 不生效（互斥）
         var _modeEl = document.querySelector('input[name="dk-ctxless-mode"]:checked')
         var _mode = _modeEl ? String(_modeEl.value) : 'window'
-        var body = { sessionKey: key, enabled: !!(on && on.checked), window: win ? (parseInt(win.value, 10) || 0) : 5, smart: _mode === 'smart' }
+        var _mmEl2 = document.getElementById('dk-ctxless-memomax')
+        var body = { sessionKey: key, enabled: !!(on && on.checked), window: win ? (parseInt(win.value, 10) || 0) : 5, smart: _mode === 'smart', memoMax: _mmEl2 ? (parseInt(_mmEl2.value, 10) || 20) : 20 }
         // radio 切换：智能判断时条数框禁用（互斥的视觉提示）
         Array.prototype.forEach.call(document.querySelectorAll('input[name="dk-ctxless-mode"]'), function (r) {
           r.onchange = function () {
@@ -2114,6 +2116,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           api('contextless?sessionKey=' + encodeURIComponent(key)).then(function (back) {
             var same = back && back.enabled === body.enabled && Number(back.window) === Number(body.window)
               && (back.smart === true) === (body.smart === true)
+              && Number(back.memoMax || 20) === Number(body.memoMax || 20)
             if (hint) {
               hint.textContent = same
                 ? ('✅ 已保存并回读确认: ' + (back.enabled ? '开启' : '关闭') + ' / 带 ' + back.window + ' 条')
@@ -3685,6 +3688,10 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
                 + '<span>智能判断（推荐）'
                 + '<div style="font-size:12px;color:#888;line-height:1.4">由 AI <b>每轮自己判断话题是否结束</b>：结束了它就压缩旧历史（可留最近几条）或整段丢弃，<b>只留下自己总结的要点</b> —— 省 token 最狠，也不容易断片。要点存在独立文件里，<b>压缩永远碰不到</b>。</div></span></label>'
               + '</div>'
+            // 备忘条数上限（面板可设；超出自动丢最旧）
+            body += '<div class="dk-row" style="gap:6px;align-items:center;margin:4px 0 2px 22px;font-size:13px">'
+              + '<span>备忘条数上限 <input type="number" id="dk-ctxless-memomax" min="1" max="500" value="' + ((state.ctxless && typeof state.ctxless.memoMax === 'number') ? state.ctxless.memoMax : 20) + '" style="width:60px"> 条</span>'
+              + '<span style="font-size:12px;color:#888">（超出自动丢最旧的；AI 每轮的提示已要求它写精简）</span></div>'
             body += '<div class="dk-msg" style="line-height:1.5;color:#888">0 条 = 完全不带群消息(只剩系统规则 + 当前这句)。智能判断模式下条数不生效。开关存在插件数据目录, 重启不丢；<b>面板保存即时生效</b>，直接改文件则需重启。</div>'
           } else if (st === 'blank') {
             body += '<div style="border:1px dashed #cfc7ee;border-radius:8px;padding:20px 14px;margin:8px 0;text-align:center;line-height:2">'

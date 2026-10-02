@@ -20,9 +20,9 @@ import type { ImQQBotConfig } from '../config.js';
 import { FIXED_CHANNEL_CONTEXT, REFERENCE_CONTEXT } from '../config.js';
 import { takePendingMemoText } from '../features/people-memo.js';
 import { normalizeUserPath } from '../shared/path-utils.js';
-import { isContextlessActive, contextlessSmartOf, contextlessWindowOf, getContextless, listContextless, describeStorePath } from '../features/contextless-store.js';
+import { isContextlessActive, contextlessSmartOf, contextlessMemoMaxOf, contextlessWindowOf, getContextless, listContextless, describeStorePath } from '../features/contextless-store.js';
 import { trimHistoryForContextless } from '../features/contextless-trim.js';
-import { memoTextForInject } from '../features/context-memo.js';
+import { memoTextForInject, setMemoMaxItems } from '../features/context-memo.js';
 import { traceContextless } from '../features/contextless-store.js';
 import { dataRootOf, stickerDirOf } from '../gateway/data-root.js';
 import { SettingsReader } from '../model/settings-reader.js';
@@ -1012,7 +1012,8 @@ export class SessionManager {
           try {
             const sk0b = this.findByAgent(agent as never)?.sessionKey;
             if (sk0b) {
-              ctxSmartOn = isContextlessActive(sk0b, this.config.contextlessMode)
+              setMemoMaxItems(contextlessMemoMaxOf(sk0b) ?? this.config.contextMemoMaxItems ?? 20);
+            ctxSmartOn = isContextlessActive(sk0b, this.config.contextlessMode)
                 && contextlessSmartOf(sk0b, this.config.contextlessSmart);
             }
             traceContextless('[ctxsmart] sk=' + String(sk0b) + ' enabled=' + String(sk0b ? isContextlessActive(sk0b, this.config.contextlessMode) : 'n/a') + ' smart=' + String(sk0b ? contextlessSmartOf(sk0b, this.config.contextlessSmart) : 'n/a') + ' cfgSmart=' + String(this.config.contextlessSmart) + ' => on=' + String(ctxSmartOn));

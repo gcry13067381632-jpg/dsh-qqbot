@@ -12,6 +12,8 @@ export interface ContextlessSetting {
      * ⚠️ 互斥在**读取侧**保证：smart=true 时 window 不生效（见 keepWindowOf()），UI 也做成二选一。
      */
     smart?: boolean;
+    /** 备忘条数上限（面板可设；超出自动丢最旧） */
+    memoMax?: number;
 }
 /** 绑定 dataRoot（apply 时调一次；之后所有读写都落在这里） */
 export declare function initContextlessStore(dataRoot: string): void;
@@ -43,6 +45,8 @@ export declare function isContextlessActive(sessionKey: string, globalEnabled?: 
  *   由 AI 每轮自己判断话题，自主调用 context_compact / context_drop。
  *   会话级优先；没设过时用全局默认（config.contextlessSmart）。
  */
+/** 该会话的备忘条数上限（未设置则 undefined，由默认值兜底） */
+export declare function contextlessMemoMaxOf(sessionKey: string): number | undefined;
 export declare function contextlessSmartOf(sessionKey: string, globalDefault?: boolean): boolean;
 /** 该会话应携带的「@ 之前」群消息条数（会话级优先，其次全局默认 5） */
 export declare function contextlessWindowOf(sessionKey: string, fallback?: number): number;

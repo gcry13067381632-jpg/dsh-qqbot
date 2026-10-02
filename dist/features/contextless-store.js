@@ -79,6 +79,7 @@ function loadFrom(p) {
             table.set(key, {
                 enabled: o?.enabled === true,
                 smart: o?.smart === true,
+                memoMax: Number(o?.memoMax) > 0 ? Number(o.memoMax) : undefined,
                 window: Number.isFinite(Number(o?.window)) ? Math.max(0, Math.trunc(Number(o.window))) : DEFAULT_SETTING.window,
             });
             keyOwner.set(key, p); // 记住这个 key 是从哪个文件读来的
@@ -255,6 +256,16 @@ export function isContextlessActive(sessionKey, globalEnabled) {
  *   由 AI 每轮自己判断话题，自主调用 context_compact / context_drop。
  *   会话级优先；没设过时用全局默认（config.contextlessSmart）。
  */
+/** 该会话的备忘条数上限（未设置则 undefined，由默认值兜底） */
+export function contextlessMemoMaxOf(sessionKey) {
+    try {
+        const v = getContextless(sessionKey).memoMax;
+        return Number(v) > 0 ? Number(v) : undefined;
+    }
+    catch {
+        return undefined;
+    }
+}
 export function contextlessSmartOf(sessionKey, globalDefault) {
     try {
         const s = getContextless(sessionKey);

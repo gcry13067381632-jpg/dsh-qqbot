@@ -30,6 +30,8 @@ export interface ContextlessSetting {
    * ⚠️ 互斥在**读取侧**保证：smart=true 时 window 不生效（见 keepWindowOf()），UI 也做成二选一。
    */
   smart?: boolean;
+  /** 备忘条数上限（面板可设；超出自动丢最旧） */
+  memoMax?: number;
 }
 
 const DEFAULT_SETTING: ContextlessSetting = { enabled: false, window: 5, smart: false };
@@ -88,10 +90,11 @@ function loadFrom(p: string): void {
     if (!raw || typeof raw !== 'object') return;
     for (const [key, v] of Object.entries(raw)) {
       if (table.has(key)) continue;
-      const o = v as { enabled?: unknown; window?: unknown; smart?: unknown };
+      const o = v as { enabled?: unknown; window?: unknown; smart?: unknown; memoMax?: unknown };
       table.set(key, {
         enabled: o?.enabled === true,
         smart: o?.smart === true,
+        memoMax: Number(o?.memoMax) > 0 ? Number(o.memoMax) : undefined,
         window: Number.isFinite(Number(o?.window)) ? Math.max(0, Math.trunc(Number(o.window))) : DEFAULT_SETTING.window,
       });
       keyOwner.set(key, p);   // 记住这个 key 是从哪个文件读来的
@@ -236,6 +239,16 @@ export function isContextlessActive(sessionKey: string, globalEnabled?: boolean)
  *   由 AI 每轮自己判断话题，自主调用 context_compact / context_drop。
  *   会话级优先；没设过时用全局默认（config.contextlessSmart）。
  */
+/** 该会话的备忘条数上限（未设置则 undefined，由默认值兜底） */
+export function contextlessMemoMaxOf(sessionKey: string): number | undefined {
+  try {
+    const v = getContextless(sessionKey).memoMax;
+    return Number(v) > 0 ? Number(v) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function contextlessSmartOf(sessionKey: string, globalDefault?: boolean): boolean {
   try {
     const s = getContextless(sessionKey);
