@@ -719,7 +719,35 @@ export function apply(ctx) {
    *  ⚠️ 2026-09-09: dataRoot 同理 —— 前端不编辑它, 保存时必须保留原值,
    *     否则 accounts/save 会把 patch.yml 里的 dataRoot 覆盖掉(图库路径回退 cwd 的根因)。
    *  ⚠️ 2026-09-10: 已存在的条目改为"原地只更新字段", 不再整块重建(见 updateKeysInBlock 注释)。 */
-  function saveInstances(instances) {
+  /**
+ * 按**当前运行环境**更正用户填的路径（2026-10-02，主人方案）。
+ *   为什么放在"保存时"：面板存进 cordis.patch.yml 的就该是本机正确格式，
+ *   这样运行时读到的 cwd 与 agent 的 cwd 天然一致 —— 不需要任何运行时"动态规范化"
+ *   （后者会打断 nsForCwd 的匹配，导致群守则/小传/智能提示全部不注入）。
+ *   兼容：Windows 反斜杠→正斜杠；Android/POSIX 上的 Windows 盘符路径明确拒绝（返回空串让用户重填）。
+ */
+function fixUserPathForThisHost(input) {
+  try {
+    const raw = String(input == null ? '' : input).trim();
+    if (!raw) return '';
+    let p = raw.replace(/\\/g, '/');
+    if (process.platform !== 'win32' && /^[A-Za-z]:[\/]/.test(p)) return '';   // POSIX 上的盘符路径 → 拒绝
+    if (!p.startsWith('/') && !/^[A-Za-z]:[\/]/.test(p)) {
+      p = resolve(process.cwd(), p).replace(/\\/g, '/');                 // 相对 → 绝对
+    }
+    return p;
+  } catch { return String(input == null ? '' : input).trim(); }
+}
+function saveInstances(instances) {
+  // ★ 保存时按当前环境更正路径（主人方案）：反斜杠→正斜杠、相对→绝对；
+  //   这样存进 patch.yml 的就是本机正确格式，运行时无需再动 cwd（动它会打断 nsForCwd 匹配）。
+  try {
+    for (const it of (Array.isArray(instances) ? instances : [])) {
+      if (!it || typeof it !== 'object') continue;
+      if (typeof it.cwd === 'string' && it.cwd.trim()) it.cwd = fixUserPathForThisHost(it.cwd);
+      if (typeof it.dataRoot === 'string' && it.dataRoot.trim()) it.dataRoot = fixUserPathForThisHost(it.dataRoot);
+    }
+  } catch { /* ignore */ }
     const { raw, hasFile, bots } = parsePatch();
     if (!hasFile) return { ok: false, error: '找不到 cordis.patch.yml(仅 web profile 支持)' };
     const lines = raw.split('\n');
