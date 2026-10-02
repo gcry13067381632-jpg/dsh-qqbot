@@ -9,8 +9,8 @@
  */
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import type { Context } from '@deepseek-ai/cordis';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
 import type { SessionManager } from './session/session-manager.js';
 import type { QQBotSender } from './transport/outbound-buffer.js';
 import { getStickerStore } from './features/sticker-store.js';
@@ -27,6 +27,10 @@ import { managersOf, findManagerByPeer, findManagerBySessionId } from './feature
 import { handleInbound } from './transport/inbound.js';
 import { getQuote } from './features/quote-cache.js';
 import { appendMemoLine, deleteMemo, listMemos, readMemo } from './features/people-memo.js';
+import {
+  appendMemo as appendContextMemo, clearMemo as clearContextMemo, deleteMemo as deleteContextMemo,
+  editMemo as editContextMemo, listMemo as listContextMemo,
+} from './features/context-memo.js';
 
 /** 诊断日志路径: 默认关闭; 需要排查时设环境变量 QQBOT_DIAG_FILE 指向日志文件 */
 const DIAG_FILE = process.env.QQBOT_DIAG_FILE || '';
@@ -94,7 +98,9 @@ export interface QQChannel {
 }
 
 export const name = 'qqbot-channel-tools';
-export const inject = ['tools'];
+// ⚠️ 2026-10-02：用 ctx.systemPrompt.context() 注册运行时贡献**必须**在此声明依赖，
+//   否则 ctx.systemPrompt 拿不到 → 注册走"宿主未提供"兜底 → 静默不注入（与当年小传那个坑同源）。
+export const inject = ['tools', 'systemPrompt'];
 
 /**
  * 运行时按当前执行 agent 解析 qqChannel service。
@@ -103,6 +109,46 @@ export const inject = ['tools'];
  *   防止 setup 未执行/竞态导致"不是 QQ 会话"误判(线上踩坑: 重启后 setup 未跑到)。
  */
 let channelBridges: QQChannel[] = [];
+/** 全局「智能判断」开关（由 session-manager 初始化时注入；照 setChannelBridge 同款做法） */
+let ctxSmartGlobal = false;
+export function setContextlessSmartGlobal(v: boolean): void { ctxSmartGlobal = v === true; }
+function getContextlessSmartGlobal(): boolean { return ctxSmartGlobal; }
+
+/** 无上下文·智能判断：取当前会话的 dataRoot + sessionKey */
+async function resolveCtxMemoEnv(exec: unknown): Promise<{ dataRoot: string; sessionKey: string } | undefined> {
+  // ★ 优先用注册时记住的会话坐标（工具里的 exec.agent 与 pre-step 的 agent 是两个不同对象，反查常失败）
+  const cached = ctxEnvOf(exec);
+  if (cached) return cached;
+  try {
+    const got = findSessionRec(channelOf(exec as never), exec as never) as
+      | { ch?: { manager?: { config?: { dataRoot?: string } } }; rec?: { sessionKey?: string } }
+      | undefined;
+    const dataRoot = got?.ch?.manager?.config?.dataRoot;
+    const sessionKey = got?.rec?.sessionKey;
+    if (!dataRoot || !sessionKey) return undefined;
+    return { dataRoot: String(dataRoot), sessionKey: String(sessionKey) };
+  } catch { return undefined; }
+}
+
+/** 登记文件路径（工具只登记，真正压缩在下一回合 pre-step） */
+function ctxPendingPath(dataRoot: string, sessionKey: string): string {
+  // ⚠️ 同上：不能保留冒号（Windows 文件名禁用 `:`，会导致 pending 写不进/读不到）
+  const safe = String(sessionKey).replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 60);
+  return join(dataRoot, '.qqbot', 'pending-compact', safe + '.json');
+}
+function writeContextPending(dataRoot: string, sessionKey: string, o: unknown): void {
+  try {
+    mkdirSync(dirname(ctxPendingPath(dataRoot, sessionKey)), { recursive: true });
+    writeFileSync(ctxPendingPath(dataRoot, sessionKey), JSON.stringify(o), 'utf8');
+  } catch { /* ignore */ }
+}
+/** 读登记（session-manager 的 pre-step 用） */
+export function readContextPending(dataRoot: string, sessionKey: string): { mode?: string; keep?: number } | undefined {
+  try { return JSON.parse(readFileSync(ctxPendingPath(dataRoot, sessionKey), 'utf8')) as { mode?: string; keep?: number }; } catch { return undefined; }
+}
+export function clearContextPending(dataRoot: string, sessionKey: string): void {
+  try { rmSync(ctxPendingPath(dataRoot, sessionKey), { force: true }); } catch { /* ignore */ }
+}
 export function setChannelBridge(b: QQChannel | undefined): void {
   if (!b) return;
   const i = channelBridges.findIndex((x) => x.manager === b.manager);
@@ -191,6 +237,7 @@ function stickerStoreOf(exec: { agent?: unknown }): ReturnType<typeof getSticker
 
 /** 装载本插件时把 qqChannel 一并注入(由 dsh-qqbot setup 提供) */
 export async function apply(ctx: Context): Promise<void> {
+
   const toolsAny = (ctx as { tools?: unknown }).tools as { register?: (t: unknown) => unknown } | undefined;
   diag(`apply 调用: tools=${typeof toolsAny} register=${typeof toolsAny?.register} ctxKeys=${Object.keys(ctx as object).slice(0, 12).join(',')}`);
 
@@ -1896,7 +1943,13 @@ export async function apply(ctx: Context): Promise<void> {
 
   // people_memo: 群友小传（2026-09-13 主人定）—— 文字版好感度的本体。
   //   记一行(同一人一天最多一条) / 查看 / 删除（群里一句"别记人家"就删）。描述刻意写短。
-  const peopleMemoTool = defineTool({
+  
+
+
+
+
+
+const peopleMemoTool = defineTool({
     name: 'people_memo',
     description: '群友小传: 记一行/查看/删除。当群友说出自己的喜好/经历/身份等"旁人能复述的事实"时, 顺手记一条(同一人一天最多 3 条); 想归到八栏就带前缀, 如"喜好：最近在玩XX"(不带前缀则进记事区); 只写事实, 不写评价与猜测',
     parameters: {
@@ -1948,12 +2001,23 @@ export async function apply(ctx: Context): Promise<void> {
   });
 
   // 逐个注册并记录结果(便于线上定位是哪个工具失败)
-  const toolDefs: Array<{ name: string; tool: unknown }> = [
+    // 供 syncContextTools 动态挂载用（apply 早于 pre-step，填好即可）
+  // ★ 自动热刷（2026-10-02）：apply 早于任何回合 ⇒ 在这里注册一次，第一回合的工具表里就有，
+  //   不必依赖 pre-step（那只在回合内生效，会滞后一回合 —— 表现为"工具不存在，得 tools_reload"）。
+  //   之后 pre-step 仍按会话开关刷新：开则保持、关则注销。
+  try { syncContextTools(ctx, true); } catch { /* ignore */ }
+
+const toolDefs: Array<{ name: string; tool: unknown }> = [
     { name: 'send_media', tool: sendMediaTool },
     { name: 'recall_message', tool: recallTool },
     { name: 'text_break', tool: textBreakTool },
     { name: 'quote_view', tool: quoteViewTool },
     { name: 'people_memo', tool: peopleMemoTool },
+    // 无上下文模式·智能判断专用（全局开关 config.contextlessSmart 开启时才出现）
+    ...(getContextlessSmartGlobal() === true
+      ? [
+        ]
+      : []),
     { name: 'tools_reload', tool: toolsReloadTool },
     { name: 'reply_gate', tool: replyGateTool },
     { name: 'outbound_mode', tool: outboundModeTool },
@@ -2164,4 +2228,196 @@ export async function askAiToWriteSamples(
   } catch (e) {
     return { ok: false, msg: `异常: ${e instanceof Error ? e.message : String(e)}` };
   }
+}
+
+/** 每个 agentCtx 已注册的上下文工具 disposer（WeakMap：多会话互不影响） */
+const ctxToolDisposers = new WeakMap<object, Array<() => void>>();
+/** 三个上下文工具定义（在 apply() 里赋值 —— 那里才拿得到 defineTool 的产物） */
+var contextMemoTool = defineTool({
+name: 'context_memo',
+description:
+  '查看/追加/修改/删除/清空「你自己的备忘」。备忘存在独立文件里，压缩或丢弃历史时**永远不会被丢**；'
+  + '用来长期留着跨话题需要记住的事（对方偏好、未完成的事、之前聊过什么）。',
+parameters: {
+  action: {
+    type: 'string',
+    required: true,
+    enum: ['list', 'append', 'edit', 'delete', 'clear'],
+    description: 'list=查看全部 / append=追加一条 / edit=改某条 / delete=删某条 / clear=全清',
+  },
+  text: { type: 'string', description: 'append/edit 时的内容（要留下的要点）' },
+  id: { type: 'string', description: 'edit/delete 时的条目 id（先 list 拿到）' },
+},
+output: {
+  schema: {
+    type: 'object',
+    additionalProperties: true,
+    properties: { ok: { type: 'boolean', required: true }, msg: { type: 'string', required: true } },
+  },
+  render: (_a: unknown, v: { msg?: string }) => [{ type: 'text' as const, text: String(v?.msg ?? '') }],
+},
+async execute(args, exec) {
+  const r = await resolveCtxMemoEnv(exec as never);
+  if (!r) return { ok: false, msg: '未找到当前会话，无法读写备忘' };
+  const a = (args ?? {}) as { action?: string; text?: string; id?: string };
+  const action = String(a.action || 'list');
+  try {
+    if (action === 'list') {
+      const items = listContextMemo(r.dataRoot, r.sessionKey);
+      return {
+        ok: true,
+        msg: items.length ? items.map((x) => '[' + x.id + '] ' + x.text).join('\n') : '(备忘是空的)',
+      };
+    }
+    if (action === 'append') {
+      const it = appendContextMemo(r.dataRoot, r.sessionKey, String(a.text || ''));
+      return it ? { ok: true, msg: '已追加备忘 [' + it.id + ']' } : { ok: false, msg: 'text 不能为空' };
+    }
+    if (action === 'edit') {
+      const ok = editContextMemo(r.dataRoot, r.sessionKey, String(a.id || ''), String(a.text || ''));
+      return { ok, msg: ok ? '已修改 [' + String(a.id) + ']' : '没找到该 id，或 text 为空' };
+    }
+    if (action === 'delete') {
+      const ok = deleteContextMemo(r.dataRoot, r.sessionKey, String(a.id || ''));
+      return { ok, msg: ok ? '已删除 [' + String(a.id) + ']' : '没找到该 id' };
+    }
+    if (action === 'clear') {
+      const cnt = clearContextMemo(r.dataRoot, r.sessionKey);
+      return { ok: true, msg: '已清空 ' + cnt + ' 条' };
+    }
+    return { ok: false, msg: '未知 action' };
+  } catch (e) {
+    return { ok: false, msg: String((e as Error)?.message ?? e) };
+  }
+},
+});
+
+var contextCompactTool = defineTool({
+  name: 'context_compact',
+  description:
+    '压缩本会话的上下文：把旧历史压掉、只留最近几条，真正释放 token。'
+    + '本工具只**登记**，会在下一个回合开始时执行（回合内无法直接压）。'
+    + 'note 参数用来写「压缩后仍然需要记住的要点」——它存进你的备忘，压缩碰不到。',
+  parameters: {
+    note: { type: 'string', description: '要点：压缩后仍需要记住的信息（会存进备忘）' },
+    keep: { type: 'number', description: '保留最近几条消息（默认 3；0 = 全清）' },
+  },
+  output: {
+    schema: {
+      type: 'object',
+      additionalProperties: true,
+      properties: { ok: { type: 'boolean', required: true }, msg: { type: 'string', required: true } },
+    },
+    render: (_a: unknown, v: { msg?: string }) => [{ type: 'text' as const, text: String(v?.msg ?? '') }],
+  },
+  async execute(args, exec) {
+    const r = await resolveCtxMemoEnv(exec as never);
+    if (!r) return { ok: false, msg: '未找到当前会话' };
+    const a = (args ?? {}) as { note?: string; keep?: number };
+    if (a.note) appendContextMemo(r.dataRoot, r.sessionKey, String(a.note));
+    writeContextPending(r.dataRoot, r.sessionKey, { mode: 'compact', keep: Number(a.keep) || 3, at: Date.now() });
+    return { ok: true, msg: '已登记压缩：下一个回合开始时执行'
+      + (a.note ? '（要点已存进你的备忘）' : '（本次没写要点；若压缩后有需要记住的，请带上 note）') };
+  },
+});
+
+var contextDropTool = defineTool({
+  name: 'context_drop',
+  description:
+    '丢弃本会话的历史上下文（只留下你自己写的备忘）。话题彻底结束、不再需要原文时用它。'
+    + '本工具只**登记**，会在下一个回合开始时执行（回合内无法直接压）。'
+    + '调用前请用 note 参数写下要点——它存进你的备忘，丢弃碰不到。',
+  parameters: {
+    note: { type: 'string', description: '要点：丢弃后仍需要记住的信息（会存进备忘）' },
+  },
+  output: {
+    schema: {
+      type: 'object',
+      additionalProperties: true,
+      properties: { ok: { type: 'boolean', required: true }, msg: { type: 'string', required: true } },
+    },
+    render: (_a: unknown, v: { msg?: string }) => [{ type: 'text' as const, text: String(v?.msg ?? '') }],
+  },
+  async execute(args, exec) {
+    const r = await resolveCtxMemoEnv(exec as never);
+    if (!r) return { ok: false, msg: '未找到当前会话' };
+    const a = (args ?? {}) as { note?: string };
+    if (a.note) appendContextMemo(r.dataRoot, r.sessionKey, String(a.note));
+    writeContextPending(r.dataRoot, r.sessionKey, { mode: 'drop', keep: 0, at: Date.now() });
+    return { ok: true, msg: '已登记丢弃：下一个回合开始时执行'
+      + (a.note ? '（要点已存进你的备忘）' : '（本次没写要点；丢弃后这些历史就找不回来了，建议带 note）') };
+  },
+});
+
+// 模块级直接拿（不依赖 apply —— apply 只在会话首建时跑，agent 重建后不会重跑）
+//   注意：三个工具定义在同文件下方（var 声明，有提升），故这里用取值函数避免 TDZ。
+/**
+ * 智能提示的运行时文本（照小传的 pending 模式）：
+ *   session-manager 在 pre-step 里拼好 → 塞进来；index.ts 注册的 systemPrompt.context 只负责读。
+ *   ⚠️ 注册必须发生在**主插件的 ctx** 上（见 index.ts 小传那段）—— 注册在 agentCtx 上会随 agent 重建丢失。
+ */
+let ctxSmartTextPending = '';
+export function setCtxSmartText(t: string): void { ctxSmartTextPending = String(t || ''); if (ctxSmartTextPending) console.log('[spctx-set] 已塞入 ' + ctxSmartTextPending.length + ' 字'); }
+export function getCtxSmartText(): string { if (!ctxSmartTextPending) console.log('[spctx-get] 读时为空'); return ctxSmartTextPending; }
+let CTX_TOOLS_REF: unknown[] = [];
+/** 惰性取三件套（首次调用时求值，那时定义已就绪） */
+function ctxToolsRef(): unknown[] {
+  if (CTX_TOOLS_REF.length === 0) {
+    try { CTX_TOOLS_REF = [contextMemoTool, contextCompactTool, contextDropTool]; } catch { /* ignore */ }
+  }
+  return CTX_TOOLS_REF;
+}
+
+/** 每个 agentCtx 对应的会话坐标（注册工具时记下 —— pre-step 里这两个值已验证正确） */
+interface CtxEnv { dataRoot: string; sessionKey: string }
+const ctxEnvMap = new WeakMap<object, CtxEnv>();
+
+/** 工具执行时取会话坐标：优先用注册时记下的（最准），取不到再回退反查 */
+function ctxEnvOf(exec: unknown): CtxEnv | undefined {
+  try {
+    const c = (exec as { agent?: { ctx?: unknown } } | undefined)?.agent?.ctx;
+    if (c && typeof c === 'object') {
+      const hit = ctxEnvMap.get(c as object);
+      if (hit && hit.dataRoot && hit.sessionKey) return hit;
+    }
+  } catch { /* fallthrough */ }
+  return undefined;
+}
+
+/**
+ * 按会话开关**动态**注册/注销三个上下文工具（context_memo / context_compact / context_drop）。
+ * 由 session-manager 在每个回合的 pre-step 里调用（拿 rec.agentCtx）。
+ * 这样面板一改开关，**下一回合就生效**，不需要重启，也没有"apply 时读全局变量"的时序竞态。
+ */
+export function syncContextTools(agentCtx: unknown, shouldHave: boolean, env?: { dataRoot?: string; sessionKey?: string }, reminderText?: string): void {
+  void reminderText;   // 保留签名（提示文本改由主 ctx 的 systemPrompt.context 提供，见 index.ts）
+  if (!agentCtx || typeof agentCtx !== 'object') return;
+  const ctxObj = agentCtx as { tools?: { register?: (t: unknown) => unknown } };
+  const key = agentCtx as object;
+  try {
+    // ① 先记会话坐标（每次 pre-step 都刷新；这是工具执行时唯一的可靠来源）
+    if (env && env.dataRoot && env.sessionKey) {
+      ctxEnvMap.set(key, { dataRoot: String(env.dataRoot), sessionKey: String(env.sessionKey) });
+    }
+    const cur = ctxToolDisposers.get(key);
+    // ⚠️ 2026-10-02：不能靠"缓存里已注册"就跳过 —— agent/ctx 一变，实际工具表就作废了，
+    //   而缓存还记着"注册过" ⇒ 永久挂不上（实测：工具表里没有 context_*，但日志显示 syncTools 在跑）。
+    //   改为每次都"先注销旧、再重新注册"，幂等刷新，代价极小。
+    if (cur) {
+      for (const d of cur) { try { d(); } catch { /* ignore */ } }
+      ctxToolDisposers.delete(key);
+    }
+    if (shouldHave) {
+      const reg = ctxObj.tools?.register;
+      if (typeof reg !== 'function') return;
+      const ds: Array<() => void> = [];
+      for (const t of ctxToolsRef()) {
+        try {
+          const d = reg.call(ctxObj.tools, t);
+          if (typeof d === 'function') ds.push(d as () => void);
+        } catch { /* 单个工具注册失败不影响其他 */ }
+      }
+      if (ds.length) ctxToolDisposers.set(key, ds);
+    }
+  } catch { /* fail-soft：工具挂载失败绝不影响会话 */ }
 }

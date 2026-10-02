@@ -433,7 +433,8 @@ export function apply(ctx) {
       if (!key) return writeJson(res, 400, { error: 'sessionKey required' });
       const mod = await loadContextlessStore();   // 先 init 到同一个 dataRoot，避免两份模块实例各写一个文件
       if (body.remove === true) { mod.clearContextless(key); return writeJson(res, 200, { ok: true, removed: true }); }
-      const next = mod.setContextless(key, { enabled: body.enabled, window: body.window });
+      // 2026-10-01: smart = 无上下文模式·智能判断（与 window 互斥，面板单选取值）
+      const next = mod.setContextless(key, { enabled: body.enabled, window: body.window, smart: body.smart });
       return writeJson(res, 200, { ok: true, value: next });
     } catch (e) {
       return writeJson(res, 500, { error: String((e && e.message) || e) });

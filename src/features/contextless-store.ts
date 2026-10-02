@@ -22,9 +22,17 @@ export interface ContextlessSetting {
   enabled: boolean;
   /** 保留「@ 之前」多少条群消息（0 = 一条都不带，只留系统规则） */
   window: number;
+  /**
+   * 「智能判断」子模式（2026-10-01 主人设计）—— **与 window 互斥**。
+   *   true  = 不按固定条数：交给 AI **每轮自己判断话题**，结束就调 `context_compact` /
+   *           `context_drop` 自主压缩或丢弃历史，只需留下自己写的要点（存独立文件，压缩碰不到）；
+   *   false/缺省 = 老行为：每轮只带「@ 之前 window 条」。
+   * ⚠️ 互斥在**读取侧**保证：smart=true 时 window 不生效（见 keepWindowOf()），UI 也做成二选一。
+   */
+  smart?: boolean;
 }
 
-const DEFAULT_SETTING: ContextlessSetting = { enabled: false, window: 5 };
+const DEFAULT_SETTING: ContextlessSetting = { enabled: false, window: 5, smart: false };
 
 let storePath = '';
 let loaded = false;
@@ -80,9 +88,10 @@ function loadFrom(p: string): void {
     if (!raw || typeof raw !== 'object') return;
     for (const [key, v] of Object.entries(raw)) {
       if (table.has(key)) continue;
-      const o = v as { enabled?: unknown; window?: unknown };
+      const o = v as { enabled?: unknown; window?: unknown; smart?: unknown };
       table.set(key, {
         enabled: o?.enabled === true,
+        smart: o?.smart === true,
         window: Number.isFinite(Number(o?.window)) ? Math.max(0, Math.trunc(Number(o.window))) : DEFAULT_SETTING.window,
       });
       keyOwner.set(key, p);   // 记住这个 key 是从哪个文件读来的
@@ -187,6 +196,10 @@ export function setContextless(sessionKey: string, patch: Partial<ContextlessSet
     window: patch.window === undefined
       ? cur.window
       : Math.max(0, Math.trunc(Number(patch.window)) || 0),
+    // 2026-10-01: 「智能判断」子模式（与 window **互斥**）——
+    //   这里只**存值、不互斥清零**，这样主人在 UI 上来回切换时 window 的旧值不会丢；
+    //   真正的互斥由读取侧（contextlessSmartOf / keepWindowOf）与面板单选一起保证。
+    smart: patch.smart === undefined ? (cur.smart === true) : patch.smart === true,
   };
   table.set(sessionKey, next);
   if (!keyOwner.has(sessionKey)) { try { ensurePath(); if (storePath) keyOwner.set(sessionKey, storePath); } catch { /* ignore */ } }
@@ -214,6 +227,23 @@ export function clearContextless(sessionKey: string): boolean {
 export function isContextlessActive(sessionKey: string, globalEnabled?: boolean): boolean {
   if (globalEnabled === true) return true;
   return getContextless(sessionKey).enabled;
+}
+
+/**
+ * 该会话是否用「智能判断」子模式（2026-10-01 主人设计）。
+ *
+ * ⚠️ **与 window 互斥**：返回 true 时，`contextlessWindowOf` 的条数**不生效** ——
+ *   由 AI 每轮自己判断话题，自主调用 context_compact / context_drop。
+ *   会话级优先；没设过时用全局默认（config.contextlessSmart）。
+ */
+export function contextlessSmartOf(sessionKey: string, globalDefault?: boolean): boolean {
+  try {
+    const s = getContextless(sessionKey);
+    if (s.smart !== undefined) return s.smart === true;
+    return globalDefault === true;
+  } catch {
+    return globalDefault === true;
+  }
 }
 
 /** 该会话应携带的「@ 之前」群消息条数（会话级优先，其次全局默认 5） */

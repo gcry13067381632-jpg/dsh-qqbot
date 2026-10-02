@@ -19,8 +19,10 @@ import type { ChatScope, Logger, ReplyTarget } from '../types.js';
 import type { ImQQBotConfig } from '../config.js';
 import { FIXED_CHANNEL_CONTEXT, REFERENCE_CONTEXT } from '../config.js';
 import { takePendingMemoText } from '../features/people-memo.js';
-import { isContextlessActive, contextlessWindowOf, getContextless, listContextless, describeStorePath } from '../features/contextless-store.js';
+import { normalizeUserPath } from '../shared/path-utils.js';
+import { isContextlessActive, contextlessSmartOf, contextlessWindowOf, getContextless, listContextless, describeStorePath } from '../features/contextless-store.js';
 import { trimHistoryForContextless } from '../features/contextless-trim.js';
+import { memoTextForInject } from '../features/context-memo.js';
 import { traceContextless } from '../features/contextless-store.js';
 import { dataRootOf, stickerDirOf } from '../gateway/data-root.js';
 import { SettingsReader } from '../model/settings-reader.js';
@@ -40,7 +42,7 @@ import type {
   TokenUsageStats,
 } from './types.js';
 import type { QQBotSender } from '../transport/outbound-buffer.js';
-import { apply as mountChannelTools } from '../channel-tools.js';
+import { apply as mountChannelTools, readContextPending, clearContextPending, syncContextTools } from '../channel-tools.js';
 import { createGroupAdmin } from '../api/group-admin.js';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { appendFileSync, statSync } from 'node:fs';
@@ -56,6 +58,23 @@ function diagSm(line: string): void {
 }
 
 /** agent ctx 上"通道工具已装载"标记(幂等/自愈用) */
+/** 智能判断模式的「每轮必做」提示（2026-10-01 主人审过的措辞） */
+
+const CTX_SMART_REMINDER = [
+  '【⚠️ 话题判断 · 每轮必做】',
+  '本会话开着「无上下文模式 · 智能判断」——历史会随每一轮一起送出，**这就是在花主人的钱**。',
+  '',
+  '每轮先判断：**当前话题结束了吗？对方明显换话题了吗？**',
+  '  · 还在同一话题 → 不用动，照常回话',
+  '  · 话题结束了 → 再判断「这段历史以后还用得上吗」：',
+  '      · 用不上 → 调 context_drop（丢弃全部历史）',
+  '      · 还有用 → 调 context_compact（压成摘要）',
+  '      · **两个工具都可以带 note 参数**：把「压缩后仍然需要记住的要点」写在那里，',
+  '        它会被存进你的备忘（独立文件，压缩碰不到）。',
+  '        ⚠️ **note 不是日记**：只写丢了历史以后还会用到的信息（对方偏好、未完成的事、',
+  '        约定过的结论），**不要记流水账**，也不要每轮都写。',
+  '  · context_memo 只用来看/改/删已有的备忘，**别拿它当随手记的笔记本**。',
+].join('\n');
 const CTX_TOOLS_READY: unique symbol = Symbol('qqbotChannelToolsReady');
 
 export class SessionManager {
@@ -125,6 +144,14 @@ export class SessionManager {
     private readonly config: ImQQBotConfig,
     private readonly logger: Logger,
   ) {
+    // 规范化用户配置里的路径（修 issue #7：手机/POSIX 下反斜杠相对路径会让会话创建必失败）
+    try {
+      const cfg = this.config as unknown as { cwd?: string; dataRoot?: string };
+      if (cfg && typeof cfg === 'object') {
+        if (cfg.cwd) cfg.cwd = normalizeUserPath(cfg.cwd);
+        if (cfg.dataRoot) cfg.dataRoot = normalizeUserPath(cfg.dataRoot);
+      }
+    } catch { /* ignore */ }
     this.modelResolver = new ModelResolver(ctx, config, logger);
 
     this.evictor = new IdleEvictor(
@@ -917,6 +944,15 @@ export class SessionManager {
     if (!hostCtx?.on || (this as unknown as Record<string, unknown>).__rulesMounted) return;
     (this as unknown as Record<string, unknown>).__rulesMounted = true;
     hostCtx.on('agent/pre-step', async (payload: unknown, next: unknown) => {
+      // ctxSmartOn 提到回调最外层（固定 trim 让位 + 后面的消费/注入都要用）
+      let ctxSmartOn = false;
+      const _isCtxSmartMsg = (m: unknown): boolean => {
+      try {
+      const src = (m as { source?: { kind?: string } } | undefined)?.source;
+      return src?.kind === 'qqbot:ctx-smart';
+      } catch { return false; }
+      };
+      const _stripOldCtxSmart = (arr: unknown[]): unknown[] => arr.filter((m) => !_isCtxSmartMsg(m));
       const decision = await (next as () => Promise<unknown>)();
       try {
         const p = payload as {
@@ -972,8 +1008,18 @@ export class SessionManager {
           //   实测 trace：web 会话的 sk=(反查为空)，原写法 `if (sk0 && …)` 直接跳过 →
           //   "全局开关明明开着却一条都没压"。现在 sk0 为空时用一个占位 key 走全局判定
           //   （isContextlessActive 在 globalEnabled===true 时直接返回 true）。
+          // ★ 提前算：会话级「智能判断」开关（固定 N 条 trim 要用它让位）
+          try {
+            const sk0b = this.findByAgent(agent as never)?.sessionKey;
+            if (sk0b) {
+              ctxSmartOn = isContextlessActive(sk0b, this.config.contextlessMode)
+                && contextlessSmartOf(sk0b, this.config.contextlessSmart);
+            }
+            traceContextless('[ctxsmart] sk=' + String(sk0b) + ' enabled=' + String(sk0b ? isContextlessActive(sk0b, this.config.contextlessMode) : 'n/a') + ' smart=' + String(sk0b ? contextlessSmartOf(sk0b, this.config.contextlessSmart) : 'n/a') + ' cfgSmart=' + String(this.config.contextlessSmart) + ' => on=' + String(ctxSmartOn));
+          } catch (e) { traceContextless('[ctxsmart] 异常: ' + String(e)); }
           const ctxKey0 = sk0 || '__global__';
-          if (isContextlessActive(ctxKey0, this.config.contextlessMode)) {
+          // ⚠️ 2026-10-01：智能判断开启时，固定 N 条**让位**（否则两条路同时压 —— 实测"界面显示已压缩 11 条"）
+          if (!ctxSmartOn && isContextlessActive(ctxKey0, this.config.contextlessMode)) {
             const win0 = contextlessWindowOf(sk0, this.config.contextlessWindow ?? 5);
             this.logger?.info?.('[contextless] 登记: 会话 ' + sk0 + ' 开启中, 带 @ 前 ' + win0 + ' 条 → 本轮内清理');
             // ⚠️ 2026-09-27 照宿主做法：dsh-compaction-basic 自己就是在 agent/pre-step 里
@@ -995,6 +1041,61 @@ export class SessionManager {
             }
           }
         } catch (e) { traceContextless('pre-step 登记异常: ' + (e instanceof Error ? e.message : String(e))); this.logger?.debug?.('[contextless] 登记异常(已忽略): ' + (e instanceof Error ? e.message : String(e))); }
+        // 数据根：优先 config.dataRoot；否则从 contextless-store 反推（它 bootstrap 时绑的就是真实 dataRoot）——
+        // ⚠️ 不能用 config.cwd 兜底：实测 cwd=\...\测试 而真实 dataRoot=\...\测试\dshqqbot，差一级会导致 pending 写一处读另一处。
+        const dataRootSmart = (() => {
+          const direct = String(this.config.dataRoot ?? '').trim();
+          if (direct) return direct;
+          try {
+            const storeFile = describeStorePath();   // {dataRoot}/.qqbot/contextless.json
+            const m = /^(.*)[\\/]\.qqbot[\\/][^\\/]+$/.exec(String(storeFile ?? ''));
+            if (m && m[1]) return m[1];
+          } catch { /* ignore */ }
+          return String(this.config.cwd ?? '');
+        })();   // 数据根（提前声明：下面多处用）
+        // ── 按**会话**开关动态挂载/卸载三个上下文工具（照测试插件做法：面板改了下一回合就生效）──
+        try {
+          const recTool = agent ? this.findByAgent(agent as never) : undefined;
+          // ⚠️ 2026-10-01：rec.agentCtx 可能是空的（SessionRecord 注释："setup 竞态失败时可能缺"），
+          //   而 agent.ctx 更可靠（本文件里就有 exec.agent.ctx.get('qqChannel') 的现成用法）。
+          const fromRec = (recTool as unknown as { agentCtx?: unknown } | undefined)?.agentCtx;
+          const fromAgent = (agent as unknown as { ctx?: unknown } | undefined)?.ctx;
+          const ctxOfTool = fromRec ?? fromAgent;
+          traceContextless('[ctxtool] on=' + String(ctxSmartOn) + ' fromRec=' + String(Boolean(fromRec)) + ' fromAgent=' + String(Boolean(fromAgent)));
+          const skTool = String((recTool as unknown as { sessionKey?: unknown } | undefined)?.sessionKey ?? '');
+          if (ctxOfTool) syncContextTools(ctxOfTool, ctxSmartOn, { dataRoot: dataRootSmart, sessionKey: skTool }, CTX_SMART_REMINDER);
+          else traceContextless('[ctxtool] 两个来源都拿不到 ctx，跳过');
+          traceContextless('[ctxtool-env] dataRoot=' + String(dataRootSmart) + ' sk=' + skTool);
+        } catch (e) { traceContextless('[ctxtool] 动态挂载异常: ' + String(e)); }
+
+        // ── 智能判断：消费 AI 登记的压缩/丢弃（工具只登记，真正执行在这里）──
+        //    与上面的「固定 N 条 trim」互斥：智能模式开启时，固定窗口让位给 AI 自主决定。
+        try {
+          const recSmart = agent ? this.findByAgent(agent as never) : undefined;
+          const skSmart = recSmart?.sessionKey;
+          try {
+            traceContextless('[ctxsmart-diag2] sk=' + String(skSmart) + ' on=' + String(ctxSmartOn));
+          } catch { /* ignore */ }
+          if (skSmart) {
+            ctxSmartOn = isContextlessActive(skSmart, this.config.contextlessMode)
+              && contextlessSmartOf(skSmart, this.config.contextlessSmart);
+          }
+          if (ctxSmartOn && skSmart && dataRootSmart && (!Number.isFinite(currentStep) || currentStep <= 1)) {
+            const req = readContextPending(dataRootSmart, skSmart);
+            if (req) {
+              const keep = req.mode === 'drop' ? 0 : (Number(req.keep) || 3);
+              await trimHistoryForContextless(
+                agent as unknown as { session?: { surface?: { nodes?: number[] } } },
+                keep,
+                this.logger,
+                (() => { try { return this.ctx as unknown as { tokenMeter?: { estimateMessage?: (m: unknown) => number }; logger?: { info?: (s: string) => void; debug?: (s: string) => void } }; } catch { return undefined; } })(),
+                Number.isFinite(currentTurn) ? currentTurn : undefined,
+              );
+              clearContextPending(dataRootSmart, skSmart);
+              this.logger?.info?.('[contextless] 已执行 AI 登记的 ' + String(req.mode) + '（keep=' + keep + ', session=' + skSmart + '）');
+            }
+          }
+        } catch (e) { this.logger?.debug?.('[contextless] 消费 pending 异常(已忽略): ' + (e instanceof Error ? e.message : String(e))); }
         const rules = this.readLiveGroupPromptForNs(ns);
         // 引用消息指令(2026-09-13 主人定): 开关关闭时不注入
         const refCtx = this.config.messageReference === false ? '' : REFERENCE_CONTEXT;
@@ -1002,7 +1103,34 @@ export class SessionManager {
         //   ctx.systemPrompt.context() 那条在新宿主上没生效(无日志), 走这里最稳(群守则就是这么注入的)。
         //   TTL 90s: inbound 算好的那一行过期就自动不再注入。
         const memoLine = takePendingMemoText().trim();
-        const body = [FIXED_CHANNEL_CONTEXT.trim(), refCtx.trim(), rules.trim(), memoLine].filter(Boolean).join('\n\n');
+        // ── 智能判断模式：提示 + 备忘（单独算一段，**不受群守则体是否为空影响**）──
+        //    ⚠️ 原来是挂在 `if (!body) return decision;` 之后的 —— 群守则体为空时直接早退，
+        //       注入根本没机会执行（2026-10-01 实测：AI 反馈"没有任何一条要求我判断是不是同一个话题"）。
+        let ctxSmartText = '';
+        try {
+          // ⚠️ 2026-10-01：靠「这个 turn 注过没有」去重 —— 原来用 step<=1 判，实测仍会一回合注两份
+          //   （宿主每 step 都触发，且 currentStep 未必从 1 递增）。
+          // ★ 终版判据：本批 messages 里已有「话题判断」块就不再注 ——
+          //   同一回合内 step2 的 messages 必然带着 step1 注入的那份，因此一定拦得住（比按 turn 可靠）。
+          // ★★★ 2026-10-01 最终解：**替换式注入** —— 不赌任何时序判据，改为"每次注之前先剔掉旧的同类块"，
+          //   这样无论宿主触发多少次（实测每次工具往返都触发），上下文里恒定只有 1 份。
+          if (ctxSmartOn && dataRootSmart) {
+            const recM = agent ? this.findByAgent(agent as never) : undefined;
+            const skM = recM?.sessionKey;
+            if (skM) {
+              const memo = memoTextForInject(dataRootSmart, skM).trim();
+              const inner = [CTX_SMART_REMINDER, memo].filter(Boolean).join('\n\n');
+              if (inner) ctxSmartText = '<system-reminder>\n' + inner + '\n</system-reminder>';
+            }
+          }
+        } catch (e) { this.logger?.debug?.('[contextless] 组装智能提示异常(已忽略): ' + (e instanceof Error ? e.message : String(e))); }
+        let skipGroupRules = false;   // 群守则已在上下文里 → 只跳过它，不影响智能提示注入
+        // ★ 2026-10-01 正解：把「话题判断 + 备忘」拼进群守则这条 body —— 与它**共用同一套去重**
+        //   （下面的 inBatch + surface 历史比对）。人家先前的独立注入靠 step/turn/时间窗判重，
+        //   在"同回合多次请求"下全部失效（surface 要回合结束才提交），实测份数 2→3→5 只增不减。
+        // ★ 2026-10-02（主人定）：把智能提示当成**第二个群守则** —— 拼进 body、共用它的去重。
+        //   备忘会逐轮变化，所以下面的去重只比对固定部分（CTX_SMART_REMINDER），不受备忘影响。
+        const body = [FIXED_CHANNEL_CONTEXT.trim(), refCtx.trim(), rules.trim(), memoLine, ctxSmartText].filter(Boolean).join('\n\n');
         if (!body) return decision;
         const text = `<system-reminder>\n${body}\n</system-reminder>`;
         const desired = {
@@ -1014,7 +1142,9 @@ export class SessionManager {
         // 去重(靠 KV cache): 本次 messages 已含同 ns+同内容 → 不重复
         const inBatch = dec.messages.some((m: unknown) => {
           const mm = m as { source?: { kind?: string; ns?: string }; content?: { type?: string; text?: string }[] };
-          return mm?.source?.kind === 'qqbot:group-rules' && mm.source.ns === ns && mm.content?.[0]?.text === text;
+          // ⚠️ 只比对固定部分（备忘会变），否则每轮都被判成'新内容'而重复注入
+              return mm?.source?.kind === 'qqbot:group-rules' && mm.source.ns === ns
+                && String(mm.content?.[0]?.text ?? '').includes(CTX_SMART_REMINDER);
         });
         // ⚠️ dsh 0.1.6 起 `eventAt / snapshotEvents / ownEvents` 被标记 @deprecated（官方措辞：
         //    "既有逻辑可暂不迁移，但不允许新增调用"）。此处是 2026-09 就存在的**既有只读遍历**，
@@ -1029,24 +1159,30 @@ export class SessionManager {
             if (ev?.type === 'user/message'
               && ev.data?.source?.kind === 'qqbot:group-rules'
               && ev.data.source.ns === ns
-              && ev.data.content?.[0]?.text === text) {
-              return decision;
+              && String(ev.data.content?.[0]?.text ?? '').includes(CTX_SMART_REMINDER)) {
+              // ⚠️ 2026-10-01：原来这里直接 return decision —— 但群守则每轮都在，
+              //   于是从第二回合起整轮注入都被吞掉（智能提示也跟着丢，实测"话题判断"事件恒为 0）。
+              //   改为：只跳过群守则这一条，继续往下走（ctxSmartText 照常注入）。
+              skipGroupRules = true;
+              break;
             }
           }
         }
-        if (inBatch) return decision;
-        const claimed = Array.isArray(p.messages) ? p.messages : [];
-        let lastClaimedIndex = -1;
-        for (let i = dec.messages.length - 1; i >= 0; i--) {
-          if (claimed.includes(dec.messages[i])) { lastClaimedIndex = i; break; }
-        }
-        const at = Math.max(0, lastClaimedIndex + 1);
+        if (inBatch) skipGroupRules = true;   // 同上：只跳过群守则那条
         // ⚠️ 2026-09-27 撤除：「无上下文模式」不能在这个钩子里实现 —— 这里 payload/decision 的 messages 是
         //   "本步从收件箱取出的新消息"（见 dsh-agent runtime-types: "messages removed from the inbox for this step"），
         //   不是"发给模型的完整上下文"。在此裁剪只会把用户刚发的话删掉（实测：模型只收到 system-reminder 后空转 abort）。
         //   "清历史"的正确机制是会话 surface 的 shadow/compaction（见 dsh-compaction-basic 的 shadowedSeqs），
         //   待按该机制另行实现。
-        const entered = [...dec.messages.slice(0, at), desired, ...dec.messages.slice(at)];
+
+        // 先剔掉本批里已有的同类块（注入块会进事件、逐轮累积 ⇒ 用替换而不是追加）
+        const _baseMsgs = _stripOldCtxSmart(dec.messages as unknown[]) as typeof dec.messages;
+        // at 是按原数组算的：剔除后重新定位插入点（紧跟 claimed 之后）
+        const _claimedSet = new Set(Array.isArray(p.messages) ? (p.messages as unknown[]) : []);
+        let _at2 = 0;
+        for (let k = _baseMsgs.length - 1; k >= 0; k--) { if (_claimedSet.has(_baseMsgs[k])) { _at2 = k + 1; break; } }
+        const extraAll: unknown[] = [];   // 智能提示已并入 body（第二群守则），这里留空
+        const entered = [..._baseMsgs.slice(0, _at2), ...(skipGroupRules ? [] : [desired]), ...extraAll, ..._baseMsgs.slice(_at2)];
         return { ...dec, messages: entered };
       } catch {
         return decision;
@@ -1129,6 +1265,13 @@ export class SessionManager {
   }
 
   findByAgent(agent: DshAgent): SessionRecord | undefined {
+    try {
+      const _aid = String((agent as unknown as { id?: unknown })?.id ?? '-');
+      const _sid = String((agent as unknown as { session?: { id?: unknown } })?.session?.id ?? '-');
+      const _recs = [...this.sessions.values()].map((r) => String(r.sessionKey) + '|sid=' + String(r.sessionId) + '|aid=' + String((r.agent as unknown as { id?: unknown })?.id ?? '-') + '|rsid=' + String((r.agent as unknown as { session?: { id?: unknown } })?.session?.id ?? '-'));
+      const _hit = [...this.sessions.values()].filter((r) => r.agent === agent).length;
+      traceContextless('[fba-diag] aid=' + _aid + ' sid=' + _sid + ' 记录数=' + this.sessions.size + ' 引用命中=' + _hit + ' 记录明细=' + _recs.join(' ; '));
+    } catch (e) { /* ignore */ }
     for (const record of this.sessions.values()) {
       if (record.agent === agent) return record;
     }
@@ -1137,6 +1280,17 @@ export class SessionManager {
     if (aid !== undefined) {
       for (const record of this.sessions.values()) {
         if (record.agent.id === aid) return record;
+      }
+    }
+    // ★ 2026-10-01 第三层兜底：按 session.id 匹配。
+    //   实测（3099 隔离环境）工具执行时拿到的 agent，引用与 id 都与记录里的对不上
+    //   （宿主可能传的是"同会话的另一个 agent 实例"），但 session.id 是稳定的。
+    const sid = String((agent as { session?: { id?: unknown } } | undefined)?.session?.id ?? '');
+    if (sid) {
+      for (const record of this.sessions.values()) {
+        if (String(record.sessionId) === sid) return record;
+        const rsid = String((record.agent as unknown as { session?: { id?: unknown } })?.session?.id ?? '');
+        if (rsid && rsid === sid) return record;
       }
     }
     return undefined;

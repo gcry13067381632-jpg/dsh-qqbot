@@ -4,6 +4,14 @@ export interface ContextlessSetting {
     enabled: boolean;
     /** 保留「@ 之前」多少条群消息（0 = 一条都不带，只留系统规则） */
     window: number;
+    /**
+     * 「智能判断」子模式（2026-10-01 主人设计）—— **与 window 互斥**。
+     *   true  = 不按固定条数：交给 AI **每轮自己判断话题**，结束就调 `context_compact` /
+     *           `context_drop` 自主压缩或丢弃历史，只需留下自己写的要点（存独立文件，压缩碰不到）；
+     *   false/缺省 = 老行为：每轮只带「@ 之前 window 条」。
+     * ⚠️ 互斥在**读取侧**保证：smart=true 时 window 不生效（见 keepWindowOf()），UI 也做成二选一。
+     */
+    smart?: boolean;
 }
 /** 绑定 dataRoot（apply 时调一次；之后所有读写都落在这里） */
 export declare function initContextlessStore(dataRoot: string): void;
@@ -28,6 +36,14 @@ export declare function listContextless(): Record<string, ContextlessSetting>;
 export declare function clearContextless(sessionKey: string): boolean;
 /** 会话是否处于"无上下文模式"（全局开 **或** 该会话单独开） */
 export declare function isContextlessActive(sessionKey: string, globalEnabled?: boolean): boolean;
+/**
+ * 该会话是否用「智能判断」子模式（2026-10-01 主人设计）。
+ *
+ * ⚠️ **与 window 互斥**：返回 true 时，`contextlessWindowOf` 的条数**不生效** ——
+ *   由 AI 每轮自己判断话题，自主调用 context_compact / context_drop。
+ *   会话级优先；没设过时用全局默认（config.contextlessSmart）。
+ */
+export declare function contextlessSmartOf(sessionKey: string, globalDefault?: boolean): boolean;
 /** 该会话应携带的「@ 之前」群消息条数（会话级优先，其次全局默认 5） */
 export declare function contextlessWindowOf(sessionKey: string, fallback?: number): number;
 //# sourceMappingURL=contextless-store.d.ts.map

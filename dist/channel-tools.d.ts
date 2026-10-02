@@ -8,6 +8,13 @@ export interface QQChannel {
 }
 export declare const name = "qqbot-channel-tools";
 export declare const inject: string[];
+export declare function setContextlessSmartGlobal(v: boolean): void;
+/** 读登记（session-manager 的 pre-step 用） */
+export declare function readContextPending(dataRoot: string, sessionKey: string): {
+    mode?: string;
+    keep?: number;
+} | undefined;
+export declare function clearContextPending(dataRoot: string, sessionKey: string): void;
 export declare function setChannelBridge(b: QQChannel | undefined): void;
 /** 装载本插件时把 qqChannel 一并注入(由 dsh-qqbot setup 提供) */
 export declare function apply(ctx: Context): Promise<void>;
@@ -26,4 +33,15 @@ export declare function askAiToWriteSamples(ns: string, scope: 'group' | 'c2c', 
     ok: boolean;
     msg: string;
 }>;
+export declare function setCtxSmartText(t: string): void;
+export declare function getCtxSmartText(): string;
+/**
+ * 按会话开关**动态**注册/注销三个上下文工具（context_memo / context_compact / context_drop）。
+ * 由 session-manager 在每个回合的 pre-step 里调用（拿 rec.agentCtx）。
+ * 这样面板一改开关，**下一回合就生效**，不需要重启，也没有"apply 时读全局变量"的时序竞态。
+ */
+export declare function syncContextTools(agentCtx: unknown, shouldHave: boolean, env?: {
+    dataRoot?: string;
+    sessionKey?: string;
+}, reminderText?: string): void;
 //# sourceMappingURL=channel-tools.d.ts.map

@@ -627,6 +627,17 @@ export interface ImQQBotConfig {
   contextlessMode?: boolean;
   /** 无上下文模式下携带的「@ 之前」群消息条数(0=完全不带) */
   contextlessWindow?: number;
+
+  /**
+   * 无上下文模式·智能判断(2026-10-01): **与 contextlessWindow 互斥**。
+   * 开启后不按固定条数，而是让 AI 自己判断话题是否结束，自主调用
+   * context_compact（压缩、保留最近几条）/ context_drop（丢弃全部历史），
+   * 只留下它自己写的备忘（存独立文件，压缩碰不到）。
+   */
+  contextlessSmart?: boolean;
+
+  /** 备忘条数上限（超出自动丢最旧 —— 主人要求：不要无限增加） */
+  contextMemoMaxItems?: number;
   /** 群历史缓冲条数 */
   historyLimit: number;
   /** 访问控制 */
@@ -699,6 +710,7 @@ const ConfigSchemaRaw: Schema<ImQQBotConfig> = Schema.object({
   provider: Schema.string().description('LLM provider name'),
   model: Schema.string().description('Model name'),
   preset: Schema.string().description('Agent preset id'),
+  // ⚠️ 2026-10-02 修 issue #7：手机/POSIX 下反斜杠相对路径会让会话创建必失败 ⇒ 统一走规范化
   cwd: Schema.string().description('Agent working directory'),
   dataRoot: Schema.string().description('插件数据根目录(可选; 缺省=cwd): 表情包/.qqbot/.qqbot-extensions 统一挂其下, 与工作区其他文件分离'),
   settingsNs: Schema.string().description('Web 设置命名空间(多账号时每实例唯一, 默认 im-qqbot)'),
@@ -713,6 +725,9 @@ const ConfigSchemaRaw: Schema<ImQQBotConfig> = Schema.object({
   historyLimit: Schema.number().default(10).description('群历史缓冲条数'),
   contextlessMode: Schema.boolean().default(false).description('无上下文模式: 每轮不继承历史(只带「@ 之前 N 条群消息」+ 系统规则)'),
   contextlessWindow: Schema.number().default(5).description('无上下文模式下携带的「@ 之前」群消息条数(0=完全不带)'),
+  contextlessSmart: Schema.boolean().default(false)
+    .description('无上下文模式·智能判断(与 contextlessWindow 互斥): 让 AI 自己判断话题并自主压缩/丢弃上下文，只留它自己的备忘'),
+  contextMemoMaxItems: Schema.number().default(20).description('备忘条数上限(超出自动丢最旧)'),
   access: Schema.object({
     c2cMode: Schema.union(['open', 'allowlist', 'disabled']).default('open').description('C2C访问模式'),
     c2cAllow: Schema.array(Schema.string()).default([]).description('C2C白名单'),

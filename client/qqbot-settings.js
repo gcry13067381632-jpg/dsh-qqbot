@@ -2047,6 +2047,13 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           if (m) appId = m[1]
         } catch (e) {}
       }
+      // ★ 优先用「顶栏命中的当前会话」—— 群/私聊通用（2026-10-01 修：原来只支持群，私聊保存会报未命中）
+      var hit = state.detectedHit
+      if (hit && hit.peerId && appId) {
+        var kind = (hit.scope === 'c2c') ? 'c2c' : 'group'
+        return 'qqbot:' + appId + ':' + kind + ':' + String(hit.peerId)
+      }
+      // 回落：面板里选中的群
       var gid = ''
       try { gid = curHitGid() || '' } catch (e) { gid = '' }
       if (!gid) gid = state.gid || ''
@@ -2060,12 +2067,21 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
       var win = panel ? panel.querySelector('#dk-ctxless-win') : null
       var hint = panel ? panel.querySelector('#dk-ctxless-hint') : null
       var key = ctxlessKey()
-      if (!key) { if (hint) hint.textContent = '先选一个群'; return }
+      if (!key) { if (hint) hint.textContent = '先选一个群/私聊'; return }
       api('contextless?sessionKey=' + encodeURIComponent(key))
         .then(function (d) {
           state.ctxless = d || null
           if (on) on.checked = !!(d && d.enabled)
           if (win && d && typeof d.window === 'number') win.value = String(d.window)
+          // 2026-10-01: 同步 radio（原来只更新了条数框 —— 面板先渲染后拉数据，radio 会停在默认的"按条数"）
+          try {
+            var _isSmart = !!(d && d.smart === true)
+            var _rs = document.querySelectorAll('input[name="dk-ctxless-mode"]')
+            Array.prototype.forEach.call(_rs, function (r) {
+              r.checked = (r.value === 'smart') ? _isSmart : !_isSmart
+            })
+            if (win) win.disabled = _isSmart
+          } catch (e) { /* ignore */ }
           if (hint) hint.textContent = (d && d.enabled) ? '已开启(本会话)' : ''
         })
         .catch(function () { if (hint) hint.textContent = '读取失败(面板需刷新/重启后重试)' })
@@ -2079,14 +2095,25 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
       if (hint) hint.textContent = '读取当前会话…'
       lookupCurrentSession(function () {
         var key = ctxlessKey()
-        if (!key) { if (hint) hint.textContent = '未命中 QQ 会话 —— 请先切到与 bot 的群/私聊（顶栏「当前会话」要命中）'; return }
-        var body = { sessionKey: key, enabled: !!(on && on.checked), window: win ? (parseInt(win.value, 10) || 0) : 5 }
+        if (!key) { if (hint) hint.textContent = '未命中 QQ 会话 —— 先和 bot 在群里或私聊里聊一句（让它成为活跃会话），再回来保存'; return }
+        // 2026-10-01: 模式单选 → smart；smart=true 时 window 不生效（互斥）
+        var _modeEl = document.querySelector('input[name="dk-ctxless-mode"]:checked')
+        var _mode = _modeEl ? String(_modeEl.value) : 'window'
+        var body = { sessionKey: key, enabled: !!(on && on.checked), window: win ? (parseInt(win.value, 10) || 0) : 5, smart: _mode === 'smart' }
+        // radio 切换：智能判断时条数框禁用（互斥的视觉提示）
+        Array.prototype.forEach.call(document.querySelectorAll('input[name="dk-ctxless-mode"]'), function (r) {
+          r.onchange = function () {
+            var w = document.getElementById('dk-ctxless-win')
+            if (w) w.disabled = (r.value === 'smart')
+          }
+        })
         if (hint) hint.textContent = '保存中…'
         apiPost('contextless', body).then(function (d) {
           if (!d || !d.ok) { if (hint) hint.textContent = '保存失败: ' + JSON.stringify(d); return }
           // ★ 保存后【回读】验证（这样"到底存进去没有"一眼可见，不用猜）
           api('contextless?sessionKey=' + encodeURIComponent(key)).then(function (back) {
             var same = back && back.enabled === body.enabled && Number(back.window) === Number(body.window)
+              && (back.smart === true) === (body.smart === true)
             if (hint) {
               hint.textContent = same
                 ? ('✅ 已保存并回读确认: ' + (back.enabled ? '开启' : '关闭') + ' / 带 ' + back.window + ' 条')
@@ -3641,12 +3668,24 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             var ctxHit = curHitLabel()
             body += '<div class="dk-msg" style="line-height:1.6">开启后, 本会话每轮<b>不继承历史对话</b>(系统规则照旧), 只带上「@ 之前 N 条群消息」—— 群聊省 token 的利器。</div>'
             body += '<div class="dk-msg" style="color:#888;font-size:12px;margin:2px 0 6px">作用对象: <b>' + (ctxHit || '（当前会话不是 QQ 会话）') + '</b></div>'
+            var _smartOn = !!(state.ctxless && state.ctxless.smart === true)
+            var _winVal = (state.ctxless && typeof state.ctxless.window === 'number') ? state.ctxless.window : 5
             body += '<div class="dk-row" style="gap:8px;flex-wrap:wrap;align-items:center">'
               + '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:13px"><input type="checkbox" id="dk-ctxless-on"' + (state.ctxless && state.ctxless.enabled ? ' checked' : '') + '>无上下文模式</label>'
-              + '<span style="font-size:12px;color:#666">带 @ 前 <input type="number" id="dk-ctxless-win" min="0" value="' + ((state.ctxless && typeof state.ctxless.window === 'number') ? state.ctxless.window : 5) + '" style="width:56px"> 条</span>'
               + '<button class="dk-btn ok" id="dk-ctxless-save" style="margin-left:auto">💾 保存(本会话)</button>'
               + '<span class="dk-msg" id="dk-ctxless-hint" style="color:#2f9e44"></span></div>'
-            body += '<div class="dk-msg" style="line-height:1.5;color:#888">0 条 = 完全不带群消息(只剩系统规则 + 当前这句)。开关存在插件数据目录, 重启不丢。</div>'
+            // 2026-10-01: 两种模式**互斥**（单参数是死参数、智能判断交给 AI），所以做成单选
+            body += '<div style="margin:4px 0 0 22px;display:flex;flex-direction:column;gap:8px">'
+              + '<label style="display:flex;align-items:flex-start;gap:6px;cursor:pointer;font-size:13px">'
+                + '<input type="radio" name="dk-ctxless-mode" value="window"' + (_smartOn ? '' : ' checked') + ' style="margin-top:3px">'
+                + '<span>按条数保留&nbsp;<span style="font-size:12px;color:#666">带 @ 前 <input type="number" id="dk-ctxless-win" min="0" value="' + _winVal + '"' + (_smartOn ? ' disabled' : '') + ' style="width:56px"> 条</span>'
+                + '<div style="font-size:12px;color:#888;line-height:1.4">不管在聊什么，每轮都只带「@ 前 N 条」。简单、可预期；但<b>同一话题接着聊可能断片</b>，<b>换了话题又会多带</b>。</div></span></label>'
+              + '<label style="display:flex;align-items:flex-start;gap:6px;cursor:pointer;font-size:13px">'
+                + '<input type="radio" name="dk-ctxless-mode" value="smart"' + (_smartOn ? ' checked' : '') + ' style="margin-top:3px">'
+                + '<span>智能判断（推荐）'
+                + '<div style="font-size:12px;color:#888;line-height:1.4">由 AI <b>每轮自己判断话题是否结束</b>：结束了它就压缩旧历史（可留最近几条）或整段丢弃，<b>只留下自己总结的要点</b> —— 省 token 最狠，也不容易断片。要点存在独立文件里，<b>压缩永远碰不到</b>。</div></span></label>'
+              + '</div>'
+            body += '<div class="dk-msg" style="line-height:1.5;color:#888">0 条 = 完全不带群消息(只剩系统规则 + 当前这句)。智能判断模式下条数不生效。开关存在插件数据目录, 重启不丢；<b>面板保存即时生效</b>，直接改文件则需重启。</div>'
           } else if (st === 'blank') {
             body += '<div style="border:1px dashed #cfc7ee;border-radius:8px;padding:20px 14px;margin:8px 0;text-align:center;line-height:2">'
               + '<div style="font-size:15px;font-weight:700">📄 空白样板</div>'

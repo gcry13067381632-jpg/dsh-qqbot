@@ -327,6 +327,15 @@ export interface ImQQBotConfig {
     contextlessMode?: boolean;
     /** 无上下文模式下携带的「@ 之前」群消息条数(0=完全不带) */
     contextlessWindow?: number;
+    /**
+     * 无上下文模式·智能判断(2026-10-01): **与 contextlessWindow 互斥**。
+     * 开启后不按固定条数，而是让 AI 自己判断话题是否结束，自主调用
+     * context_compact（压缩、保留最近几条）/ context_drop（丢弃全部历史），
+     * 只留下它自己写的备忘（存独立文件，压缩碰不到）。
+     */
+    contextlessSmart?: boolean;
+    /** 备忘条数上限（超出自动丢最旧 —— 主人要求：不要无限增加） */
+    contextMemoMaxItems?: number;
     /** 群历史缓冲条数 */
     historyLimit: number;
     /** 访问控制 */

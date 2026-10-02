@@ -15,7 +15,7 @@
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-const DEFAULT_SETTING = { enabled: false, window: 5 };
+const DEFAULT_SETTING = { enabled: false, window: 5, smart: false };
 let storePath = '';
 let loaded = false;
 const table = new Map();
@@ -78,6 +78,7 @@ function loadFrom(p) {
             const o = v;
             table.set(key, {
                 enabled: o?.enabled === true,
+                smart: o?.smart === true,
                 window: Number.isFinite(Number(o?.window)) ? Math.max(0, Math.trunc(Number(o.window))) : DEFAULT_SETTING.window,
             });
             keyOwner.set(key, p); // 记住这个 key 是从哪个文件读来的
@@ -208,6 +209,10 @@ export function setContextless(sessionKey, patch) {
         window: patch.window === undefined
             ? cur.window
             : Math.max(0, Math.trunc(Number(patch.window)) || 0),
+        // 2026-10-01: 「智能判断」子模式（与 window **互斥**）——
+        //   这里只**存值、不互斥清零**，这样主人在 UI 上来回切换时 window 的旧值不会丢；
+        //   真正的互斥由读取侧（contextlessSmartOf / keepWindowOf）与面板单选一起保证。
+        smart: patch.smart === undefined ? (cur.smart === true) : patch.smart === true,
     };
     table.set(sessionKey, next);
     if (!keyOwner.has(sessionKey)) {
@@ -242,6 +247,24 @@ export function isContextlessActive(sessionKey, globalEnabled) {
     if (globalEnabled === true)
         return true;
     return getContextless(sessionKey).enabled;
+}
+/**
+ * 该会话是否用「智能判断」子模式（2026-10-01 主人设计）。
+ *
+ * ⚠️ **与 window 互斥**：返回 true 时，`contextlessWindowOf` 的条数**不生效** ——
+ *   由 AI 每轮自己判断话题，自主调用 context_compact / context_drop。
+ *   会话级优先；没设过时用全局默认（config.contextlessSmart）。
+ */
+export function contextlessSmartOf(sessionKey, globalDefault) {
+    try {
+        const s = getContextless(sessionKey);
+        if (s.smart !== undefined)
+            return s.smart === true;
+        return globalDefault === true;
+    }
+    catch {
+        return globalDefault === true;
+    }
 }
 /** 该会话应携带的「@ 之前」群消息条数（会话级优先，其次全局默认 5） */
 export function contextlessWindowOf(sessionKey, fallback = 5) {
