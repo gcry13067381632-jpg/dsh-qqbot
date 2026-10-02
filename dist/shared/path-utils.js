@@ -11,6 +11,7 @@
  *   4) 全空白/空串 → 原样返回（由调用方决定默认值）
  */
 import { isAbsolute, resolve, sep } from 'node:path';
+import * as fs from 'node:fs';
 /** 是否 Windows 盘符开头（C:\ / C:/） */
 function hasDriveLetter(p) {
     return /^[A-Za-z]:[\\/]/.test(p);
@@ -39,8 +40,6 @@ export function pathProblem(p) {
     if (!p)
         return '路径为空';
     try {
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const fs = require('node:fs');
         if (!fs.existsSync(p))
             return '目录不存在';
         fs.accessSync(p, fs.constants.W_OK);

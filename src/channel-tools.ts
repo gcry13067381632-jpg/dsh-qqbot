@@ -98,9 +98,10 @@ export interface QQChannel {
 }
 
 export const name = 'qqbot-channel-tools';
-// ⚠️ 2026-10-02：用 ctx.systemPrompt.context() 注册运行时贡献**必须**在此声明依赖，
-//   否则 ctx.systemPrompt 拿不到 → 注册走"宿主未提供"兜底 → 静默不注入（与当年小传那个坑同源）。
-export const inject = ['tools', 'systemPrompt'];
+// ⚠️ 2026-10-02 事故：曾在此加 "systemPrompt" —— 但**宿主未提供该服务**，cordis 会一直等它，
+//   插件报 "never started" ⇒ 所有钩子永不注册 ⇒ 群守则/小传/智能提示/工具刷新全部失效。
+//   那条 systemPrompt 通道已废弃（提示现并入群守则 body 走 pre-step），故只声明 tools。
+export const inject = ['tools'];
 
 /**
  * 运行时按当前执行 agent 解析 qqChannel service。
