@@ -1,3 +1,23 @@
+## 1.6.1
+
+### 🐛 修复（1.6.0 的冒烟修）
+
+- **修：插件起不来 —— `channel-tools` 的 `inject` 里加了宿主未提供的 `systemPrompt`**
+  - 症状：面板显示「加载失败 / `qqbot-channel-tools: never started`」，且**群守则、群友小传、智能提示、工具刷新全部失效**
+  - 原因：cordis 会一直等待未提供的服务 ⇒ 该 entry 永不启动 ⇒ 所有钩子未注册
+  - 修法：还原为 `export const inject = ['tools']`（`systemPrompt` 那条通道已废弃，提示现并入群守则 body 走 pre-step）
+- **回滚：移除「按安卓环境自动纠正 `cwd`」的那套逻辑**（`path-utils.ts` / `nsForCwd` 双边规范化 / 保存时更正）
+  - 原因：运行时改动 `config.cwd` 会打断 `nsForCwd` 的匹配，导致 pre-step 第一道闸早退
+  - Android 路径问题（#7）**另案处理**，本版先保证稳定
+- 修：`path-utils` 里误用 `require`（ESM 环境）—— 相关文件已移除
+
+### ✅ 本版保留的能力（无上下文模式 · 智能判断）
+
+- 三个上下文工具：`context_memo` / `context_compact` / `context_drop`（按会话动态挂载，面板一改下回合生效）
+- 每轮「⚠️ 话题判断 · 每轮必做」提示 + AI 自己的备忘（并入群守则通道，共用去重 ⇒ 不累积）
+- 面板：无上下文模式互斥单选（按条数 / 智能判断）+ **备忘条数上限**可设置（默认 20，超出丢最旧）
+- 提示词要求 AI **必须写精简**（每条 <100 字）
+
 ## 1.6.0
 
 ### ✨ 新功能

@@ -19,7 +19,6 @@ import type { ChatScope, Logger, ReplyTarget } from '../types.js';
 import type { ImQQBotConfig } from '../config.js';
 import { FIXED_CHANNEL_CONTEXT, REFERENCE_CONTEXT } from '../config.js';
 import { takePendingMemoText } from '../features/people-memo.js';
-import { normalizeUserPath } from '../shared/path-utils.js';
 import { isContextlessActive, contextlessSmartOf, contextlessMemoMaxOf, contextlessWindowOf, getContextless, listContextless, describeStorePath } from '../features/contextless-store.js';
 import { trimHistoryForContextless } from '../features/contextless-trim.js';
 import { memoTextForInject, setMemoMaxItems } from '../features/context-memo.js';
@@ -61,19 +60,27 @@ function diagSm(line: string): void {
 /** 智能判断模式的「每轮必做」提示（2026-10-01 主人审过的措辞） */
 
 const CTX_SMART_REMINDER = [
-  '【⚠️ 话题判断 · 每轮必做】',
-  '本会话开着「无上下文模式 · 智能判断」——历史会随每一轮一起送出，**这就是在花主人的钱**。',
+  '【⚠️ 话题判断 · 每轮必做，且必须给出结论】',
+  '本会话开着「无上下文模式 · 智能判断」——历史会随每一轮一起送出，**每多带一轮就是在白花主人的钱**。',
   '',
-  '每轮先判断：**当前话题结束了吗？对方明显换话题了吗？**',
-  '  · 还在同一话题 → 不用动，照常回话',
-  '  · 话题结束了 → 再判断「这段历史以后还用得上吗」：',
-  '      · 用不上 → 调 context_drop（丢弃全部历史）',
-  '      · 还有用 → 调 context_compact（压成摘要）',
-  '      · **两个工具都可以带 note 参数**：把「压缩后仍然需要记住的要点」写在那里，',
-  '        它会被存进你的备忘（独立文件，压缩碰不到）。',
-  '        ⚠️ **note 不是日记**：只写丢了历史以后还会用到的信息（对方偏好、未完成的事、',
-  '        约定过的结论），**不要记流水账**，也不要每轮都写。',
+  '**每轮回复前，必须做这件事**：判断当前话题是否已经结束（或对方明显换话题了）。',
+  '判断完**立刻动手**，不要想着「再观察一下」：',
+  '',
+  '  · 话题还在继续 → 不动作（这是唯一可以不动作的情况）',
+  '  · 话题已结束 / 明显换向 → **立刻处理**：',
+  '      · 这段历史以后用不上 → 调 context_drop',
+  '      · 以后还可能用到 → 调 context_compact（keep 默认 3）',
+  '      · **犹豫不决时 → 默认 context_compact**（压缩比丢弃安全；要点能写进 note）',
+  '',
+  '**调之前先写 note**（一句话把这段的要害写下来）——它存进你的备忘，压缩/丢弃都碰不到它。',
+  '  ⚠️ note 必须精简：一句话、别超 100 字；写完确认旧的那条已删（备忘有条数上限，超了丢最旧）。',
+  '  ⚠️ 不要把「日常寒暄、重复确认、已经写在备忘里的内容」再写一遍。',
   '  · context_memo 只用来看/改/删已有的备忘，**别拿它当随手记的笔记本**。',
+  '',
+  '**判断标准（拿不准时照这个来）**：',
+  '  · 已经聊了 5 轮以上、且中间没有新信息进来 → 可以压',
+  '  · 对方换了话题、或开始聊一件跟前面无关的事 → 可以丢',
+  '  · 只是「聊得挺热」但内容重复、没有新增结论 → **一样可以压**（热不等于有用）',
 ].join('\n');
 const CTX_TOOLS_READY: unique symbol = Symbol('qqbotChannelToolsReady');
 
@@ -894,15 +901,10 @@ export class SessionManager {
    *  每个实例在 patch 里配自己的 cwd + settingsNs, 即自动分流;
    *  其他实例/项目(web、别的 cwd)的 agent 一律不注入, 避免群守则污染非本 bot 会话。 */
   private nsForCwd(cwd: string): string {
-    // ⚠️ 2026-10-02 修 issue #7：两边都规范化再比 ——
-    //   用户手写反斜杠/相对路径（手机常见）也能与 agent 的 cwd 匹配上；
-    //   **不能去改 config.cwd**（那会打断本匹配，导致群守则/小传/智能提示全部不注入）。
-    const rawSelf = String(this.config.cwd ?? '').trim().replace(/[\\/]+$/, '');
-    const selfCwd = rawSelf ? normalizeUserPath(rawSelf) : '';
+    const selfCwd = String(this.config.cwd ?? '').trim().replace(/[\/]+$/, '');
     const ns = String(this.config.settingsNs ?? '').trim() || 'im-qqbot';
     if (!selfCwd) return ns; // 未配 cwd → 对本实例所有 agent 注入(保守)
-    const rawNorm = String(cwd ?? '').replace(/[\\/]+$/, '');
-    const norm = rawNorm ? normalizeUserPath(rawNorm) : '';
+    const norm = String(cwd ?? '').replace(/[\/]+$/, '');
     if (norm === selfCwd || norm.startsWith(selfCwd + '/') || norm.startsWith(selfCwd + '\\')) return ns;
     return '';
   }
