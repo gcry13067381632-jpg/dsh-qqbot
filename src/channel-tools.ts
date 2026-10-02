@@ -28,6 +28,13 @@ import { handleInbound } from './transport/inbound.js';
 import { getQuote } from './features/quote-cache.js';
 import { appendMemoLine, deleteMemo, listMemos, readMemo } from './features/people-memo.js';
 import {
+  loadQunCookie, saveQunCookie, qunLoginStart, qunLoginPoll, qunLoginPending,
+  qunGroups, qunResolveGc, qunMembers, qunKick,
+} from './features/qun-admin.js';
+import {
+  qunBrowserLoginStart, qunBrowserLoginWait, qunLoginSessionAlive,
+} from './features/qun-login.js';
+import {
   appendMemo as appendContextMemo, clearMemo as clearContextMemo, deleteMemo as deleteContextMemo,
   editMemo as editContextMemo, listMemo as listContextMemo,
 } from './features/context-memo.js';
@@ -118,8 +125,9 @@ function getContextlessSmartGlobal(): boolean { return ctxSmartGlobal; }
 /** 无上下文·智能判断：取当前会话的 dataRoot + sessionKey */
 async function resolveCtxMemoEnv(exec: unknown): Promise<{ dataRoot: string; sessionKey: string } | undefined> {
   // ★ 优先用注册时记住的会话坐标（工具里的 exec.agent 与 pre-step 的 agent 是两个不同对象，反查常失败）
+  //   ⚠️ 必须要求 sessionKey 非空：备忘/压缩都按会话分文件存，空 key 会让所有会话串到同一份。
   const cached = ctxEnvOf(exec);
-  if (cached) return cached;
+  if (cached && cached.sessionKey) return cached;
   try {
     const got = findSessionRec(channelOf(exec as never), exec as never) as
       | { ch?: { manager?: { config?: { dataRoot?: string } } }; rec?: { sessionKey?: string } }
@@ -129,6 +137,24 @@ async function resolveCtxMemoEnv(exec: unknown): Promise<{ dataRoot: string; ses
     if (!dataRoot || !sessionKey) return undefined;
     return { dataRoot: String(dataRoot), sessionKey: String(sessionKey) };
   } catch { return undefined; }
+}
+
+/**
+ * 只要 dataRoot 的场景（QQ 群管理工具）。
+ * pre-step 里 sessionKey 经常是**空**的（实测 [ctxtool-env] sk= 为空），
+ * 所以这里不能像备忘那样要求 sessionKey —— 群管理只跟数据目录有关，与会话无关。
+ */
+async function resolveCtxDataRoot(exec: unknown): Promise<string | undefined> {
+  const cached = ctxEnvOf(exec);
+  if (cached && cached.dataRoot) return cached.dataRoot;
+  try {
+    const got = findSessionRec(channelOf(exec as never), exec as never) as
+      | { ch?: { manager?: { config?: { dataRoot?: string } } } }
+      | undefined;
+    const dataRoot = got?.ch?.manager?.config?.dataRoot;
+    if (dataRoot) return String(dataRoot);
+  } catch { /* ignore */ }
+  return undefined;
 }
 
 /** 登记文件路径（工具只登记，真正压缩在下一回合 pre-step） */
@@ -2350,6 +2376,161 @@ var contextDropTool = defineTool({
   },
 });
 
+/**
+ * QQ 群管理工具 —— 用主人自己的 QQ 号管理「我创建 / 我管理」的群。
+ * 纯 HTTP（qun.qq.com 的 qun_mgr 接口），**不需要浏览器**，新用户装完插件自己扫码就能用。
+ * 不受「无上下文」开关影响，永远挂在会话上。
+ */
+var qunAdminTool = defineTool({
+  name: 'qq_group_admin',
+  description:
+    '用主人自己的 QQ 号管理群（我创建/我管理的群）：登录、看群列表、查群成员、踢人。'
+    + '登录用 action=login —— 会自动开一个隐藏的浏览器去「点头像授权」，有 QQ 登录态时**免扫码直接登**；'
+    + '若这台机器上还没有 QQ 登录态，它会出一张二维码，你立刻用 send_media 发给主人扫，再调 action=status 等结果（一次最多等 20 秒，没等到再调）。'
+    + '⚠️ 踢人前必须先跟主人确认「哪个群、哪个人」，确认无误后才带 confirmed=true 调用；绝不自己决定踢谁。',
+  parameters: {
+    action: {
+      type: 'string',
+      required: true,
+      enum: ['status', 'login', 'groups', 'members', 'kick'],
+      description: 'status=登录状态/继续等扫码 / login=出二维码 / groups=群列表 / members=查成员 / kick=踢人',
+    },
+    group: { type: 'string', description: '群号或群名（members/kick 必填；群名支持模糊匹配）' },
+    keyword: { type: 'string', description: 'members 用：uin（精确查）或昵称片段' },
+    uins: { type: 'string', description: 'kick 用：要踢的 uin，多个用逗号分隔' },
+    confirmed: { type: 'boolean', description: 'kick 用：主人已明确同意踢这些人时才传 true' },
+  },
+  output: {
+    schema: {
+      type: 'object',
+      additionalProperties: true,
+      properties: {
+        ok: { type: 'boolean', required: true },
+        msg: { type: 'string', required: true },
+      },
+    },
+    render: (_a: unknown, v: { msg?: string }) => [{ type: 'text' as const, text: String(v?.msg ?? '') }],
+  },
+  async execute(args, exec) {
+    // 群管理只认数据目录（不要 sessionKey —— pre-step 里它经常是空的）
+    const dataRoot = await resolveCtxDataRoot(exec as never);
+    if (!dataRoot) return { ok: false, msg: '没找到会话的数据目录，无法读写 QQ 登录凭据' };
+    const a = (args ?? {}) as { action?: string; group?: string; keyword?: string; uins?: string; confirmed?: boolean };
+    const action = String(a.action || 'status');
+    try {
+      // ── 登录状态 / 继续等扫码 ──
+      if (action === 'status') {
+        // ① 浏览器会话还在等（免扫码那条路）→ 先问它
+        if (qunLoginSessionAlive(dataRoot)) {
+          const w = await qunBrowserLoginWait(dataRoot, 20000);
+          if (w.cookie) {
+            saveQunCookie(dataRoot, { ...w.cookie, at: Date.now() });
+            return { ok: true, msg: `登录成功（浏览器头像授权），uin=${w.cookie.uin}。可以直接 groups / members / kick 了。` };
+          }
+          return { ok: w.ok, msg: w.msg };
+        }
+        const c = loadQunCookie(dataRoot);
+        if (c && !qunLoginPending(dataRoot)) {
+          return { ok: true, msg: `已登录：uin=${c.uin}（凭据可用）。可以直接 groups / members / kick。` };
+        }
+        if (qunLoginPending(dataRoot)) {
+          const p = await qunLoginPoll(dataRoot, 20000);
+          if (p.done) return { ok: true, msg: p.msg };
+          return { ok: p.ok, msg: p.msg + '（还没确认就再调一次 status；二维码 3 分钟有效）' };
+        }
+        return { ok: false, msg: '还没登录。请调 action=login。' };
+      }
+
+      // ── 登录：① 先静默无头试（有登录态/有头像就零打扰完成）；② 要扫码就把二维码送上 dsh 网页 ──
+      if (action === 'login') {
+        const b = await qunBrowserLoginStart(dataRoot, { headless: true });
+        if (b.cookie) {
+          saveQunCookie(dataRoot, { ...b.cookie, at: Date.now() });
+          return {
+            ok: true,
+            msg: `免扫码登录成功（静默点头像授权，全程没弹窗口），uin=${b.cookie.uin}。可以直接用 groups / members / kick 了。`,
+          };
+        }
+        // ⚠️ 需要人扫码时**不要试图弹浏览器窗口**：实测宿主 spawn 的浏览器窗口根本到不了用户桌面
+        //   （headless=False 也一样，进程查不到任何可见窗口）。也别发图 —— 用户在手机上收到图
+        //   扫不了自己的屏幕。最稳的做法：**直接给出二维码的本地文件路径**，用户在自己电脑上打开它扫。
+        if (b.qrPath) {
+          return {
+            ok: true,
+            msg: '需要扫一次码。二维码已经生成到本地文件：\n'
+              + '  ' + b.qrPath + '\n'
+              + '请在**电脑上打开这张图片**（双击它、或用看图软件），然后用手机 QQ 的「扫一扫」，'
+              + '**摄像头对着电脑屏幕**扫 —— 腾讯只认摄像头，用相册或长按识别会被拒绝。'
+              + '扫完调 action=status 等结果。',
+          };
+        }
+        // ③ 浏览器这条路不通（没装/起不来）→ 退回纯网络二维码（也是同一个本地文件路径）
+        const s = await qunLoginStart(dataRoot);
+        if (!s.ok || !s.qrPath) return { ok: false, msg: '登录失败：' + b.msg + ' ／ ' + s.msg };
+        return {
+          ok: true,
+          msg: '（浏览器方式不可用，已改用纯网络二维码）二维码已生成到本地文件：\n'
+            + '  ' + s.qrPath + '\n'
+            + '在电脑上打开这张图，用手机 QQ 摄像头对着屏幕扫，然后调 action=status 等结果。',
+        };
+      }
+
+      // 以下都要已登录
+      if (!loadQunCookie(dataRoot)) {
+        return { ok: false, msg: '还没登录 QQ。先调 action=login 出二维码（再用 send_media 发给主人扫）。' };
+      }
+
+      // ── 群列表 ──
+      if (action === 'groups') {
+        const gs = await qunGroups(dataRoot);
+        if (!gs.length) return { ok: true, msg: '我名下没有「我创建/我管理」的群。' };
+        return {
+          ok: true,
+          msg: `共 ${gs.length} 个群（群号\t群名\t身份）：\n` + gs.map((g) => `${g.gc}\t${g.gn}\t[${g.role}]`).join('\n'),
+        };
+      }
+
+      // ── 查成员 ──
+      if (action === 'members') {
+        const res = await qunResolveGc(dataRoot, String(a.group || ''));
+        if (!res.ok) return { ok: false, msg: res.msg };
+        const kw = String(a.keyword || '').trim();
+        const m = await qunMembers(dataRoot, res.gc, kw || undefined);
+        const head = `群 ${res.gc}${res.gn ? '(' + res.gn + ')' : ''} 共 ${m.count ?? '?'} 人`
+          + (kw ? `，命中 ${m.members.length} 人` : `，本次取回 ${m.members.length} 人`) + (m.note || '') + '：';
+        const show = m.members.slice(0, 80);
+        const body = show.map((x) => `${x.uin}\t${x.nick}`).join('\n');
+        const tail = m.members.length > show.length ? `\n…（还有 ${m.members.length - show.length} 人，建议加 keyword 精确查）` : '';
+        return { ok: true, msg: m.members.length ? head + '\n' + body + tail : head + '\n(无匹配)' };
+      }
+
+      // ── 踢人 ──
+      if (action === 'kick') {
+        const list = String(a.uins || '').split(/[,，\s]+/).map((x) => x.trim()).filter(Boolean);
+        if (!list.length) return { ok: false, msg: '请给要踢的 uin（uins 参数，多个用逗号分隔）' };
+        if (a.confirmed !== true) {
+          return { ok: false, msg: `还没确认：准备踢 ${list.join('、')}。请先跟主人核对「群 + 人」，主人明确同意后再带 confirmed=true 调用。` };
+        }
+        const res = await qunResolveGc(dataRoot, String(a.group || ''));
+        if (!res.ok) return { ok: false, msg: res.msg };
+        const rs = await qunKick(dataRoot, res.gc, list);
+        const okCnt = rs.filter((x) => x.ec === 0).length;
+        return {
+          ok: okCnt > 0,
+          msg: `群 ${res.gc}${res.gn ? '(' + res.gn + ')' : ''} 踢人结果（成功 ${okCnt}/${rs.length}）：\n`
+            + rs.map((x) => `${x.uin}\t${x.ec === 0 ? '✅' : '❌'} ${x.msg}`).join('\n'),
+        };
+      }
+
+      return { ok: false, msg: '未知 action：' + action };
+    } catch (e) {
+      const msg = String((e as Error)?.message ?? e);
+      if (msg.includes('NOT_LOGGED_IN')) return { ok: false, msg: '登录已失效，请重新调 action=login 出二维码。' };
+      return { ok: false, msg: '出错：' + msg.slice(0, 200) };
+    }
+  },
+});
+
 // 模块级直接拿（不依赖 apply —— apply 只在会话首建时跑，agent 重建后不会重跑）
 //   注意：三个工具定义在同文件下方（var 声明，有提升），故这里用取值函数避免 TDZ。
 /**
@@ -2369,6 +2550,15 @@ function ctxToolsRef(): unknown[] {
   return CTX_TOOLS_REF;
 }
 
+let QUN_TOOLS_REF: unknown[] = [];
+/** 惰性取 QQ 群管理工具（不分开关，永远挂） */
+function qunAdminRef(): unknown[] {
+  if (QUN_TOOLS_REF.length === 0) {
+    try { QUN_TOOLS_REF = [qunAdminTool]; } catch { /* ignore */ }
+  }
+  return QUN_TOOLS_REF;
+}
+
 /** 每个 agentCtx 对应的会话坐标（注册工具时记下 —— pre-step 里这两个值已验证正确） */
 interface CtxEnv { dataRoot: string; sessionKey: string }
 const ctxEnvMap = new WeakMap<object, CtxEnv>();
@@ -2385,6 +2575,17 @@ function ctxEnvOf(exec: unknown): CtxEnv | undefined {
   return undefined;
 }
 
+/** 工具挂载诊断：直接追加到 ~/.dsh/contextless-trace.log（与 session-manager 的 trace 同一文件）
+ *  为什么要它：插件工具层（注册/挂载）以前完全没法验证，只能靠猜。有了这行，重启后一眼就能看出
+ *  「群管理工具有没有真的挂上去、dataRoot 传的是什么」。 */
+function traceToolReg(line: string): void {
+  try {
+    const home = process.env['HOME'] || process.env['USERPROFILE'] || '';
+    if (!home) return;
+    appendFileSync(join(home, '.dsh', 'contextless-trace.log'), `[${new Date().toISOString()}]  ${line}\n`);
+  } catch { /* ignore */ }
+}
+
 /**
  * 按会话开关**动态**注册/注销三个上下文工具（context_memo / context_compact / context_drop）。
  * 由 session-manager 在每个回合的 pre-step 里调用（拿 rec.agentCtx）。
@@ -2397,8 +2598,10 @@ export function syncContextTools(agentCtx: unknown, shouldHave: boolean, env?: {
   const key = agentCtx as object;
   try {
     // ① 先记会话坐标（每次 pre-step 都刷新；这是工具执行时唯一的可靠来源）
-    if (env && env.dataRoot && env.sessionKey) {
-      ctxEnvMap.set(key, { dataRoot: String(env.dataRoot), sessionKey: String(env.sessionKey) });
+    //   ⚠️ 只要 dataRoot 就够了：pre-step 里 sessionKey 经常为空（实测 sk= 空），
+    //     但群管理工具只要数据目录；备忘类工具由 resolveCtxMemoEnv 自己要求 sessionKey 非空。
+    if (env && env.dataRoot) {
+      ctxEnvMap.set(key, { dataRoot: String(env.dataRoot), sessionKey: String(env.sessionKey ?? '') });
     }
     const cur = ctxToolDisposers.get(key);
     // ⚠️ 2026-10-02：不能靠"缓存里已注册"就跳过 —— agent/ctx 一变，实际工具表就作废了，
@@ -2408,17 +2611,31 @@ export function syncContextTools(agentCtx: unknown, shouldHave: boolean, env?: {
       for (const d of cur) { try { d(); } catch { /* ignore */ } }
       ctxToolDisposers.delete(key);
     }
+    const reg = ctxObj.tools?.register;
+    if (typeof reg !== 'function') return;
+    const ds: Array<() => void> = [];
+    // ① 三个上下文工具：只在「无上下文·智能判断」开启时挂
     if (shouldHave) {
-      const reg = ctxObj.tools?.register;
-      if (typeof reg !== 'function') return;
-      const ds: Array<() => void> = [];
       for (const t of ctxToolsRef()) {
         try {
           const d = reg.call(ctxObj.tools, t);
           if (typeof d === 'function') ds.push(d as () => void);
         } catch { /* 单个工具注册失败不影响其他 */ }
       }
-      if (ds.length) ctxToolDisposers.set(key, ds);
     }
-  } catch { /* fail-soft：工具挂载失败绝不影响会话 */ }
+    // ② QQ 群管理工具：QQ 通道的会话都挂。
+    //   注：syncContextTools 本来就**只在 QQ 会话**里被调用（web/终端会话不经过这里），
+    //   所以不存在"污染其它会话"的问题。2026-10-02 曾误加"只挂私聊"限制，主人指出多余，已撤销。
+    for (const t of qunAdminRef()) {
+      try {
+        const d = reg.call(ctxObj.tools, t);
+        if (typeof d === 'function') ds.push(d as () => void);
+      } catch { /* ignore */ }
+    }
+    if (ds.length) ctxToolDisposers.set(key, ds);
+    traceToolReg(`[ctxtool-reg] shouldHave=${shouldHave} 挂载=${ds.length} 件 dataRoot=${String(env?.dataRoot ?? '')} sk=${String(env?.sessionKey ?? '')}`);
+  } catch (e) {
+    // fail-soft：工具挂载失败绝不影响会话；但必须留下证据
+    traceToolReg('[ctxtool-reg] 异常: ' + String((e as Error)?.message ?? e).slice(0, 160));
+  }
 }

@@ -410,6 +410,173 @@ export function apply(ctx) {
     return mod;
   }
 
+  // ── QQ 群管理登录二维码 → 直接送到 dsh web 界面 ──
+  //   为什么需要它（2026-10-02）：AI 登录 qun.qq.com 时用的是**无头**浏览器（没有窗口），
+  //   二维码只能"发图"给主人；而主人在手机上收到图后**扫不了自己的屏幕**
+  //   （腾讯只认摄像头对着另一块屏幕扫："不支持图片识别或长按扫描二维码授权"）。
+  //   把二维码挂到 dsh web 上，主人就能在**自己电脑的浏览器**里打开、用手机对着屏幕扫。
+  //   用法：http://127.0.0.1:<dsh端口>/api/qqbot-settings/qun-qr
+  route(ctx, 'GET', '/api/qqbot-settings/qun-qr', async (_req, res) => {
+    try {
+      const cands = [];
+      const dr = resolveContextlessDataRoot();
+      if (dr) cands.push(join(dr, 'qun-login-qr.png'));
+      // 兜底：插件写二维码用的 dataRoot 可能与桥推出来的不一致（实测出现过两个数据根）
+      try {
+        const parsed = parsePatch();
+        for (const b of ((parsed && parsed.bots) || [])) {
+          const c = (b && b.cfg && (b.cfg.dataRoot || b.cfg.cwd)) || '';
+          if (c) cands.push(join(String(c), 'dshqqbot', 'qun-login-qr.png'));
+        }
+      } catch { /* ignore */ }
+      let hit = '';
+      for (const c of cands) {
+        try { if (c && existsSync(c)) { hit = c; break; } } catch { /* ignore */ }
+      }
+      if (!hit) {
+        return writeJson(res, 404, { ok: false, error: '还没有二维码（先让 AI 调 qq_group_admin 的 action=login）', tried: cands });
+      }
+      const buf = readFileSync(hit);
+      res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-store, must-revalidate' });
+      res.end(buf);
+    } catch (e) {
+      writeJson(res, 500, { ok: false, error: String((e && e.message) || e) });
+    }
+  });
+
+  // ── 🔨 锤子 · 踢人面板（2026-10-02 主人定）──
+  //   登录态与 AI **完全共享**：两边读写同一个 {dataRoot}/qun-cookie.json，
+  //   所以「面板登录完 AI 立刻能用 / AI 登录完面板立刻已登录」，不需要任何同步逻辑。
+  async function qunAdminMod() { return import('./dist/features/qun-admin.js'); }
+  async function qunLoginMod() { return import('./dist/features/qun-login.js'); }
+  /** 踢人面板统一取数据根（与插件/工具同源） */
+  function qunRoot() { return resolveContextlessDataRoot() || ''; }
+  function qunErrHuman(m) {
+    return m.indexOf('NOT_LOGGED_IN') >= 0 ? '还没登录（先刷新二维码扫码）' : m;
+  }
+
+  /** 登录状态（顺手拿群列表验证凭据是否还有效） */
+  route(ctx, 'GET', '/api/qqbot-settings/qun/status', async (_req, res) => {
+    try {
+      const dr = qunRoot();
+      if (!dr) return writeJson(res, 200, { ok: true, logged: false, hint: '推不出数据根' });
+      const mod = await qunAdminMod();
+      const c = mod.loadQunCookie(dr);
+      if (!c) return writeJson(res, 200, { ok: true, logged: false });
+      let valid = true;
+      let groups = [];
+      try { groups = await mod.qunGroups(dr); } catch { valid = false; }
+      writeJson(res, 200, {
+        ok: true, logged: true, valid, uin: c.uin,
+        groups: (groups || []).map((g) => ({ gc: g.gc, gn: g.gn, role: g.role })),
+      });
+    } catch (e) { writeJson(res, 500, { ok: false, error: String((e && e.message) || e) }); }
+  });
+
+  /** 触发/刷新登录：静默无头先试（有凭据或有本机 QQ 头像就免扫码），需要扫码就写出二维码文件 */
+  route(ctx, 'POST', '/api/qqbot-settings/qun/login', async (_req, res) => {
+    try {
+      const dr = qunRoot();
+      if (!dr) return writeJson(res, 400, { ok: false, error: '推不出数据根' });
+      const admin = await qunAdminMod();
+      let qr = false;
+      let msg = '';
+      try {
+        const lg = await qunLoginMod();
+        const r = await lg.qunBrowserLoginStart(dr, { headless: true });
+        msg = r.msg || '';
+        if (r.cookie) {
+          admin.saveQunCookie(dr, { ...r.cookie, at: Date.now() });
+          return writeJson(res, 200, { ok: true, logged: true, uin: r.cookie.uin, msg });
+        }
+        qr = !!r.qrPath;
+      } catch (e) { msg = String((e && e.message) || e); }
+      if (!qr) {
+        // 浏览器这条路不通 → 退回纯网络二维码（写的是同一个文件路径）
+        try {
+          const s = await admin.qunLoginStart(dr);
+          qr = !!(s && s.ok && s.qrPath);
+          if (s && s.msg) msg = (msg ? msg + ' / ' : '') + s.msg;
+        } catch { /* ignore */ }
+      }
+      writeJson(res, 200, { ok: true, logged: false, needScan: qr, msg });
+    } catch (e) { writeJson(res, 500, { ok: false, error: String((e && e.message) || e) }); }
+  });
+
+  /** 轮询扫码结果（顺带把挂着的登录会话推进一次） */
+  route(ctx, 'GET', '/api/qqbot-settings/qun/poll', async (_req, res) => {
+    try {
+      const dr = qunRoot();
+      if (!dr) return writeJson(res, 200, { ok: true, logged: false });
+      const admin = await qunAdminMod();
+      try {
+        const lg = await qunLoginMod();
+        if (lg.qunLoginSessionAlive(dr)) {
+          const w = await lg.qunBrowserLoginWait(dr, 2500);
+          if (w.cookie) {
+            admin.saveQunCookie(dr, { ...w.cookie, at: Date.now() });
+            return writeJson(res, 200, { ok: true, logged: true, uin: w.cookie.uin });
+          }
+        }
+      } catch { /* ignore */ }
+      try {
+        if (admin.qunLoginPending(dr)) {
+          const p = await admin.qunLoginPoll(dr, 2500);
+          if (p.done) return writeJson(res, 200, { ok: true, logged: true });
+        }
+      } catch { /* ignore */ }
+      const c = admin.loadQunCookie(dr);
+      writeJson(res, 200, { ok: true, logged: !!(c && c.skey), uin: c ? c.uin : '' });
+    } catch (e) { writeJson(res, 500, { ok: false, error: String((e && e.message) || e) }); }
+  });
+
+  /** 成员搜索：?gc=群号&q=uin或昵称（q 可空 = 全量） */
+  route(ctx, 'GET', '/api/qqbot-settings/qun/members', async (req, res) => {
+    try {
+      const dr = qunRoot();
+      if (!dr) return writeJson(res, 400, { ok: false, error: '推不出数据根' });
+      const u = new URL(req.url ?? '/', 'http://x');
+      const gc = String(u.searchParams.get('gc') || '').trim();
+      const q = String(u.searchParams.get('q') || '').trim();
+      if (!gc) return writeJson(res, 400, { ok: false, error: 'gc 必填' });
+      const mod = await qunAdminMod();
+      const r = await mod.qunMembers(dr, gc, q || undefined);
+      writeJson(res, 200, { ok: true, count: r.count, note: r.note, members: (r.members || []).slice(0, 300) });
+    } catch (e) { writeJson(res, 200, { ok: false, error: qunErrHuman(String((e && e.message) || e)) }); }
+  });
+
+  /** 踢人 {gc, uins:[...]} */
+  route(ctx, 'POST', '/api/qqbot-settings/qun/kick', async (req, res) => {
+    const body = await readJsonBody(req);
+    if (!body || typeof body !== 'object') return writeJson(res, 400, { ok: false, error: 'bad body' });
+    const gc = String(body.gc || '').trim();
+    const list = (Array.isArray(body.uins) ? body.uins : []).map((x) => String(x).trim()).filter(Boolean);
+    if (!gc || !list.length) return writeJson(res, 400, { ok: false, error: 'gc / uins 必填' });
+    try {
+      const dr = qunRoot();
+      if (!dr) return writeJson(res, 400, { ok: false, error: '推不出数据根' });
+      const mod = await qunAdminMod();
+      const rs = await mod.qunKick(dr, gc, list.slice(0, 20));
+      const okCount = rs.filter((x) => x.ec === 0).length;
+      writeJson(res, 200, { ok: okCount > 0, results: rs, msg: '成功 ' + okCount + '/' + rs.length });
+    } catch (e) { writeJson(res, 200, { ok: false, error: qunErrHuman(String((e && e.message) || e)) }); }
+  });
+
+  /** 退出登录（清掉本地凭据，下次要重新扫码） */
+  route(ctx, 'POST', '/api/qqbot-settings/qun/logout', async (_req, res) => {
+    try {
+      const dr = qunRoot();
+      if (!dr) return writeJson(res, 400, { ok: false, error: '推不出数据根' });
+      const mod = await qunAdminMod();
+      mod.clearQunCookie(dr);
+      try {
+        const lg = await qunLoginMod();
+        lg.qunLoginSessionClose(dr);
+      } catch { /* ignore */ }
+      writeJson(res, 200, { ok: true, msg: '已退出登录' });
+    } catch (e) { writeJson(res, 500, { ok: false, error: String((e && e.message) || e) }); }
+  });
+
   // ── 无上下文模式（2026-09-27 主人定）──
   //   会话级开关：dock 面板里对**某个会话**开启；开启后该会话每轮只带
   //   「@ 之前 N 条群消息 + 系统规则」，历史对话全部丢弃（大幅省 token）。

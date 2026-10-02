@@ -1932,7 +1932,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
       setInterval(refreshBadge, 20000)
 
       // ── 面板状态(每个实例独立保存, 切回不丢) ──
-      var state = { ns: '', accts: [], gid: '', groups: [], tab: 'chat', sendScope: 'group', sendTo: '', sendName: '', sendText: '', insertCtx: true, targetQ: '', c2cs: [], joins: null, mutes: null, members: null, muteSecs: '60', bindGid: '', bindName: '', msg: '', busy: '', wantPeer: null, lookedUp: false, detected: null, detectedHit: null, chatItems: [], chatMore: false, chatBusy: '', chatErr: '', chatOldest: 0, chatText: '', chatIns: true, outMode: '', outRev: undefined, bpEvents: [], bpSel: null, bpDraft: null, rosterSel: {}, rosterScope: 'all', rosterQ: '', hubSid: '', hubRev: undefined, hubBusy: '', hubMsg: '', gaEnabled: false, gaPoll: false, gaPollWake: true, gaHubNotify: true, gaNotifyGroup: true, gaInterval: 5, gaMinCount: 1, gaMsg: '', gaBusy: '', bcDraft: null, bcTasks: null, cardMd: '', cardBtns: '', cardGid: '', cardBusy: '', cardQ: '', tgGroups: [], tgCur: '' }
+      var state = { ns: '', accts: [], gid: '', groups: [], tab: 'chat', sendScope: 'group', sendTo: '', sendName: '', sendText: '', insertCtx: true, targetQ: '', c2cs: [], joins: null, mutes: null, members: null, muteSecs: '60', bindGid: '', bindName: '', msg: '', busy: '', wantPeer: null, lookedUp: false, detected: null, detectedHit: null, chatItems: [], chatMore: false, chatBusy: '', chatErr: '', chatOldest: 0, chatText: '', chatIns: true, outMode: '', outRev: undefined, bpEvents: [], bpSel: null, bpDraft: null, rosterSel: {}, rosterScope: 'all', rosterQ: '', hubSid: '', hubRev: undefined, hubBusy: '', hubMsg: '', gaEnabled: false, gaPoll: false, gaPollWake: true, gaHubNotify: true, gaNotifyGroup: true, gaInterval: 5, gaMinCount: 1, gaMsg: '', gaBusy: '', bcDraft: null, bcTasks: null, cardMd: '', cardBtns: '', cardGid: '', cardBusy: '', cardQ: '', tgGroups: [], tgCur: '', hammerSub: 'mute', qunLogged: null, qunUin: '', qunGroups: [], qunGc: '', qunKw: '', qunMembers: [], qunCount: 0, qunQr: false, qunMsg: '', qunBusy: false, qunLoading: false }
       // 🗂 自定义目标分组(仿 QQ 分组): 2026-09-12 起**host 持久化**({dataRoot}/.qqbot/target-groups.json),
       // localStorage 只当秒开缓存 —— 这样 **AI 与主人共用同一份分组**(agent 侧 broadcast_send 可直接写分组名群发),
       // 顺带修掉"换个浏览器分组就没了"的老毛病。
@@ -3488,7 +3488,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           + '<button data-t="roster" class="' + (state.tab === 'roster' ? 'on' : '') + '">📇 群组管理</button>'
           + '<button data-t="chat" class="' + (state.tab === 'chat' ? 'on' : '') + '">💬 聊天</button>'
           + '<button data-t="join" class="' + (state.tab === 'join' ? 'on' : '') + '">📥 入群审批<span class="dk-join-badge" style="display:none;background:#ff4d4f;color:#fff;border-radius:8px;font-size:11px;padding:0 5px;margin-left:4px">0</span></button>'
-          + '<button data-t="mute" class="' + (state.tab === 'mute' ? 'on' : '') + '">🔇 禁言</button>'
+          + '<button data-t="mute" class="' + (state.tab === 'mute' ? 'on' : '') + '">🔨 锤子</button>'
           + '<button data-t="out" class="' + (state.tab === 'out' ? 'on' : '') + '">⚙️ 出站</button>'
           + '<button data-t="send" class="' + (['send','broadcast','bp','card'].indexOf(state.tab) >= 0 ? 'on' : '') + '">📤 群发</button>'
           + '<button data-t="session" class="' + (state.tab === 'session' ? 'on' : '') + '">⚙ 单会话设置</button>'
@@ -3574,13 +3574,23 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             + '<span class="dk-msg">机器人需为群管理员; 通过/拒绝直接生效</span></div>'
           body += '<div class="dk-list" id="dk-join-list"></div>'
         } else if (state.tab === 'mute') {
-          body += '<div class="dk-row">目标群: ' + groupSelHtml
-            + '<button class="dk-btn" id="dk-refresh-mute">🔄 刷新</button></div>'
-          body += '<div class="dk-msg">全员禁言: 官方接口未开放 · 只能操作普通成员(群主/管理员不可禁)</div>'
-          body += '<div style="font-weight:700;font-size:13px;margin:8px 0 4px">① 禁言成员(机器人见过的)</div>'
-          body += '<div class="dk-list" id="dk-member-list"></div>'
-          body += '<div style="font-weight:700;font-size:13px;margin:8px 0 4px">② 正在禁言中</div>'
-          body += '<div class="dk-list" id="dk-mute-list"></div>'
+          // 🔨 锤子（2026-10-02 主人定）：原「禁言」升级成一个锤子，下面分两个子标签
+          var hsub = state.hammerSub || 'mute'
+          body += '<div class="dk-row" style="gap:6px;margin:2px 0">'
+            + '<button class="dk-btn' + (hsub === 'mute' ? ' ok' : '') + '" data-hsub="mute">🔇 禁言</button>'
+            + '<button class="dk-btn' + (hsub === 'kick' ? ' ok' : '') + '" data-hsub="kick">👢 踢人</button>'
+            + '</div>'
+          if (hsub === 'mute') {
+            body += '<div class="dk-row">目标群: ' + groupSelHtml
+              + '<button class="dk-btn" id="dk-refresh-mute">🔄 刷新</button></div>'
+            body += '<div class="dk-msg">全员禁言: 官方接口未开放 · 只能操作普通成员(群主/管理员不可禁)</div>'
+            body += '<div style="font-weight:700;font-size:13px;margin:8px 0 4px">① 禁言成员(机器人见过的)</div>'
+            body += '<div class="dk-list" id="dk-member-list"></div>'
+            body += '<div style="font-weight:700;font-size:13px;margin:8px 0 4px">② 正在禁言中</div>'
+            body += '<div class="dk-list" id="dk-mute-list"></div>'
+          } else {
+            body += hammerKickHtml()
+          }
         } else if (state.tab === 'roster') {
           body += '<div class="dk-row" style="font-weight:700;font-size:13px;margin:2px 0">📇 会话台账:机器人聊过的对象</div>'
           body += '<div class="dk-row"><span class="dk-msg" style="flex:1;line-height:1.5">👤 = 私聊过的人(有 c2c 会话,可直接发消息) · 👥 = 群(群成员≠私聊对象: 群里见过≠能私聊,只能群内@)</span></div>'
@@ -3931,7 +3941,15 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         if (state.tab === 'send') applyTargetFilter(panel, state)
         if (state.tab === 'chat') renderChatList()
         if (state.tab === 'join') renderJoinList()
-        if (state.tab === 'mute') { renderMemberList(); renderMuteList() }
+        if (state.tab === 'mute') {
+          if ((state.hammerSub || 'mute') === 'kick') {
+            // 首次进踢人页：先查一次登录状态（qunLogged 为 null 表示还没查过，查完会被置成 true/false，不会循环）
+            if (state.qunLogged === null) loadQunStatus(true)
+            renderQunMemberList()
+          } else {
+            renderMemberList(); renderMuteList()
+          }
+        }
         if (state.tab === 'roster' || state.tab === 'send') { renderRosterList(); bindRosterEvents(); loadHubState(); loadBroadcastTasks(false, true) }
         // 📝 卡片: 必须在 paintBody 内绑定(2026-09-10 修复: 原在 tab 点击处先 bind 后 paintBody,
         // 绑的是即将被替换的旧 DOM → 发送/存为事件无反应、预览不渲染)
@@ -3946,6 +3964,141 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         if (state.tab === 'chat' && !state.chatItems.length && !state.chatBusy) loadChat(true)
         setTimeout(layoutPanel, 0)
       }
+      // ── 🔨 锤子 · 踢人（2026-10-02 主人定）──
+      //   登录态与 AI **共享**：两边读写同一个 {dataRoot}/qun-cookie.json，
+      //   所以面板登录完 AI 立刻能用、AI 登录完面板也立刻显示已登录。
+      function hammerKickHtml() {
+        if (state.qunLogged !== true) {
+          var h = '<div class="dk-msg">踢人需要先登录 QQ 群管理（扫码一次，之后长期免扫；登录态与 AI 共享）。</div>'
+          h += '<div class="dk-row" style="gap:6px;align-items:center">'
+            + '<button class="dk-btn ok" id="dk-qun-login"' + (state.qunBusy ? ' disabled' : '') + '>'
+            + (state.qunBusy ? '⏳ 处理中…' : '📱 刷新二维码') + '</button>'
+            + '<button class="dk-btn" id="dk-qun-status">🔄 查登录状态</button>'
+            + '</div>'
+          if (state.qunQr) {
+            h += '<div class="dk-row" style="justify-content:center;margin:8px 0">'
+              + '<img src="/api/qqbot-settings/qun-qr?t=' + Date.now() + '" alt="二维码" '
+              + 'style="width:230px;height:230px;border:1px solid #e2d9ff;border-radius:8px;background:#fff;object-fit:contain">'
+              + '</div>'
+              + '<div class="dk-msg" style="text-align:center">用手机 QQ「扫一扫」，摄像头对着<b>这块屏幕</b>扫'
+              + '（腾讯只认摄像头；相册 / 长按识别会被拒）</div>'
+          }
+          if (state.qunMsg) h += '<div class="dk-msg">' + esc(state.qunMsg) + '</div>'
+          return h
+        }
+        var groups = state.qunGroups || []
+        var opts = groups.map(function (g) {
+          return '<option value="' + esc(g.gc) + '"' + (g.gc === state.qunGc ? ' selected' : '') + '>'
+            + esc(g.gn || g.gc) + '（' + esc(g.role || '') + '）</option>'
+        }).join('')
+        var out = '<div class="dk-row" style="gap:6px;flex-wrap:wrap;align-items:center">'
+          + '<span style="font-size:12px;color:#666">群:</span>'
+          + '<select class="qqs-sel" id="dk-qun-gc" style="min-width:200px">' + (opts || '<option value="">（没有可管理的群）</option>') + '</select>'
+          + '<input class="qqs-txt" id="dk-qun-kw" placeholder="uin 或昵称（留空=全量）" value="' + esc(state.qunKw || '') + '" style="width:170px">'
+          + '<button class="dk-btn" id="dk-qun-search">🔍 搜索成员</button>'
+          + '<button class="dk-btn no" id="dk-qun-logout" title="清掉本地凭据（下次要重新扫码）">🚪 退出登录</button>'
+          + '</div>'
+        out += '<div class="dk-msg">✅ 已登录 uin=' + esc(state.qunUin || '?')
+          + (state.qunCount ? ' · 该群共 ' + state.qunCount + ' 人' : '') + '</div>'
+        out += '<div class="dk-list" id="dk-qun-member-list"></div>'
+        return out
+      }
+      function renderQunMemberList() {
+        var box = panel.querySelector('#dk-qun-member-list')
+        if (!box) return
+        var ms = state.qunMembers || []
+        if (state.qunLoading) { box.innerHTML = '<div class="dk-empty">加载中…</div>'; return }
+        if (!ms.length) { box.innerHTML = '<div class="dk-empty">还没有成员数据 —— 点「🔍 搜索成员」拉取</div>'; return }
+        box.innerHTML = ms.map(function (m) {
+          return '<div style="display:flex;align-items:center;gap:8px;padding:4px 2px;border-bottom:1px solid #f0ebff">'
+            + '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(m.nick || '(无昵称)') + '</span>'
+            + '<span style="flex:none;font-family:monospace;font-size:11px;color:#888">' + esc(m.uin) + '</span>'
+            + '<button class="dk-btn no" style="flex:none" data-kick="' + esc(m.uin) + '" data-knick="' + esc(m.nick || '') + '">👢 踢</button>'
+            + '</div>'
+        }).join('')
+        box.querySelectorAll('button[data-kick]').forEach(function (btn) {
+          btn.onclick = function () {
+            var uin = btn.getAttribute('data-kick')
+            var nick = btn.getAttribute('data-knick') || uin
+            if (!window.confirm('确定把「' + nick + '」(uin ' + uin + ') 移出群 ' + state.qunGc + ' ？')) return
+            doQunKick([uin])
+          }
+        })
+      }
+      function loadQunStatus(repaint) {
+        api('qun/status').then(function (d) {
+          state.qunLogged = !!(d && d.logged)
+          if (d && d.uin) state.qunUin = d.uin
+          if (d && d.groups && d.groups.length) {
+            state.qunGroups = d.groups
+            var has = d.groups.some(function (g) { return g.gc === state.qunGc })
+            if (!state.qunGc || !has) state.qunGc = d.groups[0].gc
+          }
+          if (repaint) paintBody()
+        }).catch(function () { state.qunLogged = false; if (repaint) paintBody() })
+      }
+      function doQunLogin() {
+        state.qunBusy = true; state.qunMsg = ''
+        paintBody()
+        apiPost('qun/login', {}).then(function (d) {
+          state.qunBusy = false
+          if (d && d.logged) {
+            state.qunLogged = true; state.qunUin = d.uin || ''
+            state.qunMsg = '✅ 已登录（免扫码）'
+            loadQunStatus(false); paintBody()
+            return
+          }
+          state.qunQr = !!(d && d.needScan)
+          state.qunMsg = (d && d.msg) || (state.qunQr ? '' : '没能生成二维码')
+          paintBody()
+          if (state.qunQr) startQunPoll()
+        }).catch(function (e) { state.qunBusy = false; state.qunMsg = '异常: ' + e.message; paintBody() })
+      }
+      var qunPollTimer = null
+      function startQunPoll() {
+        if (qunPollTimer) return
+        qunPollTimer = setInterval(function () {
+          api('qun/poll').then(function (d) {
+            if (d && d.logged) {
+              clearInterval(qunPollTimer); qunPollTimer = null
+              state.qunLogged = true; state.qunUin = d.uin || ''
+              state.qunQr = false; state.qunMsg = '✅ 登录成功'
+              loadQunStatus(false); paintBody()
+            }
+          }).catch(function () { /* ignore */ })
+        }, 2500)
+      }
+      function doQunKick(uins) {
+        state.qunMsg = '正在踢…'
+        paintBody()
+        apiPost('qun/kick', { gc: state.qunGc, uins: uins }).then(function (d) {
+          var rs = (d && d.results) || []
+          state.qunMsg = (d && d.msg ? d.msg : '完成') + '：' + rs.map(function (x) {
+            return x.uin + (x.ec === 0 ? ' ✅' : ' ❌' + x.msg)
+          }).join('；')
+          loadQunMembers()
+        }).catch(function (e) { state.qunMsg = '踢人异常: ' + e.message; paintBody() })
+      }
+      function loadQunMembers() {
+        if (!state.qunGc) { state.qunMsg = '先选一个群'; paintBody(); return }
+        state.qunLoading = true
+        paintBody()
+        // ⚠️ api(path, q) 的 q 是**字符串 query**，不是对象（传对象会变成 ?[object Object]）
+        var qs = 'gc=' + encodeURIComponent(state.qunGc) + '&q=' + encodeURIComponent(state.qunKw || '')
+        api('qun/members', qs).then(function (d) {
+          state.qunLoading = false
+          if (d && d.ok) {
+            state.qunMembers = d.members || []
+            state.qunCount = d.count || 0
+            state.qunMsg = '共拉取 ' + state.qunMembers.length + ' 人' + (d.note ? '（' + d.note + '）' : '')
+          } else {
+            state.qunMembers = []
+            state.qunMsg = (d && d.error) || '加载失败'
+          }
+          paintBody()
+        }).catch(function (e) { state.qunLoading = false; state.qunMsg = '异常: ' + e.message; paintBody() })
+      }
+
       function bindBodyEvents() {
         // ── 🚫 无上下文模式（2026-09-27）──
         // 照抄本文件既有模式：paintBody() 渲染完 → 调 bindBodyEvents() 统一绑事件
@@ -3955,6 +4108,40 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         var ctxOnBox = panel.querySelector('#dk-ctxless-on')
         if (ctxOnBox) ctxOnBox.onchange = function () { saveCtxless() }
         if (state.tab === 'session' && (state.stTab || 'lm') === 'cl') loadCtxless()
+        // 🔨 锤子 · 子标签 + 踢人页按钮（2026-10-02）
+        panel.querySelectorAll('[data-hsub]').forEach(function (sb) {
+          sb.onclick = function () {
+            state.hammerSub = sb.getAttribute('data-hsub')
+            paintBody()
+          }
+        })
+        var qLoginBtn = panel.querySelector('#dk-qun-login')
+        if (qLoginBtn) qLoginBtn.onclick = function () { doQunLogin() }
+        var qStatusBtn = panel.querySelector('#dk-qun-status')
+        if (qStatusBtn) qStatusBtn.onclick = function () { state.qunMsg = '正在查询…'; paintBody(); loadQunStatus(true) }
+        var qSearchBtn = panel.querySelector('#dk-qun-search')
+        if (qSearchBtn) {
+          qSearchBtn.onclick = function () {
+            var kwEl = panel.querySelector('#dk-qun-kw')
+            state.qunKw = kwEl ? kwEl.value : state.qunKw
+            loadQunMembers()
+          }
+        }
+        var qGcSel = panel.querySelector('#dk-qun-gc')
+        if (qGcSel) {
+          qGcSel.onchange = function () { state.qunGc = qGcSel.value; loadQunMembers() }
+        }
+        var qLogoutBtn = panel.querySelector('#dk-qun-logout')
+        if (qLogoutBtn) {
+          qLogoutBtn.onclick = function () {
+            if (!window.confirm('清掉本地登录凭据？下次要重新扫码。')) return
+            apiPost('qun/logout', {}).then(function () {
+              state.qunLogged = false; state.qunUin = ''; state.qunMembers = []
+              state.qunGroups = []; state.qunGc = ''; state.qunMsg = '已退出登录'
+              paintBody()
+            }).catch(function () { state.qunLogged = false; paintBody() })
+          }
+        }
         var tbs = panel.querySelectorAll('.dk-tab button')
         tbs.forEach(function (btn) {
           btn.onclick = function () {
