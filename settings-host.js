@@ -463,9 +463,15 @@ export function apply(ctx) {
       const mod = await qunAdminMod();
       const c = mod.loadQunCookie(dr);
       if (!c) return writeJson(res, 200, { ok: true, logged: false });
-      let valid = true;
+      let valid = false;
       let groups = [];
-      try { groups = await mod.qunGroups(dr); } catch { valid = false; }
+      try {
+        // ★ 用**真实接口**验证凭据是否有效，不能靠"群列表有没有数据"猜：
+        //   之前靠猜，skey 已被顶掉（接口 ec:4 no login）时依然报 valid=true，
+        //   面板显示"已登录"、群列表却是空的，非常误导。
+        valid = await mod.verifyQunCookie(dr);
+        if (valid) groups = await mod.qunGroups(dr);
+      } catch { valid = false; }
       writeJson(res, 200, {
         ok: true, logged: true, valid, uin: c.uin,
         groups: (groups || []).map((g) => ({ gc: g.gc, gn: g.gn, role: g.role })),

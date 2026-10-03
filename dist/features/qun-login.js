@@ -16,18 +16,28 @@
  *   用 Node 内置 WebSocket 连 CDP，执行 JS 点头像 / 读 cookie。
  *   用户零安装、插件零依赖。
  */
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { loadQunCookie } from './qun-admin.js';
+import { loadQunCookie, verifyQunCookieRaw } from './qun-admin.js';
 /**
- * 登录入口用 qun.qq.com 本体，而不是 xui.ptlogin2 的快捷登录页。
- * 原因：qun.qq.com 能同时覆盖两种情况 ——
- *   已登录 → 直接进群管理页，读 cookie 就完事（**一次都不用登**）；
- *   未登录 → 自动落到登录页，那上面正好是「快捷登录」面板（有头像就点头像，没有就出二维码）。
- * 而 xlogin 页只认 ptlogin2 域的 ptui_loginuin，会忽略 qun.qq.com 已有的登录态（实测踩过）。
+ * 两个入口页面，**必须分开用**（实测踩坑，卡了很久）：
+ *
+ * ① CHECK_URL —— 用来判断"profile 里是不是已经有有效登录态"。
+ *    用 qun.qq.com 本体：已登录就直接进群管理页，读 cookie + 验证接口即可，一次都不用登。
+ *
+ * ② LOGIN_URL —— 用来"让人登录"（点头像 / 扫二维码）。
+ *    用 xui.ptlogin2 的快捷登录面板页，因为：
+ *    · **qun.qq.com 的登录面板是 iframe**（嵌的正是这个 xlogin 页）→ 在主文档里
+ *      `document.querySelector('#qrlogin_img')` **永远查不到二维码**，头像同理 ✗
+ *    · xlogin 页本身就是那个面板，二维码(#qrlogin_img)/头像(#qlogin_list) 都在**主文档**里 ✓
+ *    · 但 xlogin 页只认 ptlogin2 域的身份 cookie（会忽略 qun.qq.com 已有的登录态），
+ *      所以"检查是否已登录"这件事还是得交给 qun.qq.com。
  */
-const LOGIN_URL = 'https://qun.qq.com/';
+const CHECK_URL = 'https://qun.qq.com/';
+const LOGIN_URL = 'https://xui.ptlogin2.qq.com/cgi-bin/xlogin?appid=715030901&daid=73&style=20'
+    + '&hide_title_bar=1&low_login=0&qlogin_auto_login=1&no_verifyimg=1&link_target=blank'
+    + '&proj_self_def=1&s_url=' + encodeURIComponent('https://qun.qq.com/');
 /** 二维码元素的候选选择器（页面改版时在这里加就行） */
 const QR_SELECTORS = [
     '#qrlogin_img',
@@ -166,7 +176,7 @@ async function launchBrowser(exe, userDataDir, headless) {
         // 沙箱里跑的浏览器不需要额外权限；headless 下这几项能少很多噪音日志
         '--no-service-autorun',
         '--password-store=basic',
-        LOGIN_URL,
+        CHECK_URL, // 启动先开 qun.qq.com 判断是否已有登录态；需要人登录时再跳到 xlogin 面板
     ];
     // ⚠️ windowsHide 千万不能设 true：对 msedge 这类 GUI 程序，它会让浏览器主窗口**根本显示不出来**
     //   （实测：进程起来了、CDP 也通，但 11 个进程 MainWindowHandle 全为 0，用户看不到二维码）
@@ -279,7 +289,12 @@ function ensureSweeper() {
     }
     catch { /* ignore */ }
 }
-/** 杀掉占用指定 profile 的**残留**浏览器进程（历史泄漏的兜底清理；只在启动出问题时调用） */
+/**
+ * 杀掉占用指定 profile 的**残留**浏览器进程（历史泄漏的兜底清理；只在启动出问题时调用）。
+ *
+ * ⚠️ 必须用 spawnSync **同步等待**：异步 spawn 的话，调用方还没来得及重试、PowerShell 才刚启动，
+ *   于是又撞一次 code=21（实测踩过：重试仍然失败，看着像"重试没用"，其实是清理没跑完）。
+ */
 function killByProfile(profileDir) {
     if (process.platform !== 'win32')
         return;
@@ -288,7 +303,7 @@ function killByProfile(profileDir) {
         const cmd = 'Get-CimInstance Win32_Process -Filter "Name=\'msedge.exe\'"'
             + ` | Where-Object { $_.CommandLine -like '*${safe}*' }`
             + ' | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }';
-        spawn('powershell', ['-NoProfile', '-Command', cmd], { stdio: 'ignore', windowsHide: true });
+        spawnSync('powershell', ['-NoProfile', '-Command', cmd], { stdio: 'ignore', windowsHide: true, timeout: 20000 });
     }
     catch { /* ignore */ }
 }
@@ -321,14 +336,25 @@ async function currentHref(cdp) {
         return '';
     }
 }
-/** 尝试在页面上读凭据；读到就返回 */
+/**
+ * 尝试在页面上读凭据；读到**并且实测有效**才返回。
+ *
+ * ⚠️ 为什么要"实测"：页面只判断 cookie 在不在（skey 失效也不会跳登录页），
+ *   所以会出现"看起来已登录、服务端却早就不认账"（`{"ec":4,"em":"no login"}`）。
+ *   实测踩过：面板显示"已登录"、群列表却是空的 —— 就是因为读了这份**已被顶掉的** skey。
+ *   不验证的话，登录流程会一直"复用"这份废凭据，永远等不到重新授权。
+ */
 async function tryReadCookie(cdp) {
     try {
         const href = await currentHref(cdp);
         if (!/qun\.qq\.com/.test(href) || /\/login/.test(href))
             return null;
         const raw = (await evalJs(cdp, 'document.cookie')) ?? '';
-        return parseCookie(String(raw));
+        const c = parseCookie(String(raw));
+        if (!c)
+            return null;
+        const ok = await verifyQunCookieRaw(c);
+        return ok ? c : null;
     }
     catch {
         return null;
@@ -363,7 +389,14 @@ async function clickAvatar(cdp) {
         return 0;
     }
 }
-/** 把二维码元素截图存盘（找不到元素就整页截图兜底） */
+/**
+ * 把二维码元素截图存盘。
+ *
+ * ⚠️ **找不到二维码就返回 undefined，绝不整页截图兜底** ——
+ *   实测踩过：页面停在"假已登录"状态时没有二维码元素，整页截图把群管理页拍下来当二维码发了出去，
+ *   主人拿到一张"已登录界面"的图，完全没法扫，还以为是登录成功了。
+ *   宁可不给图，也不要给错图（上层可以据此提示"没拿到二维码"）。
+ */
 async function shotQr(cdp, dataRoot) {
     const out = join(dataRoot, 'qun-login-qr.png');
     try {
@@ -381,11 +414,12 @@ async function shotQr(cdp, dataRoot) {
       if (img) { const r = img.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; }
       return null;
     })()`);
-        const params = { format: 'png', captureBeyondViewport: true };
-        if (box && box.w > 40 && box.h > 40) {
-            params['clip'] = { x: Math.max(0, box.x - 8), y: Math.max(0, box.y - 8), width: box.w + 16, height: box.h + 16, scale: 1 };
-        }
-        const r = await cdp.send('Page.captureScreenshot', params);
+        if (!box || box.w <= 40 || box.h <= 40)
+            return undefined; // 没二维码 → 不出图
+        const r = await cdp.send('Page.captureScreenshot', {
+            format: 'png',
+            clip: { x: Math.max(0, box.x - 8), y: Math.max(0, box.y - 8), width: box.w + 16, height: box.h + 16, scale: 1 },
+        });
         const b64 = r?.data;
         if (!b64)
             return undefined;
@@ -442,6 +476,12 @@ export async function qunBrowserLoginStart(dataRoot, opts = {}) {
     closeSession(dataRoot); // 清掉可能残留的坏会话
     const profileDir = opts.profileDir ?? join(dataRoot, 'browser-profile');
     const headless = opts.headless !== false;
+    // ★ 起新浏览器**之前**就把占用该 profile 的残留进程清掉。
+    //   只在"失败后重试"里清是来不及的 —— 实测反复撞 code=21，就是因为清理（异步 PowerShell）
+    //   还没跑完就重试了。走到这里说明没有可复用的活会话，所以清掉不会有副作用。
+    killByProfile(profileDir);
+    cleanProfileLocks(profileDir);
+    await sleep(700);
     let handle;
     try {
         handle = await launchBrowser(exe, profileDir, headless);
@@ -496,8 +536,43 @@ export async function qunBrowserLoginStart(dataRoot, opts = {}) {
                     }
                     catch { /* 单个 cookie 失败不影响其它 */ }
                 }
-                await cdp.send('Page.navigate', { url: LOGIN_URL });
+                await cdp.send('Page.navigate', { url: CHECK_URL });
                 await sleep(1800);
+                // ★★ 注入之后必须**验证**：这份凭据很可能早就被顶掉了（skey 失效但 cookie 还在）。
+                //   不清掉的话，页面会一直停在"看起来已登录"的假状态（没有头像、也没有二维码），
+                //   于是登录流程永远拿不到新凭据 —— 实测就是这么卡住的（面板"已登录"但群列表为空）。
+                const stillOk = await verifyQunCookieRaw(saved);
+                if (!stillOk) {
+                    try {
+                        await cdp.send('Network.enable');
+                        for (const n of ['uin', 'skey', 'p_skey', 'p_uin', 'pt4_token', 'RK']) {
+                            for (const d of ['.qq.com', 'qun.qq.com']) {
+                                try {
+                                    await cdp.send('Network.deleteCookies', { name: n, domain: d });
+                                }
+                                catch { /* ignore */ }
+                            }
+                        }
+                        // ⚠️ 光删 cookie 不够！qun.qq.com 是 SPA，登录痕迹还在 localStorage/sessionStorage 里，
+                        //   不清它的话前端路由依然显示"已登录"，**登录面板（头像/二维码）根本不会出现**
+                        //   —— 实测就是这么卡死的：页面看着登着、接口说 no login、也出不了二维码。
+                        try {
+                            await evalJs(cdp, 'try{localStorage.clear();sessionStorage.clear();}catch(e){}');
+                        }
+                        catch { /* ignore */ }
+                        // ⚠️ 同 URL 的 navigate 在 SPA（hash 路由）里可能只改 hash、**不会真的重新加载**，
+                        //   页面就永远停在"假已登录"（既没头像也没二维码）。所以：先 ignoreCache 强刷，
+                        //   再带时间戳导航一次，确保走的是全新的文档。
+                        try {
+                            await cdp.send('Page.reload', { ignoreCache: true });
+                        }
+                        catch { /* ignore */ }
+                        await sleep(900);
+                        await cdp.send('Page.navigate', { url: LOGIN_URL + '?_t=' + Date.now() });
+                        await sleep(2600);
+                    }
+                    catch { /* 清不掉就照常走 */ }
+                }
             }
             catch { /* 注入失败就照常走未登录流程 */ }
         }
@@ -527,6 +602,20 @@ export async function qunBrowserLoginStart(dataRoot, opts = {}) {
             closeSession(dataRoot);
             return { ok: true, msg: `免扫码：profile 里的登录态还有效，直接取用（uin=${hit.uin}）`, cookie: hit };
         }
+        // ★★ 需要人登录 → 必须**主动跳到 xlogin 面板页**。
+        //   为什么不能留在 qun.qq.com：它的登录面板是 **iframe**，二维码(#qrlogin_img)/头像(#qlogin_list)
+        //   都在 iframe 的主文档里，从外层 document 查不到 —— 会误判成"页面没有二维码"。
+        //   （这段以前被包在 if (saved) 里，没有凭据文件时就整段跳过 ⇒ 卡在 qun.qq.com 出不了码）
+        try {
+            await cdp.send('Page.navigate', { url: LOGIN_URL + '&_t=' + Date.now() });
+            await sleep(2800);
+            hit = await tryReadCookie(cdp);
+            if (hit) {
+                closeSession(dataRoot);
+                return { ok: true, msg: `登录态有效（uin=${hit.uin}）`, cookie: hit };
+            }
+        }
+        catch { /* 跳不过去就继续走头像/二维码 */ }
         // ③ 尝试免扫码：点头像授权（profile 里或本机 QQ 客户端提供了账号）
         const n = await clickAvatar(cdp);
         if (n > 0) {
@@ -541,10 +630,38 @@ export async function qunBrowserLoginStart(dataRoot, opts = {}) {
             // 点了但没跳过去：可能是环境校验，继续走扫码兜底
         }
         // ④ 兜底：出二维码
+        //   出图前先打一行诊断（页面到底停在哪儿、有没有二维码元素）—— 这类"看起来登着却出不了码"的问题
+        //   光看结果猜不出来，必须让页面自己说话。
+        try {
+            const diag = await evalJs(cdp, `(function(){
+        try {
+          const imgs = Array.from(document.images || []);
+          return JSON.stringify({
+            href: String(location.href).slice(0, 120),
+            title: document.title,
+            qloginList: !!document.querySelector('#qlogin_list'),
+            qrImg: !!document.querySelector('#qrlogin_img'),
+            qrBox: !!document.querySelector('#qrlogin_img_box'),
+            imgs: imgs.length,
+            bigImgs: imgs.filter(function(i){ return i.width > 80 && i.height > 80; }).length,
+            text: String((document.body && document.body.innerText) || '').replace(/\\s+/g, ' ').slice(0, 150)
+          });
+        } catch (e) { return 'diag-err: ' + e; }
+      })()`);
+            console.log('[qun-login-diag] ' + diag);
+        }
+        catch { /* ignore */ }
         const qrPath = await shotQr(cdp, dataRoot);
         sessions.set(dataRoot, { handle, cdp, dataRoot, at: Date.now(), qrPath, clicked: n > 0 });
         installExitHook(); // 宿主退出时把浏览器一起带走（不然会成孤儿进程）
         ensureSweeper(); // 空闲超时自动关（不然扫码没扫成会一直挂着）
+        if (!qrPath) {
+            return {
+                ok: true,
+                msg: '没能拿到二维码：这个页面上没有二维码元素（可能卡在"假已登录"状态，或登录页结构变了）。'
+                    + '可以再调一次 login 重试。注意：宁可不给图也不给错图（曾经把整页截图当二维码发出去）。',
+            };
+        }
         return {
             ok: true,
             qrPath,

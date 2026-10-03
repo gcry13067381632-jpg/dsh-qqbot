@@ -222,6 +222,46 @@ export async function qunGroups(dataRoot) {
         out.push({ gc: String(g.gc), gn: String(g.gn), role: '我管理' });
     return out;
 }
+/**
+ * 验证凭据是否**真的**还有效。
+ *
+ * ⚠️ 为什么必须有这一层：浏览器页面只判断"cookie 在不在"（不会因为 skey 失效就跳登录页），
+ *   所以很容易出现**看起来已登录、服务端却早就不认账**的情况（接口返回 `{"ec":4,"em":"no login"}`）。
+ *   实测踩过：`/qun/status` 报 logged=true/valid=true，但群列表是空的 —— 就是 skey 被顶掉了。
+ *   一切"已登录"的判断都应该过这一关。
+ */
+export async function verifyQunCookie(dataRoot) {
+    const c = loadQunCookie(dataRoot);
+    if (!c)
+        return false;
+    return verifyQunCookieRaw(c);
+}
+/** 同一个验证，但直接对一份内存里的凭据做（浏览器那边读到 cookie 后立刻验一次） */
+export async function verifyQunCookieRaw(c) {
+    try {
+        // ⚠️ 这里刻意用 get_group_list 而不是 qunwelcome/myinfo：
+        //   myinfo 对某些账号/场景返回非 0（实测：明明能正常拉群列表，却一直被判定"无效"），
+        //   而 get_group_list 是群里所有功能都依赖的主接口，它通了才算真通。
+        const qs = new URLSearchParams({ bkn: String(getBkn(c.skey)), ts: String(Date.now()) });
+        const res = await fetch(`https://qun.qq.com/cgi-bin/qun_mgr/get_group_list?${qs}`, {
+            method: 'POST',
+            headers: {
+                'User-Agent': UA_API,
+                Cookie: cookieHeader(c),
+                Referer: 'https://qun.qq.com/',
+            },
+            body: '',
+        });
+        const j = (await res.json());
+        if (Number(j.ec) === 0)
+            return true;
+        // create/manage 只要有一个是数组，就说明服务端认了这份凭据
+        return Array.isArray(j.create) || Array.isArray(j.manage);
+    }
+    catch {
+        return false;
+    }
+}
 /** 群号直通；群名做模糊匹配（多个命中就报错让人用群号） */
 export async function qunResolveGc(dataRoot, gcOrName) {
     const s = String(gcOrName || '').trim();

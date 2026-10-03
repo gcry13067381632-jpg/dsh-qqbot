@@ -37,6 +37,17 @@ export interface QunGroup {
     role: '我创建' | '我管理';
 }
 export declare function qunGroups(dataRoot: string): Promise<QunGroup[]>;
+/**
+ * 验证凭据是否**真的**还有效。
+ *
+ * ⚠️ 为什么必须有这一层：浏览器页面只判断"cookie 在不在"（不会因为 skey 失效就跳登录页），
+ *   所以很容易出现**看起来已登录、服务端却早就不认账**的情况（接口返回 `{"ec":4,"em":"no login"}`）。
+ *   实测踩过：`/qun/status` 报 logged=true/valid=true，但群列表是空的 —— 就是 skey 被顶掉了。
+ *   一切"已登录"的判断都应该过这一关。
+ */
+export declare function verifyQunCookie(dataRoot: string): Promise<boolean>;
+/** 同一个验证，但直接对一份内存里的凭据做（浏览器那边读到 cookie 后立刻验一次） */
+export declare function verifyQunCookieRaw(c: QunCookie): Promise<boolean>;
 /** 群号直通；群名做模糊匹配（多个命中就报错让人用群号） */
 export declare function qunResolveGc(dataRoot: string, gcOrName: string): Promise<{
     ok: true;
