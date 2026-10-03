@@ -85,13 +85,26 @@ function diag(line) {
     }
     catch { /* ignore */ }
 }
-/** 扩展工具注册诊断(固定落盘, 不依赖环境变量; 排查扩展没进工具列表用) */
+/**
+ * 扩展工具注册诊断（排查"扩展没进工具列表"用）。
+ *
+ * ⚠️ 2026-10-04 修补：原来是**无脑 append、无上限无轮转** —— 实测在用户 C 盘长到了 **28.4 MB** ✗
+ *   现在超过 2 MB 就先截断、只留尾部 512 KB 再追加：诊断还在，垃圾没了。
+ */
 function extDiag(line) {
     try {
         const home = process.env.USERPROFILE || process.env.HOME || '';
         if (!home)
             return;
-        appendFileSync(home.replace(/\\/g, '/') + '/.dsh/qqbot-ext-diag.log', `[${new Date().toISOString()}] ${line}\n`);
+        const file = join(home, '.dsh', 'qqbot-ext-diag.log');
+        try {
+            if (statSync(file).size > 2 * 1024 * 1024) {
+                const buf = readFileSync(file);
+                writeFileSync(file, buf.subarray(Math.max(0, buf.length - 512 * 1024)));
+            }
+        }
+        catch { /* 文件还不存在 / 读不了：直接追加即可 */ }
+        appendFileSync(file, `[${new Date().toISOString()}] ${line}\n`);
     }
     catch { /* ignore */ }
 }

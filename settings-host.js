@@ -3505,15 +3505,10 @@ export function apply(ctx) {
     const mm = chatSplitMedia(chatDisplayClean(b, nameByMid));
     return { sender, mm };
   }
-  // 🔍 临时诊断(2026-09-10): 把含媒体标记的入站原文落盘到 ~/.dsh/qqbot-chat-raw.jsonl ——
-  //    用于核对 Layer1/Layer4 实际注入格式与 dock 解析结果(主人验收通过后删除本函数与调用)。
-  function chatRawDiag(raw0) {
-    try {
-      const s = String(raw0 || '');
-      if (!/(Image|Video|Voice|File|Attachment|图片|视频|语音|文件|附件)|multimedia\.nt\.qq\.com|qpic\.cn/i.test(s)) return;
-      appendFileSync(join(homedir(), '.dsh', 'qqbot-chat-raw.jsonl'), JSON.stringify({ t: Date.now(), body: s.slice(0, 5000) }) + '\n');
-    } catch { /* 诊断失败不影响主流程 */ }
-  }
+  // 🔍 临时诊断已移除（2026-10-04）：
+  //   原来会把含媒体标记的入站原文落盘到 ~/.dsh/qqbot-chat-raw.jsonl，
+  //   注释里明明写着"主人验收通过后删除"，结果一直忘了删 —— 实测已经攒到 5.5 MB ✗
+  //   核对 Layer1/Layer4 注入格式的需求早已过去，这里删掉，C 盘少一份垃圾。
   // 解码一条会话事件为聊天条目(群打包会展开成多条); 非聊天事件/噪声返回 null
   function chatDecodeEvent(ev, scope, nameByMid, fallbackSender) {
     if (!ev || typeof ev.type !== 'string') return null;
@@ -3535,7 +3530,6 @@ export function apply(ctx) {
       if (!raw0) return null;
       // 兜底: 运行时上下文(user-role 快照)一律包在 <system-reminder> 里 → 不是对方说的话, 不进聊天视图
       if (/^\s*<system-reminder>/.test(raw0)) return null;
-      chatRawDiag(raw0);
       const raw = chatPeelTimeHead(raw0);
       const isRelay = /^用户代你发送: /.test(raw);
       // 后台任务/面板大文件完成通知([系统] 后台任务…)→ 显示为 bot 侧气泡并打来源标; 其余系统注入滤掉
