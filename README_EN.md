@@ -91,6 +91,29 @@ QQ User → QQ WebSocket → dsh-im-qqbot → ctx.agents → dsh agent loop → 
                                        (assistant reply → QQ sendMarkdown)
 ```
 
+## 🆚 Official Bot API vs third-party protocol bridges (onbot / NapCat / …)
+
+This plugin uses the **official Tencent QQ Bot Open Platform** (AppID + AppSecret + the official SDK),
+**not** the "simulate a QQ client protocol" route. The difference is not cosmetic:
+
+| | **This plugin (Official Bot API)** | Third-party bridges (onbot / NapCat / Lagrange…) |
+|---|---|---|
+| **Login** | Just paste **AppID / AppSecret** — **no QR scan, your personal QQ is never logged in** | Scan a QR code to log in **your personal QQ account**; drops often, needs keep-alive |
+| **Account safety** | ✅ **Never touches your personal account** — no ban risk | ⚠️ **Ban risk**: protocol simulation violates QQ's ToS and is explicitly forbidden |
+| **Stability** | ✅ Official API maintained by Tencent; breaking changes are announced ahead | ⚠️ Breaks whenever the protocol shifts; must wait for signature services (qsign etc.) |
+| **Footprint** | ✅ **Very low**: plain HTTP + WebSocket — no browser, no resident client | ⚠️ Heavy: a QQ client / bridge must stay resident, hundreds of MB of RAM |
+| **Low-spec / mobile** | ✅ **Runs anywhere**: Android (Termux), Raspberry Pi, a 1-core / 1 GB box | ⚠️ Hard: bridges have arch/RAM requirements, especially painful on Android |
+| **Privacy** | ✅ Talks only to Tencent's official endpoints — no middleman | ⚠️ Traffic passes through a third-party implementation |
+| **Feature coverage** | ⚠️ **Limited to what the official platform opens** (e.g. **kicking is not exposed**) | ✅ Everything |
+
+**About "limited coverage"** — we patch what we can, and say so plainly when we can't.
+Example: **kicking members**. The official API still doesn't expose it, so the plugin adds a **🔨 Hammer**
+panel where **your own account** calls the group website API to fill the gap
+(scan once, then it stays logged in; the credential is shared with the AI — see below).
+
+> **TL;DR**: want **safe, low-maintenance, deployable on a phone or a tiny box**? Go official.
+> Only pick a third-party bridge if you genuinely need its full toolkit and accept the ban risk.
+
 ## Installation
 
 > ⚠️ **Install into the `web` profile** (host of the `dsh web` settings panel); other profiles get a bare
