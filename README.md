@@ -318,6 +318,14 @@ dsh: disabling profile plugin row "mcp-chrome": Plugin ... is incompatible with 
 
 ![唤醒 AI 演示](docs/screenshots/botplay-wake-ai-demo.png)
 
+**③ 那 AI 到底收到了什么？（这就是 `ctx.appendWake` 的内容）**
+
+![AI 收到的唤醒内容](docs/screenshots/botplay-wake-payload.png)
+
+> 事件模块自己决定"什么时候叫醒 AI、告诉它什么"，并顺手把"你只要补一句人话、别复述名单"
+> 这种约束一起发过去 —— 所以 AI 的回复才既贴群气氛、又不啰嗦。
+> **这一段不是插件写死的，是卡片模块（AI 写的那个 .mjs）自己组织的。**
+
 > 上面第二张就是"第三方框架做不到的事"：**卡片点完后 AI 也知道了结果**，
 > 而且它会顺着群里的气氛自己说人话 —— 那段「带头营业（尾巴摇摇）」不是模板文案，是 AI 现场说的。
 
