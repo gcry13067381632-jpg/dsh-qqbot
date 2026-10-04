@@ -1,6 +1,6 @@
 {
   "name": "@zaofan/dsh-qqbot",
-  "version": "1.6.6",
+  "version": "1.6.7",
   "description": "QQ Bot IM channel plugin for deepseek-harness (dsh)",
   "type": "module",
   "main": "./entry.js",
@@ -58,6 +58,7 @@
   "files": [
     "dist",
     "docs/USER-GUIDE.md",
+    "docs/botplay-contract.md",
     "client",
     "cordis.patch.yml",
     "settings-host.js",

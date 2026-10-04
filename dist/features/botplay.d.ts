@@ -1,21 +1,26 @@
-/**
- * botplay.ts — botplay 互动事件装配器(2026-09-08, Phase1 MVP)
- *
- * 设计定稿见工作区 参考文档/botplay互动事件装配器_设计完整稿.md(唯一权威):
- * 一句话本质 = 自定义 bot 互动事件: ①bot(非LLM)发出什么交互卡片 →
- * ②用户点哪个按钮 → ③这件事要不要/怎么影响 LLM, 全部可配置。
- *
- * 本文件职责(参照 qq-approval.ts / qq-user-questions.ts 的注册表范式):
- *   - BotplayController: 发卡(trigger) + interaction 回调结算(handleInteraction)
- *     + append 三档(no_append / append_silent / append_wake)
- *   - 事件配置从 live config(config.botplayEvents, settings 同源热更)现读;
- *     dock「🎮 互动事件」装配器编辑后保存即热更, 无需重启。
- *   - /botplay 命令经 triggerBotplay() 模块级注册表触发(仿 outbound-mode-switch)。
- *
- * Phase1 MVP 范围: schema 最小集(id/name/buttons[label,botAction.reply_text,
- * llmEffect.mode]/maxClicks/expireSec); perm 默认 all, triggerer 推荐;
- * 行为类型 reply_text 落地, jump_url/callback 预留。
- */
+/** 官方 group-admin 客户端的最小外形（只用到 getMemberInfo；避免与 api/group-admin 强耦合） */
+type GroupAdminLike = {
+    /** 带 token 的通用官方 API 调用（自定义事件模块的 ctx.api 就转调它） */
+    apiCall?: (method: 'GET' | 'POST' | 'PATCH' | 'DELETE', path: string, body?: unknown) => Promise<{
+        ok: true;
+        data: unknown;
+    } | {
+        ok: false;
+        err: {
+            code: string;
+            human: string;
+        };
+    }>;
+    getMemberInfo?: (gid: string, memberOpenid: string) => Promise<{
+        ok: boolean;
+        data?: {
+            username?: string;
+        };
+        err?: {
+            code?: string;
+        };
+    }>;
+};
 import type { ReplyTarget } from '@tencent-connect/qqbot-nodejs';
 import type { QQBotSender } from '../transport/outbound-buffer.js';
 import type { SessionManager } from '../session/index.js';
@@ -59,6 +64,8 @@ export declare class BotplayController {
     private readonly ownersGetter;
     /** 台账 dataDir getter(表情包目录; 点击人昵称反查, 与 dock 禁言面板同源) */
     private readonly ledgerDataDirGetter;
+    /** 数据根 getter(2026-10-05: 自定义事件模块放 {dataRoot}/.qqbot-extensions/botplay/) */
+    private readonly dataRootGetter;
     private readonly cards;
     constructor(manager: SessionManager, sender: QQBotSender, logger: Logger, 
     /** live 事件配置 getter(config.botplayEvents, 每次现读支持热更) */
@@ -66,10 +73,65 @@ export declare class BotplayController {
     /** 主人 openid 白名单 getter(config.groupAdmin.owners; perm=owner 用) */
     ownersGetter: () => string[], 
     /** 台账 dataDir getter(表情包目录; 点击人昵称反查, 与 dock 禁言面板同源) */
-    ledgerDataDirGetter: () => string);
+    ledgerDataDirGetter: () => string, 
+    /** 数据根 getter(2026-10-05: 自定义事件模块放 {dataRoot}/.qqbot-extensions/botplay/) */
+    dataRootGetter?: () => string);
     /** 指令型按钮执行器(bootstrap 注入: 执行斜杠命令并返回文本) */
     private commandExecutor;
     setCommandExecutor(fn: ((cmdName: string, target: ReplyTarget) => Promise<string>) | undefined): void;
+    /** API 兜底查到的昵称缓存：`${peerId}|${openid}` → name */
+    private readonly memberNameApiCache;
+    /** 正在后台查的 key（防同一人并发重复查） */
+    private readonly memberNameProbing;
+    /** 官方 group-admin 客户端 getter（bootstrap 注入；没注入就跳过兜底） */
+    private groupAdminGetter;
+    setGroupAdminGetter(fn: (() => GroupAdminLike | undefined) | undefined): void;
+    /** bot 凭证 getter（卡片 = 代码，直接把 appId/appSecret 给它，让它自己调官方 API） */
+    private credentialsGetter;
+    setCredentialsGetter(fn: (() => {
+        appId: string;
+        appSecret: string;
+    }) | undefined): void;
+    /**
+     * 后台探测某人昵称（不阻塞调用方）。
+     *   命中 → 写进 memberNameApiCache，下次同步调用就能拿到真名。
+     *   未命中/无权限/网络错 → 静默（只记一行日志，避免刷屏）。
+     */
+    private probeMemberNameAsync;
+    /** 已加载模块缓存: 绝对路径 → 加载结果(按 mtime 判热重载; 不按时间戳刷 URL, 见 fileVersion 注释) */
+    private readonly extModules;
+    /** 每实例每按钮点击计数: `${cardId}|${buttonId}` → 次数(自定义事件的"是否点过"判据) */
+    private readonly extClicks;
+    /** 加载失败原因: 文件名 → 错误(面板展示红色摘要) */
+    private readonly extErrors;
+    /** 面板用: 每个自定义事件模块的状态(路径/是否存在/mtime/加载错误) —— settings-host 经此展示 */
+    extStatus(): Array<{
+        file: string;
+        path: string;
+        exists: boolean;
+        mtime: number;
+        loadedMtime: number;
+        name: string;
+        error: string;
+        hooks: string[];
+    }>;
+    /** 诊断日志(自定义事件加载/点击/报错都落这个文件; 面板可读) */
+    private extDiag;
+    private statFile;
+    /** 事件是否由自定义模块驱动(带 file 且文件名合法) */
+    private extFileOf;
+    /**
+     * 取(或热重载)模块: mtime 没变就复用缓存实例(模块里的内存状态得以跨卡持有),
+     * 变了就重新 import(`?v=<mtime>`)。加载失败**不抛**, 返回 {error}。
+     */
+    private loadExt;
+    /** 热重载指定模块(文件名; 空=全部): 清缓存 → 下次解析卡片自动加载新版本 */
+    reloadExt(file?: string): {
+        ok: boolean;
+        msg: string;
+    };
+    /** 列表(面板/命令共用): 带"是否自定义事件"标记 */
+    listExtFiles(): string[];
     /** 列出所有事件(公开, dock/命令共用) */
     listEvents(): BotplayEventConfig[];
     /** 按事件 id 精确查(live 现读) */
@@ -77,8 +139,31 @@ export declare class BotplayController {
     /**
      * 触发发卡(/botplay 事件名)。定位会话用命令上下文所在 scope/peerId,
      * 归属人 = 触发者本人 openid(group=c2c 同 senderId)。
+     *
+     * 2026-10-05 加: 事件带 `file`(自定义事件模块)时, 按钮/正文先问模块要(见 resolveExtCard),
+     *   模块挂了也不挡发卡(回落到事件自带的按钮配置)。
      */
     trigger(target: ReplyTarget, eventId: string, triggererId: string): Promise<BotplayTriggerResult>;
+    /**
+     * 解析自定义事件卡片: 加载模块 → 跑 onInit → 收下模块给的按钮/正文。
+     *
+     * 为什么整条 fail-soft 到底: 模块是主人(或 AI)手写的代码, 语法错了/钩子抛错都不该
+     * 让"发个卡片"这种小事炸掉, 更不该影响其它事件与 QQ 正常聊天 —— 一律记诊断 + 回落。
+     * 返回 state.buttons 一定非空(模块没给就用事件自带按钮)。
+     */
+    private resolveExtCard;
+    /**
+     * 构造自定义模块的 ctx(每个卡片实例一个)。
+     * 说明: ctx.emit/markdown/image 都发往**该实例卡片所在的会话**(target), 不是点击人私聊 ——
+     *   群里的签到统计就该发群里; 要私聊给某人可以 ctx.markdown 之外自己判断(本期不做)。
+     */
+    private buildExtCtx;
+    /** 把模块给的按钮洗成合法形状(缺 id/label 的丢掉; 防止脏数据把 keyboard 生成搞炸) */
+    private sanitizeExtButtons;
+    /** 点击后按钮变了 ⇒ 重发卡片刷新(QQ 没有现成的"改卡片"接口, 重发是可靠做法) */
+    private refreshCard;
+    /** 清理一个卡片实例的扩展资源(点击计数/模块 onDispose) */
+    private disposeCard;
     /** 发送事件目录卡(/botplay 无参 或 目录卡翻页; 点事件名按钮 → handleInteraction 直接触发) */
     sendCatalog(target: ReplyTarget, page?: number): Promise<BotplayTriggerResult>;
     /**
@@ -88,6 +173,19 @@ export declare class BotplayController {
      * @returns true = 已被 botplay 消费(调用方无需其它处理)
      */
     handleInteraction(event: unknown, replyTarget: ReplyTarget): Promise<boolean>;
+    /** 内置三型按钮行为(reply_text / jump_url / command; 普通事件用) */
+    private runBuiltinAction;
+    /**
+     * 跑自定义模块的 onClick(2026-10-05)。
+     *
+     * 顺序(为什么这么排):
+     *   ① 计数先 ++, 让模块里的 ctx.clicked 立刻反映"这是第几次点"(签到判重的关键);
+     *   ② 跑模块(它可能改按钮/正文/发消息/持久化);
+     *   ③ 模块返回非空字符串 → 当普通文本回给点击者(比让模块自己 emit 更省事);
+     *   ④ 模块把卡片改脏 → 重发卡片刷新按钮(QQ 没"改卡片"接口, 重发是可靠做法);
+     *   ⑤ 模块抛错 → 回一句人话 + 落诊断, 绝不让一次点击把插件带崩(fail-soft)。
+     */
+    private runExtClick;
     /**
      * 点击人可读标签(与 dock 禁言面板/审批同源的昵称反查):
      *   ①群成员台账 group-members.jsonl(gid:mid → name, 由 chat-ledger 中间件持续记录)
@@ -96,6 +194,12 @@ export declare class BotplayController {
      *   ④全 miss 回落 openid。
      */
     private clickerLabel;
+    /**
+     * 昵称反查(2026-10-05 从 clickerLabel 抽出来给自定义模块用): 只要**纯昵称**, 不带 openid 尾巴
+     * (签到统计那种"列出所有签到者名字"的场景, 名字后面挂截断 openid 很难看)。
+     * 数据源与 clickerLabel 同源(见其注释): 群成员台账 → 私聊台账 → 会话消息壳 → 回落 openid。
+     */
+    private memberName;
     /** 权限判定: all 放行 / triggerer=触发者本人 / owner=主人白名单 / users=指定 openid */
     private checkPerm;
     /**
@@ -105,9 +209,15 @@ export declare class BotplayController {
      */
     private applyEffect;
     private safeReply;
-    /** 清理全部活动卡(dispose 用) */
+    /**
+     * 通知自定义模块"这张卡片过期了"(onExpire; 2026-10-05)。
+     * 为什么要有: 签到类事件常要"到点自动结算/清场", 模块没有这个回调就只能等主人手点。
+     * fail-soft: 模块抛错只记日志。
+     */
+    private fireExtExpire;
+    /** 清理全部活动卡(dispose 用; 自定义事件会收到 onDispose) */
     clear(): void;
-    /** 扫掉过期卡(Phase2: 定期/触发时调用, 防内存积压) */
+    /** 扫掉过期卡(Phase2: 定期/触发时调用, 防内存积压; 2026-10-05 顺带通知模块 onExpire) */
     sweepExpired(): number;
     /** 活动卡数量(诊断用) */
     get cardCount(): number;
@@ -127,6 +237,27 @@ export declare function botplayCatalog(ns: string, target: ReplyTarget, page?: n
 export declare function listBotplayEventsAny(): Array<BotplayEventConfig & {
     ns: string;
 }>;
+/** 取某 ns 的 botplay 控制器(未注册返回 undefined) */
+export declare function botplayControllerOf(ns: string): BotplayController | undefined;
+/**
+ * 面板用: 某实例的自定义事件模块状态(路径/是否存在/mtime/加载错误/hooks)。
+ * 找不到实例时返回空数组(面板显示"未就绪"即可, 不报错)。
+ */
+export declare function botplayExtStatus(ns: string): Array<{
+    file: string;
+    path: string;
+    exists: boolean;
+    mtime: number;
+    loadedMtime: number;
+    name: string;
+    error: string;
+    hooks: string[];
+}>;
+/** 面板「🔄 重载模块」用: 热重载指定模块(空=全部); 不重启宿主 */
+export declare function reloadBotplayExt(ns: string, file?: string): {
+    ok: boolean;
+    msg: string;
+};
 /**
  * 取指定实例的事件列表(命令层 /botplay 用)。
  * ⚠️ 2026-09-10 修复: 事件存储自 M4.3 起已迁到 {dataRoot}/botplay-events.json, 但命令层仍在读

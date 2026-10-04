@@ -28,6 +28,8 @@ import type { Logger } from '../types.js';
 export const EXT_COMMANDS_SUBDIR = join('.qqbot-extensions', 'commands');
 /** 扩展工具目录名(相对 cwd) */
 export const EXT_TOOLS_SUBDIR = join('.qqbot-extensions', 'tools');
+/** botplay 自定义事件目录名(相对数据根; 2026-10-05 第三套扩展) */
+export const EXT_BOTPLAY_SUBDIR = join('.qqbot-extensions', 'botplay');
 
 /** 扩展文件允许的扩展名 */
 const ALLOWED_EXT = new Set(['.js', '.mjs', '.cjs']);
@@ -201,3 +203,120 @@ export async function loadExtensionTools(cwd: string | undefined, logger: Logger
   }
   return out;
 }
+
+// ── botplay 自定义事件模块(2026-10-05) ─────────────────────────────────
+// 契约与 ctx 能力见 features/botplay-ext.ts 头部注释; 这里只负责"按文件名加载一个模块"。
+// 与上面两套扩展的两点不同(为什么不能直接复用 loadExtensionTools):
+//   ① 扫描根是**数据根**(dataRoot)不是 agent cwd —— botplay 事件本身就是 dataRoot 下的文件;
+//   ② 是"按需单文件加载"(事件 JSON 的 file 字段点名), 而且**必须能把错误带回去给面板**,
+//      所以这里不做 fail-soft 吞错: 抛出/返回 error 由调用方(botplay 控制器)决定降级方式。
+
+/** botplay 自定义事件模块目录(相对数据根) */
+export function botplayExtensionsDir(dataRoot: string): string {
+  return join(dataRoot, EXT_BOTPLAY_SUBDIR);
+}
+
+/**
+ * 文件名安全校验(防 `../` 逃逸出扩展目录):
+ * 只允许"纯文件名", 不允许任何路径分隔符(Windows 反斜杠也算)。
+ * 说明: 允许子目录会带来逃逸面, 而主人的使用场景(一个事件一个模块)根本不需要子目录。
+ */
+export function safeBotplayFileName(file: string): string | null {
+  const f = String(file ?? '').trim();
+  if (!f) return null;
+  if (f.includes('/') || f.includes('\\') || f.includes('..')) return null;
+  if (!/^[A-Za-z0-9._@-]+$/.test(f)) return null;
+  if (!ALLOWED_EXT.has(extname(f).toLowerCase())) return null;
+  return f;
+}
+
+/**
+ * 归一化后的 botplay 模块(结构形状与 botplay-ext.ts 的 BotplayExtModule 一致)。
+ * ⚠️ 这里**故意不 import BotplayExtModule**: 两个模块互相 import 会让"谁先定义"变得微妙,
+ *   而这里只需要"是不是函数"这个结构信息 —— 用 unknown 形参最宽, 交给调用方(botplay.ts)
+ *   转成 BotplayExtModule(那边才有真正的 ctx 类型), 避免 any/never 打架。
+ */
+export interface BotplayModuleShape {
+  name?: string;
+  onInit?: (...args: never[]) => unknown;
+  onClick?: (ctx: never, info: never) => unknown;
+  onTick?: (ctx: never) => unknown;
+  onExpire?: (ctx: never) => unknown;
+  onDispose?: (ctx: never) => unknown;
+}
+
+/** 校验模块至少导出了一个钩子(全空的模块必然是写错了, 早点报错比静默不响应好) */
+const BOTPLAY_HOOKS = ['onInit', 'onClick', 'onTick', 'onExpire', 'onDispose'] as const;
+
+function normalizeBotplayModule(mod: unknown): { mod: BotplayModuleShape; name: string } | { error: string } {
+  const m = ((mod as { default?: unknown })?.default ?? mod) as BotplayModuleShape | undefined;
+  if (!m || typeof m !== 'object') return { error: '模块没有 default 导出对象(应 export default { onInit, onClick, … })' };
+  const hooks = BOTPLAY_HOOKS.filter((h) => typeof (m as Record<string, unknown>)[h] === 'function');
+  if (hooks.length === 0) {
+    return { error: `模块没有导出任何钩子(至少要有 ${BOTPLAY_HOOKS.join(' / ')} 之一)` };
+  }
+  return { mod: m, name: String(m.name ?? '').trim() };
+}
+
+/** 加载结果(带来源信息, 供面板/诊断展示) */
+export interface LoadedBotplayModule {
+  file: string;
+  /** 绝对路径 */
+  path: string;
+  /** mtime(ms): 热重载判据 + 面板"最后修改时间" */
+  mtime: number;
+  name: string;
+  mod: BotplayModuleShape;
+}
+
+/**
+ * 加载(或热重载)一个 botplay 自定义事件模块。
+ *
+ * 热重载靠 `?v=<mtime>` 做 cache-bust —— 与 extension-store 的 fileVersion 同款
+ * (⚠️ 别改回时间戳: 每次新 URL 会让 Node ESM ModuleMap 永久强引用旧模块, 长跑吃内存直至 OOM,
+ *  2026-09-15 那次扩展工具内存泄漏就是这个坑)。
+ */
+export async function loadBotplayExtensionModule(
+  dataRoot: string,
+  file: string,
+  logger: Logger,
+): Promise<{ ok: true; loaded: LoadedBotplayModule } | { ok: false; error: string; path: string }> {
+  const safe = safeBotplayFileName(file);
+  const dir = botplayExtensionsDir(dataRoot);
+  if (!safe) {
+    return { ok: false, error: `文件名不安全/扩展名不支持: ${file}(只允许 .mjs/.js/.cjs 的纯文件名)`, path: join(dir, String(file ?? '')) };
+  }
+  const abs = join(dir, safe);
+  let mtime = 0;
+  try {
+    mtime = statSync(abs).mtimeMs;
+  } catch (err) {
+    return {
+      ok: false,
+      error: `模块文件不存在或读不到: ${abs}(${err instanceof Error ? err.message : String(err)})`,
+      path: abs,
+    };
+  }
+  try {
+    const url = pathToFileURL(abs).href + `?v=${fileVersion(abs)}`;
+    const raw = await import(url);
+    const norm = normalizeBotplayModule(raw);
+    if ('error' in norm) return { ok: false, error: `${safe}: ${norm.error}`, path: abs };
+    logger.info(`[botplay-ext] 已加载模块: ${safe} (mtime=${Math.floor(mtime)})`);
+    return {
+      ok: true,
+      loaded: {
+        file: safe,
+        path: abs,
+        mtime: Math.floor(mtime),
+        name: norm.name || safe.replace(/\.(mjs?|cjs)$/i, ''),
+        mod: norm.mod,
+      },
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.warn(`[botplay-ext] ${safe} 加载失败: ${msg}`);
+    return { ok: false, error: `${safe}: ${msg}`, path: abs };
+  }
+}
+

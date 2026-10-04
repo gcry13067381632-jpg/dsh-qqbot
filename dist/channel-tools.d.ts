@@ -33,6 +33,51 @@ export declare function askAiToWriteSamples(ns: string, scope: 'group' | 'c2c', 
     ok: boolean;
     msg: string;
 }>;
+/**
+ * 「伪造一条用户消息 → 直调 handleInbound 唤醒该会话 AI」的共用实现(2026-10-05 抽出来)。
+ *
+ * 原实现只服务"让ai写样例库"; botplay 自定义事件也要同一条路(面板「🤖 让 AI 写」),
+ * 于是把可复用的骨架抽到这里, 只有 senderName/正文不同 —— 两处行为完全一致, 少一套要维护的语义。
+ *
+ * 细节(继承自 2026-09-13 的样例库版本, 不要改):
+ *   · messageId 留空 → 出站自动走**主动推送**(不受 5 条被动回复限制);
+ *   · senderName 用中性名、正文不打假 (@you) → 防污染主人交互记忆;
+ *   · 与定时任务 fireTask 同姿势(伪造消息唤醒回合), 而不是塞聚合窗口(那个要等人停口)。
+ */
+export declare function askAiToWriteFakeMsg(ns: string, scope: 'group' | 'c2c', peerId: string, senderName: string, prompt: string): Promise<{
+    ok: boolean;
+    msg: string;
+}>;
+/**
+ * 面板用: 某实例的自定义事件模块状态(路径/是否存在/mtime/hooks/加载错误)。
+ * 未注册实例返回 [] (面板显示"未就绪", 不报错)。
+ */
+export declare function botplayExtStatus(ns: string): {
+    file: string;
+    path: string;
+    exists: boolean;
+    mtime: number;
+    loadedMtime: number;
+    name: string;
+    error: string;
+    hooks: string[];
+}[];
+/** 面板「🔄 重载模块」用: 热重载指定模块(空=全部); 不重启宿主 */
+export declare function reloadBotplayExt(ns: string, file?: string): {
+    ok: boolean;
+    msg: string;
+};
+export declare function setBotplayWritePrompt(text: string): void;
+/**
+ * 「让 AI 写」自定义事件: 把拼好的提示词当作**用户消息**唤醒该群/私聊的 AI 回合。
+ *
+ * 提示词由 host 现拼(需求原文 + 官方文档链接 + 自定义事件契约 + 环境信息 + 要求), 这里只负责"送进去"。
+ * 参考资料给的是**官方文档链接**(不随包塞本地镜像) —— 理由见 settings-host.js 的 apiV2DocLinks 注释。
+ */
+export declare function askAiToWriteBotplayEvent(ns: string, scope: 'group' | 'c2c', peerId: string): Promise<{
+    ok: boolean;
+    msg: string;
+}>;
 export declare function setCtxSmartText(t: string): void;
 export declare function getCtxSmartText(): string;
 /**

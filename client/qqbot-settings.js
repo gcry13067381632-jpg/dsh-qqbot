@@ -1718,7 +1718,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
     //   · 群管理(发消息/审批入群/禁言) → 悬浮球点开成操作台
     var DOCK_CSS = "#qqs-dock-wrap{position:fixed;right:18px;bottom:190px;z-index:9997;font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif}#qqs-dock-ball{width:52px;height:52px;border-radius:50%;background:linear-gradient(160deg,#7c6cf0,#5b4fd8);color:#fff;font-size:24px;line-height:52px;text-align:center;cursor:pointer;box-shadow:0 6px 20px rgba(90,70,220,.4);user-select:none;transition:transform .12s,box-shadow .12s;position:relative}#qqs-dock-ball:hover{transform:scale(1.06)}#qqs-dock-badge{position:absolute;top:-4px;right:-4px;min-width:18px;height:18px;border-radius:9px;background:#ff4d4f;color:#fff;font-size:11px;font-weight:700;line-height:18px;padding:0 4px;box-sizing:border-box;text-align:center;display:none}#qqs-dock-panel{position:fixed;right:18px;bottom:190px;z-index:9998;width:min(720px,94vw);max-height:68vh;display:none;flex-direction:column;background:#fff;border:1px solid #d9c6ff;border-radius:16px;box-shadow:0 12px 40px rgba(60,40,140,.25);overflow:hidden;font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif}#qqs-dock-panel .dk-h{display:flex;align-items:center;gap:8px;padding:10px 14px;background:linear-gradient(90deg,#7c6cf01f,#7c6cf008);font-size:14px;font-weight:700;color:#4a3a9f;border-bottom:1px solid #efe8ff}#qqs-dock-panel .dk-b{padding:10px 14px;overflow:auto;font-size:13px;color:#1f2329}#qqs-dock-panel .dk-tab{display:flex;gap:4px;border-bottom:1px solid #eee;margin-bottom:10px}#qqs-dock-panel .dk-tab button{font:inherit;font-size:13px;padding:6px 14px;border:none;background:none;cursor:pointer;color:#666;border-bottom:2px solid transparent}#qqs-dock-panel .dk-tab button.on{color:#4a3a9f;font-weight:700;border-bottom-color:#7c6cf0}#qqs-dock-panel select.qqs-sel,#qqs-dock-panel input.qqs-txt,#qqs-dock-panel textarea.qqs-txt{font:inherit;color:#1f2329;background:#fff;border:1px solid #d0d5dd;border-radius:8px;padding:5px 8px;outline:none}#qqs-dock-panel .dk-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0}#qqs-dock-panel .dk-btn{font:inherit;font-size:13px;padding:5px 12px;border-radius:8px;cursor:pointer;border:1px solid #d9c6ff;background:#f1ecff;color:#4a3a9f}#qqs-dock-panel .dk-btn.ok{background:#e6f7ec;color:#187a3d;border-color:#b8e6c8}#qqs-dock-panel .dk-btn.no{background:#fdeeee;color:#c23131;border-color:#f3c4c4}#qqs-dock-panel .dk-btn:disabled{opacity:.5;cursor:default}#qqs-dock-panel .dk-msg{color:#888;font-size:12px;padding:2px 0}#qqs-dock-panel .dk-list{max-height:34vh;overflow:auto;border:1px solid #f0ecff;border-radius:10px;padding:4px}#qqs-dock-panel .dk-item{display:flex;align-items:center;gap:8px;padding:6px 8px;border-bottom:1px solid #f5f2ff;flex-wrap:wrap;font-size:13px}#qqs-dock-panel .dk-item:last-child{border-bottom:none}#qqs-dock-panel .dk-empty{color:#aaa;text-align:center;padding:18px 0;font-size:12px}"
     // ── 💬 聊天视图样式(dock 追加段, 2026-09-07): QQ 风格气泡, 群友左(bot)右 ──
-    var DOCK_CSS2 = "#qqs-dock-panel .dk-chat-head{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:0 0 6px}#qqs-dock-panel .dk-chat-box{overflow-y:auto;overscroll-behavior:contain;background:#f5f6f8;border:1px solid #e6e8ec;border-radius:10px;padding:10px 12px;box-sizing:border-box;height:min(36vh,300px);min-height:140px;scroll-behavior:auto}#qqs-dock-panel .dk-chat-box::-webkit-scrollbar{width:6px}#qqs-dock-panel .dk-chat-box::-webkit-scrollbar-thumb{background:#d3d7dd;border-radius:3px}#qqs-dock-panel .dk-crow{display:flex;gap:8px;align-items:flex-start;margin:0 0 12px}#qqs-dock-panel .dk-crow.out{flex-direction:row-reverse}#qqs-dock-panel .dk-ava{width:32px;height:32px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;color:#fff;overflow:hidden;user-select:none;background:linear-gradient(150deg,#8fb3e8,#5f8fd9)}#qqs-dock-panel .dk-crow.out .dk-ava{background:linear-gradient(150deg,#5ec7f2,#3b8fe0)}#qqs-dock-panel .dk-cmain{display:flex;flex-direction:column;max-width:calc(100% - 40px);min-width:0}#qqs-dock-panel .dk-crow.in .dk-cmain{align-items:flex-start}#qqs-dock-panel .dk-crow.out .dk-cmain{align-items:flex-end}#qqs-dock-panel .dk-cmeta{font-size:11px;color:#9aa0a8;margin:0 6px 2px;max-width:100%;display:flex;align-items:center;gap:5px;flex-wrap:wrap}#qqs-dock-panel .dk-crow.out .dk-cmeta{flex-direction:row-reverse}#qqs-dock-panel .dk-cbubble{padding:7px 11px;font-size:13px;line-height:1.55;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;box-shadow:0 1px 2px rgba(20,30,60,.06);max-width:100%}#qqs-dock-panel .dk-cbubble a.dk-link{color:#1a66d6;text-decoration:underline;word-break:break-all;cursor:pointer}#qqs-dock-panel .dk-crow.out .dk-cbubble a.dk-link{color:#eaf3ff}#qqs-dock-panel .dk-crow.in .dk-cbubble{background:#fff;border:1px solid #e3e6ea;color:#1f2329;border-radius:3px 10px 10px 10px}#qqs-dock-panel .dk-crow.out .dk-cbubble{background:linear-gradient(180deg,#69a6ff,#3d7df5);color:#fff;border-radius:10px 3px 10px 10px}#qqs-dock-panel .dk-img{display:block;max-width:min(230px,52vw);max-height:200px;border-radius:6px;margin:0 0 3px;object-fit:cover;cursor:zoom-in}#qqs-dock-panel .dk-audio{display:block;max-width:min(260px,60vw);width:100%;height:34px;margin:0 0 2px}#qqs-dock-panel .dk-file{display:inline-flex;align-items:center;gap:5px;max-width:100%;padding:6px 12px;border-radius:8px;background:#f0f6ff;border:1px solid #cfe0fa;color:#2b6bd8;font-size:13px;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#qqs-dock-panel .dk-file:hover{background:#e2edff}#qqs-dock-panel .dk-video{display:block;max-width:min(260px,60vw);max-height:180px;border-radius:6px;margin:0 0 2px}#qqs-dock-panel .dk-ctag{display:inline-block;font-size:10px;color:#5b8ff0;background:#eaf2ff;border:1px solid #d4e3fd;border-radius:8px;padding:0 6px}#qqs-dock-panel .dk-chat-top{text-align:center;color:#b0b4bb;font-size:11px;padding:2px 0 6px;user-select:none}#qqs-dock-panel .dk-chat-bottom{text-align:center;color:#c3c7cd;font-size:11px;padding:6px 0 0}#qqs-dock-panel .dk-composer{margin-top:8px;border:1px solid #e3e6ea;border-radius:10px;background:#fff;overflow:visible}#qqs-dock-panel .dk-composer textarea{width:100%;box-sizing:border-box;border:none;outline:none;resize:none;font:inherit;font-size:13px;color:#1f2329;background:transparent;padding:8px 10px 4px;line-height:1.5;max-height:120px}#qqs-dock-panel .dk-cbar{display:flex;align-items:center;gap:4px;padding:4px 8px 6px;flex-wrap:wrap}#qqs-dock-panel .dk-cbar .dk-btn{padding:3px 10px;font-size:12px;border-radius:7px}#qqs-dock-panel .dk-cbar .dk-send{background:linear-gradient(180deg,#69a6ff,#3d7df5);color:#fff;border:none;border-radius:8px;padding:5px 18px;font-size:13px;font-weight:600;cursor:pointer}#qqs-dock-panel .dk-cbar .dk-send:disabled{opacity:.5;cursor:default}#qqs-lightbox{position:fixed;inset:0;z-index:2147483000;background:rgba(8,10,18,.82);display:flex;align-items:center;justify-content:center;cursor:zoom-out}#qqs-lightbox img{max-width:92vw;max-height:92vh;border-radius:8px;box-shadow:0 10px 60px rgba(0,0,0,.6)}#qqs-dock-panel .dk-composer{position:relative}#qqs-dock-panel .dk-at-pop{position:absolute;left:6px;bottom:calc(100% - 4px);z-index:30;min-width:200px;max-width:90%;max-height:190px;overflow-y:auto;background:#fff;border:1px solid #e0e4ea;border-radius:10px;box-shadow:0 8px 24px rgba(30,40,80,.16);padding:4px;display:none}#qqs-dock-panel .dk-at-item{display:flex;align-items:center;gap:6px;padding:5px 9px;border-radius:7px;cursor:pointer;font-size:12px;color:#1f2329;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}#qqs-dock-panel .dk-at-item.on,#qqs-dock-panel .dk-at-item:hover{background:#eef3ff;color:#2b5fd0}#qqs-dock-panel .dk-at-empty{color:#aaa;font-size:12px;padding:6px 9px}#qqs-lightbox .lb-x{position:fixed;right:16px;top:10px;color:#fff;font-size:30px;cursor:pointer;line-height:1;padding:6px}#qqs-dock-panel.dk-full{left:0!important;top:0!important;right:0!important;bottom:0!important;width:100vw!important;max-width:100vw!important;height:100vh!important;max-height:100vh!important;border-radius:0;z-index:2147482000;display:flex;flex-direction:column}#qqs-dock-panel.dk-full .dk-h,#qqs-dock-panel.dk-full .dk-detect{flex:none}#qqs-dock-panel.dk-full .dk-b{flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column;padding:8px 14px 6px}#qqs-dock-panel.dk-full .dk-chat-wrap{display:flex;flex-direction:column;flex:1;min-height:0}#qqs-dock-panel.dk-full .dk-chat-head{flex:none}#qqs-dock-panel.dk-full .dk-chat-box{flex:1;height:auto!important;min-height:0!important;max-height:none!important;overflow-y:auto;overscroll-behavior:contain}#qqs-dock-panel.dk-full .dk-composer{flex:none;margin-top:6px}#qqs-dock-panel .dk-tab{overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;scrollbar-width:none}#qqs-dock-panel .dk-tab::-webkit-scrollbar{display:none}#qqs-dock-panel .dk-tab button{white-space:nowrap;flex:0 0 auto}@media (max-width:560px){#qqs-dock-panel:not(.dk-full){left:8px!important;right:8px!important;width:auto!important;max-width:calc(100vw - 16px)!important;bottom:96px!important}#qqs-dock-panel .dk-h{font-size:13px;padding:8px 10px;gap:6px}#qqs-dock-panel .dk-b{padding:8px 10px;font-size:13px}#qqs-dock-panel .dk-tab button{font-size:12px;padding:7px 10px}#qqs-dock-panel .dk-btn{font-size:12px;padding:6px 10px}#qqs-dock-panel .dk-row{gap:6px;margin:5px 0}#qqs-dock-panel select.qqs-sel,#qqs-dock-panel input.qqs-txt,#qqs-dock-panel textarea.qqs-txt{padding:7px 9px;font-size:16px}#qqs-dock-panel .dk-list{max-height:46vh}#qqs-dock-panel .dk-item{padding:8px 6px;gap:6px}}@media (max-width:560px){#qqs-dock-panel.dk-full{border-radius:0}#qqs-dock-panel.dk-full .dk-b{padding-bottom:calc(8px + env(safe-area-inset-bottom,0px))}#qqs-dock-panel.dk-full .dk-tab{position:sticky;top:0;background:#fff;z-index:2}}@media (max-width:560px){#qqs-dock-ball{width:46px;height:46px;line-height:46px;font-size:21px}}"
+    var DOCK_CSS2 = "#qqs-dock-panel .dk-chat-head{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:0 0 6px}#qqs-dock-panel .dk-chat-box{overflow-y:auto;overscroll-behavior:contain;background:#f5f6f8;border:1px solid #e6e8ec;border-radius:10px;padding:10px 12px;box-sizing:border-box;height:min(36vh,300px);min-height:140px;scroll-behavior:auto}#qqs-dock-panel .dk-chat-box::-webkit-scrollbar{width:6px}#qqs-dock-panel .dk-chat-box::-webkit-scrollbar-thumb{background:#d3d7dd;border-radius:3px}#qqs-dock-panel .dk-crow{display:flex;gap:8px;align-items:flex-start;margin:0 0 12px}#qqs-dock-panel .dk-crow.out{flex-direction:row-reverse}#qqs-dock-panel .dk-ava{width:32px;height:32px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;color:#fff;overflow:hidden;user-select:none;background:linear-gradient(150deg,#8fb3e8,#5f8fd9)}#qqs-dock-panel .dk-crow.out .dk-ava{background:linear-gradient(150deg,#5ec7f2,#3b8fe0)}#qqs-dock-panel .dk-cmain{display:flex;flex-direction:column;max-width:calc(100% - 40px);min-width:0}#qqs-dock-panel .dk-crow.in .dk-cmain{align-items:flex-start}#qqs-dock-panel .dk-crow.out .dk-cmain{align-items:flex-end}#qqs-dock-panel .dk-cmeta{font-size:11px;color:#9aa0a8;margin:0 6px 2px;max-width:100%;display:flex;align-items:center;gap:5px;flex-wrap:wrap}#qqs-dock-panel .dk-crow.out .dk-cmeta{flex-direction:row-reverse}#qqs-dock-panel .dk-cbubble{padding:7px 11px;font-size:13px;line-height:1.55;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;box-shadow:0 1px 2px rgba(20,30,60,.06);max-width:100%}#qqs-dock-panel .dk-cbubble a.dk-link{color:#1a66d6;text-decoration:underline;word-break:break-all;cursor:pointer}#qqs-dock-panel .dk-crow.out .dk-cbubble a.dk-link{color:#eaf3ff}#qqs-dock-panel .dk-crow.in .dk-cbubble{background:#fff;border:1px solid #e3e6ea;color:#1f2329;border-radius:3px 10px 10px 10px}#qqs-dock-panel .dk-crow.out .dk-cbubble{background:linear-gradient(180deg,#69a6ff,#3d7df5);color:#fff;border-radius:10px 3px 10px 10px}#qqs-dock-panel .dk-img{display:block;max-width:min(230px,52vw);max-height:200px;border-radius:6px;margin:0 0 3px;object-fit:cover;cursor:zoom-in}#qqs-dock-panel .dk-audio{display:block;max-width:min(260px,60vw);width:100%;height:34px;margin:0 0 2px}#qqs-dock-panel .dk-file{display:inline-flex;align-items:center;gap:5px;max-width:100%;padding:6px 12px;border-radius:8px;background:#f0f6ff;border:1px solid #cfe0fa;color:#2b6bd8;font-size:13px;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#qqs-dock-panel .dk-file:hover{background:#e2edff}#qqs-dock-panel .dk-video{display:block;max-width:min(260px,60vw);max-height:180px;border-radius:6px;margin:0 0 2px}#qqs-dock-panel .dk-ctag{display:inline-block;font-size:10px;color:#5b8ff0;background:#eaf2ff;border:1px solid #d4e3fd;border-radius:8px;padding:0 6px}#qqs-dock-panel .dk-chat-top{text-align:center;color:#b0b4bb;font-size:11px;padding:2px 0 6px;user-select:none}#qqs-dock-panel .dk-chat-bottom{text-align:center;color:#c3c7cd;font-size:11px;padding:6px 0 0}#qqs-dock-panel .dk-composer{margin-top:8px;border:1px solid #e3e6ea;border-radius:10px;background:#fff;overflow:visible}#qqs-dock-panel .dk-composer textarea{width:100%;box-sizing:border-box;border:none;outline:none;resize:none;font:inherit;font-size:13px;color:#1f2329;background:transparent;padding:8px 10px 4px;line-height:1.5;max-height:120px}#qqs-dock-panel .dk-cbar{display:flex;align-items:center;gap:4px;padding:4px 8px 6px;flex-wrap:wrap}#qqs-dock-panel .dk-cbar .dk-btn{padding:3px 10px;font-size:12px;border-radius:7px}#qqs-dock-panel .dk-cbar .dk-send{background:linear-gradient(180deg,#69a6ff,#3d7df5);color:#fff;border:none;border-radius:8px;padding:5px 18px;font-size:13px;font-weight:600;cursor:pointer}#qqs-dock-panel .dk-cbar .dk-send:disabled{opacity:.5;cursor:default}#qqs-lightbox{position:fixed;inset:0;z-index:2147483000;background:rgba(8,10,18,.82);display:flex;align-items:center;justify-content:center;cursor:zoom-out}#qqs-lightbox img{max-width:92vw;max-height:92vh;border-radius:8px;box-shadow:0 10px 60px rgba(0,0,0,.6)}#qqs-dock-panel .dk-composer{position:relative}#qqs-dock-panel .dk-at-pop{position:absolute;left:6px;bottom:calc(100% - 4px);z-index:30;min-width:200px;max-width:90%;max-height:190px;overflow-y:auto;background:#fff;border:1px solid #e0e4ea;border-radius:10px;box-shadow:0 8px 24px rgba(30,40,80,.16);padding:4px;display:none}#qqs-dock-panel .dk-at-item{display:flex;align-items:center;gap:6px;padding:5px 9px;border-radius:7px;cursor:pointer;font-size:12px;color:#1f2329;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}#qqs-dock-panel .dk-at-item.on,#qqs-dock-panel .dk-at-item:hover{background:#eef3ff;color:#2b5fd0}#qqs-dock-panel .dk-at-empty{color:#aaa;font-size:12px;padding:6px 9px}#qqs-lightbox .lb-x{position:fixed;right:16px;top:10px;color:#fff;font-size:30px;cursor:pointer;line-height:1;padding:6px}#qqs-dock-panel.dk-full{left:0!important;top:0!important;right:0!important;bottom:0!important;width:100vw!important;max-width:100vw!important;height:100vh!important;max-height:100vh!important;border-radius:0;z-index:2147482000;display:flex;flex-direction:column}#qqs-dock-panel.dk-full .dk-h,#qqs-dock-panel.dk-full .dk-detect{flex:none}#qqs-dock-panel.dk-full .dk-b{flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column;padding:8px 14px 6px}#qqs-dock-panel.dk-full .dk-chat-wrap{display:flex;flex-direction:column;flex:1;min-height:0}#qqs-dock-panel.dk-full .dk-chat-head{flex:none}#qqs-dock-panel.dk-full .dk-chat-box{flex:1;height:auto!important;min-height:0!important;max-height:none!important;overflow-y:auto;overscroll-behavior:contain}#qqs-dock-panel.dk-full .dk-composer{flex:none;margin-top:6px}#qqs-dock-panel .dk-tab{overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;scrollbar-width:none}#qqs-dock-panel .dk-tab::-webkit-scrollbar{display:none}#qqs-dock-panel .dk-tab button{white-space:nowrap;flex:0 0 auto}@media (max-width:560px){#qqs-dock-panel:not(.dk-full){left:8px!important;right:8px!important;width:auto!important;max-width:calc(100vw - 16px)!important;bottom:96px!important}#qqs-dock-panel .dk-h{font-size:13px;padding:8px 10px;gap:6px}#qqs-dock-panel .dk-b{padding:8px 10px;font-size:13px}#qqs-dock-panel .dk-tab button{font-size:12px;padding:7px 10px}#qqs-dock-panel .dk-btn{font-size:12px;padding:6px 10px}#qqs-dock-panel .dk-row{gap:6px;margin:5px 0}#qqs-dock-panel select.qqs-sel,#qqs-dock-panel input.qqs-txt,#qqs-dock-panel textarea.qqs-txt{padding:7px 9px;font-size:16px}#qqs-dock-panel .dk-list{max-height:46vh}#qqs-dock-panel .dk-item{padding:8px 6px;gap:6px}}@media (max-width:560px){#qqs-dock-panel.dk-full{border-radius:0}#qqs-dock-panel.dk-full .dk-b{padding-bottom:calc(8px + env(safe-area-inset-bottom,0px))}#qqs-dock-panel.dk-full .dk-tab{position:sticky;top:0;background:#fff;z-index:2}}@media (max-width:560px){#qqs-dock-ball{width:46px;height:46px;line-height:46px;font-size:21px}}#qqs-dock-panel .dk-chat-wrap{position:relative}#qqs-dock-panel .dk-jump-latest{display:none;position:absolute;right:12px;bottom:76px;z-index:6;align-items:center;gap:4px;padding:5px 13px;font-size:12px;font-weight:600;color:#fff;cursor:pointer;border:none;border-radius:15px;background:linear-gradient(180deg,#69a6ff,#3d7df5);box-shadow:0 3px 12px rgba(30,60,140,.32);transition:transform .12s,box-shadow .12s}#qqs-dock-panel .dk-jump-latest.on{display:inline-flex}#qqs-dock-panel .dk-jump-latest:hover{background:linear-gradient(180deg,#5c9bfa,#2f6fe6);box-shadow:0 4px 16px rgba(30,60,140,.4)}#qqs-dock-panel .dk-jump-latest:active{transform:scale(.95)}"
     function ensureDockCss2() { try { if (!document.getElementById('qqs-dock-css2')) { var st = document.createElement('style'); st.id = 'qqs-dock-css2'; st.textContent = DOCK_CSS2; document.head.appendChild(st) } } catch (e) {} };
     function ensureDockCss() { try { if (!document.getElementById('qqs-dock-css')) { var st = document.createElement('style'); st.id = 'qqs-dock-css'; st.textContent = DOCK_CSS; document.head.appendChild(st) } } catch (e) {} }
     function startQqDock(sessionsSvc) {
@@ -1887,6 +1887,18 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           document.body.appendChild(panel)
         }
         open = true
+        // 2026-10-04 五次修复（主人实测："刷新后打开 dock 还是从 9/21 开始"）：
+        //   关闭面板时 DOM 会清空（closePanel 里 innerHTML=''），但 **JS 里的 state.chatItems 还留着** ——
+        //   重开时 paintBody 见 chatItems 非空就**不重新加载**（L3965 的条件），直接复用那批旧数据
+        //   （含"上次翻到哪"，于是又停在最旧处）。
+        //   这里每次打开都**丢弃聊天缓存**，强制走 loadChat(true) 拉最新一页 ⇒ 配合贴底逻辑，
+        //   打开即停在最新（= 主人说的老行为）。
+        try {
+          state.chatItems = []
+          state.chatOldest = 0
+          state.chatNewest = 0
+          state.chatErr = ''
+        } catch (e) { /* ignore */ }
         // 先量球位置(隐藏前), 再隐藏球
         var wr = wrap.getBoundingClientRect()
         lastBallRect = { left: wr.left, top: wr.top, right: wr.right, bottom: wr.bottom, width: wr.width, height: wr.height }
@@ -1932,7 +1944,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
       setInterval(refreshBadge, 20000)
 
       // ── 面板状态(每个实例独立保存, 切回不丢) ──
-      var state = { ns: '', accts: [], gid: '', groups: [], tab: 'chat', sendScope: 'group', sendTo: '', sendName: '', sendText: '', insertCtx: true, targetQ: '', c2cs: [], joins: null, mutes: null, members: null, muteSecs: '60', bindGid: '', bindName: '', msg: '', busy: '', wantPeer: null, lookedUp: false, detected: null, detectedHit: null, chatItems: [], chatMore: false, chatBusy: '', chatErr: '', chatOldest: 0, chatText: '', chatIns: true, outMode: '', outRev: undefined, bpEvents: [], bpSel: null, bpDraft: null, rosterSel: {}, rosterScope: 'all', rosterQ: '', hubSid: '', hubRev: undefined, hubBusy: '', hubMsg: '', gaEnabled: false, gaPoll: false, gaPollWake: true, gaHubNotify: true, gaNotifyGroup: true, gaInterval: 5, gaMinCount: 1, gaMsg: '', gaBusy: '', bcDraft: null, bcTasks: null, cardMd: '', cardBtns: '', cardGid: '', cardBusy: '', cardQ: '', tgGroups: [], tgCur: '', hammerSub: 'mute', qunLogged: null, qunUin: '', qunGroups: [], qunGc: '', qunKw: '', qunMembers: [], qunCount: 0, qunQr: false, qunMsg: '', qunBusy: false, qunLoading: false }
+      var state = { ns: '', accts: [], gid: '', groups: [], tab: 'chat', sendScope: 'group', sendTo: '', sendName: '', sendText: '', insertCtx: true, targetQ: '', c2cs: [], joins: null, mutes: null, members: null, muteSecs: '60', bindGid: '', bindName: '', msg: '', busy: '', wantPeer: null, lookedUp: false, detected: null, detectedHit: null, chatItems: [], chatMore: false, chatBusy: '', chatErr: '', chatOldest: 0, chatText: '', chatIns: true, outMode: '', outRev: undefined, bpEvents: [], bpSel: null, bpDraft: null, bpExt: null, bpExtBusy: '', bpReq: '', bpReqHint: '', bpSrcText: null, bpSrcPath: '', rosterSel: {}, rosterScope: 'all', rosterQ: '', hubSid: '', hubRev: undefined, hubBusy: '', hubMsg: '', gaEnabled: false, gaPoll: false, gaPollWake: true, gaHubNotify: true, gaNotifyGroup: true, gaInterval: 5, gaMinCount: 1, gaMsg: '', gaBusy: '', bcDraft: null, bcTasks: null, cardMd: '', cardBtns: '', cardGid: '', cardBusy: '', cardQ: '', tgGroups: [], tgCur: '', hammerSub: 'mute', qunLogged: null, qunUin: '', qunGroups: [], qunGc: '', qunKw: '', qunMembers: [], qunCount: 0, qunQr: false, qunMsg: '', qunBusy: false, qunLoading: false }
       // 🗂 自定义目标分组(仿 QQ 分组): 2026-09-12 起**host 持久化**({dataRoot}/.qqbot/target-groups.json),
       // localStorage 只当秒开缓存 —— 这样 **AI 与主人共用同一份分组**(agent 侧 broadcast_send 可直接写分组名群发),
       // 顺带修掉"换个浏览器分组就没了"的老毛病。
@@ -3553,6 +3565,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             + '<span class="dk-msg" id="dk-chat-status" style="flex:1">QQ 会话记录(注入/系统文本已滤)</span>'
             + '</div>'
             + '<div class="dk-chat-box" id="dk-chat-box"></div>'
+            + '<button class="dk-jump-latest" id="dk-jump-latest" title="跳到最新消息">↓ 最新</button>'
             + '</div>'
           // QQ 风格输入栏: 文本发送; bbcode [MEDIA:图片|路径/链接] 支持本地图与网络图
           body += '<div class="dk-composer">'
@@ -3881,8 +3894,14 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             var btnN = (ev.buttons || []).length
             var rowc = bpRowCount(ev)
             var overL = rowc.rows > 5
+            // 🤖 自定义事件(带 file): 编辑器不适用 → 列表上标出来, 并显示模块文件与加载状态
+            var isExt = !!(ev.file && String(ev.file).trim())
+            var extSt = isExt ? bpExtOf(ev.file) : null
+            var extBad = extSt && extSt.error
             body += '<div class="dk-item" style="cursor:pointer;background:' + (sel ? '#f1ecff' : 'transparent') + '" data-bpidx="' + i + '">'
-              + '<span style="flex:1"><b>' + esc(ev.name || '(未命名)') + '</b> <span style="color:#888;font-size:11px">/ ' + esc(ev.id || '?') + ' · ' + btnN + ' 按钮·每行' + rowc.per + ' → ' + rowc.rows + '行' + (overL ? ' <b style="color:#e03131">⚠超限</b>' : '') + ' · ' + (ev.perm && ev.perm.type ? esc(ev.perm.type) : 'all') + ' · ' + (ev.expireSec || 600) + 's</span></span>'
+              + '<span style="flex:1"><b>' + (isExt ? '🤖 ' : '') + esc(ev.name || '(未命名)') + '</b> <span style="color:#888;font-size:11px">/ ' + esc(ev.id || '?') + ' · ' + (isExt
+                ? ('AI 模块 ' + esc(String(ev.file)) + (extSt ? (extSt.exists === false ? ' <b style="color:#e03131">文件缺失</b>' : (extBad ? ' <b style="color:#e03131">加载失败</b>' : ' <b style="color:#2f9e44">OK</b>')) : ''))
+                : (btnN + ' 按钮·每行' + rowc.per + ' → ' + rowc.rows + '行' + (overL ? ' <b style="color:#e03131">⚠超限</b>' : ''))) + ' · ' + (ev.perm && ev.perm.type ? esc(ev.perm.type) : 'all') + ' · ' + (ev.expireSec || 600) + 's</span></span>'
               + '<button class="dk-btn" data-bp2card="' + i + '" title="把此事件的卡片预设(正文+按钮)复制进「📝 卡片」编辑器">📋</button>'
               + '<button class="dk-btn no" data-bpdel="' + i + '">🗑</button></div>'
           })
@@ -3890,10 +3909,65 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
           body += '<div class="dk-row"><button class="dk-btn ok" id="dk-bp-new">➕ 新建事件</button>'
           body += '<button class="dk-btn ok" id="dk-bp-save">💾 保存全部(live 热更)</button>'
           body += '<span class="dk-msg" id="dk-bp-hint" style="color:#2f9e44"></span></div>'
+          // 🤖🤖 让 AI 写(2026-10-05 主人要求): 描述需求 → 拼成一条消息唤醒当前会话的 AI,
+          // 它按契约把模块写进 {dataRoot}/.qqbot-extensions/botplay/ 并登记事件。
+          // 走面板既有的"用户代你发送/唤醒 AI"通道(与「让ai写样例库」同一条路, 不新开渠道)。
+          body += '<div style="border-top:1px dashed #e2d9ff;margin-top:8px;padding-top:8px">'
+          body += '<div class="dk-row" style="font-weight:700;font-size:13px;margin:2px 0 2px;color:#4a3a9f">🤖 让 AI 写自定义事件</div>'
+          body += '<div class="dk-row"><span class="dk-msg" style="flex:1;font-size:11px;color:#777">直接用大白话描述你想要的互动事件(谁点、点了干什么、谁能点、要不要统计…)，'
+            + '点下面按钮就会把你的需求 + QQ 官方接口文档 + 自定义事件契约一起发给<b>当前会话的 AI</b>，由它写成一个模块并登记成 botplay 事件。</span></div>'
+          body += '<div class="dk-row" style="align-items:flex-start"><textarea id="dk-bp-req" placeholder="例：我要一个签到人数统计。按钮1 签到，所有人都能点，每人只能点一次；按钮2 结束，只有我能点。我点结束后 bot 在群里发消息，列出签到人数和所有签到者的名字。" style="flex:1;min-height:72px;font-size:12px;font-family:inherit;box-sizing:border-box;padding:6px;border:1px solid #ddd;border-radius:6px;resize:vertical">' + esc(state.bpReq || '') + '</textarea></div>'
+          body += '<div class="dk-row"><button class="dk-btn ok" id="dk-bp-aiwrite">🤖 让 AI 写</button>'
+            + '<span class="dk-msg" style="flex:1;font-size:11px;color:#888">'
+            + (state.detectedHit && state.detectedHit.peerId
+              ? ('目标: ' + (state.detectedHit.scope === 'group' ? '群' : '私聊') + '「' + esc(state.detectedHit.name || state.detectedHit.peerId.slice(-6)) + '」(顶栏「当前会话」)')
+              : '⚠ 请先把顶栏「当前会话」切到与 bot 的群/私聊 —— 不然不知道把需求发给谁')
+            + '</span></div>'
+          body += '<div class="dk-msg" id="dk-bp-aihint" style="color:#2f9e44;margin:2px 0 2px">' + esc(state.bpReqHint || '') + '</div>'
+          body += '</div>'
           // 编辑器
           if (state.bpDraft) {
             var D = state.bpDraft
+            var DIsExt = !!(D.file && String(D.file).trim())
             body += '<div style="border-top:1px dashed #e2d9ff;margin-top:8px;padding-top:8px">'
+            if (DIsExt) {
+              // ── 自定义事件: **不显示**下面的编辑表单(那些字段对模块驱动的卡片没有意义), 换成模块提示区 ──
+              var st = bpExtOf(D.file)
+              var mt = st && st.exists && st.mtime ? new Date(st.mtime) : null
+              var mtStr = mt ? (mt.getFullYear() + '-' + String(mt.getMonth() + 1).padStart(2, '0') + '-' + String(mt.getDate()).padStart(2, '0') + ' ' + String(mt.getHours()).padStart(2, '0') + ':' + String(mt.getMinutes()).padStart(2, '0') + ':' + String(mt.getSeconds()).padStart(2, '0')) : ''
+              body += '<div style="font-weight:700;font-size:12px;margin:2px 0 4px;color:#4a3a9f">🤖 自定义事件（由 AI 写的模块驱动）</div>'
+              body += '<div class="dk-row"><span class="dk-msg" style="flex:1;font-size:12px;color:#555">此事件由 AI 编写的 JS 模块驱动，编辑器不适用。'
+                + '模块文件位于数据根下的 .qqbot-extensions 目录（插件升级/重装不会覆盖）。</span></div>'
+              body += '<div class="dk-row"><span class="dk-msg" style="flex:1;font-size:11px;color:#333;word-break:break-all">'
+                + '<b>事件名</b> ' + esc(D.name || '(未命名)') + '　<b>id</b> ' + esc(D.id || '?') + '<br>'
+                + '<b>模块文件</b> <code>' + esc(pickPath(st && st.path, state) || '(路径待取)') + '</code><br>'
+                + '<b>状态</b> ' + (st
+                  ? ((st.exists === false ? '<b style="color:#e03131">文件不存在</b>' : '<b style="color:#2f9e44">文件存在</b>')
+                    + (mtStr ? '　最后修改 ' + mtStr : '')
+                    + (st.size ? '　' + st.size + ' 字节' : '')
+                    + (st.hooks && st.hooks.length ? '　导出: ' + esc(st.hooks.join(',')) : '')
+                    + (st.loadedMtime && st.mtime && st.loadedMtime === st.mtime ? '　<b style="color:#2f9e44">已加载</b>' : (st.loadedMtime ? '　<b style="color:#e8590c">已改动, 需重载</b>' : '　<b style="color:#868e96">尚未加载</b>')))
+                  : '(插件未就绪或正在读取…)')
+                + '</span></div>'
+              // 加载失败 / 目录不存在 / 插件未就绪 的错误摘要(红色)
+              if (st && st.error) body += '<div class="dk-msg" style="color:#e03131;font-size:11px;word-break:break-all">✗ 模块加载失败: ' + esc(st.error) + '</div>'
+              if (state.bpExt && state.bpExt.dirExists === false && state.bpExt.dir) body += '<div class="dk-msg" style="color:#e8590c;font-size:11px">⚠ 扩展目录还不存在: ' + esc(state.bpExt.dir) + '（让 AI 写一个模块时它会自动创建）</div>'
+              if (state.bpExt && state.bpExt.note) body += '<div class="dk-msg" style="color:#e8590c;font-size:11px">⚠ ' + esc(state.bpExt.note) + '</div>'
+              body += '<div class="dk-row" style="gap:8px">'
+                + '<button class="dk-btn ok" id="dk-bp-extreload"' + (state.bpExtBusy ? ' disabled' : '') + ' title="热重载模块: 清掉插件内存里的缓存, 下次发卡/点击就用新代码(不用重启宿主)">🔄 重载模块</button>'
+                + '<button class="dk-btn" id="dk-bp-extsrc" title="读取该模块源码(在下面文本域里显示, 可全选复制)">📄 查看源码</button>'
+                + '<button class="dk-btn" id="dk-bp-extdir" title="把扩展目录路径复制到剪贴板(方便用编辑器/VSCode 打开)">📁 复制路径</button>'
+                + '</div>'
+              body += '<div class="dk-msg" id="dk-bp-exthint" style="color:#2f9e44;font-size:11px;margin:2px 0">' + esc(state.bpExtBusy || '') + '</div>'
+              if (state.bpSrcText !== undefined && state.bpSrcText !== null) {
+                body += '<div class="dk-row" style="align-items:flex-start"><textarea id="dk-bp-src" readonly style="flex:1;min-height:150px;font-size:11px;font-family:monospace;box-sizing:border-box;padding:6px;border:1px solid #ddd;border-radius:6px;resize:vertical">' + esc(state.bpSrcText) + '</textarea></div>'
+                body += '<div class="dk-row"><span class="dk-msg" style="flex:1;font-size:11px;color:#888">' + esc(state.bpSrcPath || '') + '　(只读; 想改就让 AI 改, 或自己用编辑器打开)</span><button class="dk-btn" id="dk-bp-srcclose">收起</button></div>'
+              }
+              body += '<div class="dk-row"><span class="dk-msg" style="flex:1;font-size:11px;color:#777">想让这个事件回到普通编辑器？把事件 JSON 里的 <code>file</code> 字段删掉即可（或让 AI 改）。</span></div>'
+              body += '<div class="dk-row"><button class="dk-btn" id="dk-bp-extevents" title="打开 botplay-events.json 所在目录路径(复制到剪贴板)">📋 复制事件文件路径</button>'
+                + '<span class="dk-msg" style="flex:1;font-size:11px;color:#888">事件登记: botplay-events.json 里的 <code>' + esc(D.id || '?') + '</code> → file <code>' + esc(String(D.file)) + '</code></span></div>'
+              body += '</div>'
+            } else {
             body += '<div class="dk-row"><label style="font-size:12px;color:#555;width:56px">事件名</label><input class="qqs-txt" id="dk-bp-name" value="' + esc(D.name) + '" style="flex:1" placeholder="如: 签到"></div>'
             body += '<div class="dk-row"><label style="font-size:12px;color:#555;width:56px">id</label><input class="qqs-txt" id="dk-bp-id" value="' + esc(D.id) + '" style="flex:1" placeholder="英文/数字/_- (触发用)"></div>'
             body += '<div class="dk-row" style="align-items:flex-start"><label style="font-size:12px;color:#555;width:56px;padding-top:4px">卡片正文</label>'
@@ -3928,6 +4002,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
             body += '<div class="dk-row"><button class="dk-btn" id="dk-bp-addbtn">➕ 加按钮</button>'
               + '<span class="dk-msg" id="dk-bp-addmsg">每行 ' + rowc2.per + ' 个 × 最多 5 行 = 上限 ' + (rowc2.per * 5) + ' 个(QQ 键盘: ≤5行 × 每行≤5)</span></div>'
             body += '</div>'
+            }
           }
         }
         body += status
@@ -4202,10 +4277,31 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         var crf = panel.querySelector('#dk-chat-refresh')
         if (crf) crf.onclick = function () { state.chatItems = []; state.chatErr = ''; state.chatBusy = ''; loadChat(true) }
         var cbox = panel.querySelector('#dk-chat-box')
+        // 「↓ 最新」跳转按钮（2026-10-04 主人要求）：往上翻历史后一键回到最新。
+        //   显示条件 = 距底部超过 40px；点一下滚到底、并顺手拉一次更新的消息。
+        var jumpLatest = function () {
+          var b = panel.querySelector('#dk-chat-box')
+          var jb = panel.querySelector('#dk-jump-latest')
+          if (b) { b.scrollTop = b.scrollHeight }
+          if (jb) jb.classList.remove('on')
+          if (state.tab === 'chat' && !state.chatBusy) { try { loadChatNewer() } catch (e) { /* 还没加载过也没关系 */ } }
+        }
+        var syncJumpLatest = function (b) {
+          try {
+            var jb = panel.querySelector('#dk-jump-latest')
+            if (!jb || !b) return
+            if ((b.scrollHeight - b.scrollTop - b.clientHeight) > 40) jb.classList.add('on')
+            else jb.classList.remove('on')
+          } catch (e) { /* ignore */ }
+        }
         if (cbox) cbox.onscroll = function () {
+          // ⚠️ 必须放在下面的 early return **之前** —— 否则 tab 不是 chat / 加载中就永远不显示按钮
+          syncJumpLatest(cbox)
           if (state.tab !== 'chat' || !state.chatMore || state.chatBusy) return
           if (cbox.scrollTop <= 4) loadChat(false) // 顶部 → 加载更早
         }
+        var jbtn = panel.querySelector('#dk-jump-latest')
+        if (jbtn) jbtn.onclick = jumpLatest
         // 2026-10-01 主人要求：「滚轮向下滚一次就刷新一下」——**不管有没有滚动成功**
         //   （已经停在底部也刷：方便随时确认有没有新消息，比每个来回点 🔄 刷新省事）。
         //   向上滚不拦（交给上面的"到顶部加载更早"，两个功能不打架）。
@@ -4434,6 +4530,99 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         }
         var bpSave = panel.querySelector('#dk-bp-save')
         if (bpSave) bpSave.onclick = saveBotplay
+
+        // ── 🤖 让 AI 写(2026-10-05): 需求文本域 + 按钮 ──
+        var bpReq = panel.querySelector('#dk-bp-req')
+        if (bpReq) bpReq.oninput = function (e) { state.bpReq = e.target.value }
+        var bpAi = panel.querySelector('#dk-bp-aiwrite')
+        if (bpAi) bpAi.onclick = letAiWriteBotplay
+        // ── 🤖 自定义事件: 重载模块 / 看源码 / 复制路径 ──
+        var bpReload = panel.querySelector('#dk-bp-extreload')
+        if (bpReload) bpReload.onclick = function () {
+          var f = state.bpDraft && state.bpDraft.file ? String(state.bpDraft.file) : ''
+          var eh = panel.querySelector('#dk-bp-exthint')
+          state.bpExtBusy = '重载中…'
+          if (eh) eh.textContent = '重载中…'
+          apiPost('group/botplay-ext/reload', { ns: state.ns || 'im-qqbot', file: f }).then(function (d) {
+            state.bpExtBusy = ''
+            if (eh) eh.textContent = (d && d.ok) ? ('✓ ' + (d.msg || '已重载')) : ('✗ ' + ((d && (d.error || d.msg)) || '重载失败'))
+            loadBotplayExt(true)
+          }).catch(function (e) {
+            state.bpExtBusy = ''
+            if (eh) eh.textContent = '重载异常: ' + e.message
+          })
+        }
+        var bpSrc = panel.querySelector('#dk-bp-extsrc')
+        if (bpSrc) bpSrc.onclick = function () {
+          var f = state.bpDraft && state.bpDraft.file ? String(state.bpDraft.file) : ''
+          var eh = panel.querySelector('#dk-bp-exthint')
+          if (!f) return
+          if (eh) eh.textContent = '读取源码中…'
+          api('group/botplay-ext/source', 'ns=' + encodeURIComponent(state.ns || 'im-qqbot') + '&file=' + encodeURIComponent(f)).then(function (d) {
+            if (d && d.ok) { state.bpSrcText = d.text; state.bpSrcPath = d.path; paintBody() }
+            else if (eh) eh.textContent = '✗ ' + ((d && (d.error || d.msg)) || '读取失败')
+          }).catch(function (e) { if (eh) eh.textContent = '异常: ' + e.message })
+        }
+        var bpSrcClose = panel.querySelector('#dk-bp-srcclose')
+        if (bpSrcClose) bpSrcClose.onclick = function () { state.bpSrcText = null; state.bpSrcPath = ''; paintBody() }
+        var bpExtDir = panel.querySelector('#dk-bp-extdir')
+        if (bpExtDir) bpExtDir.onclick = function () {
+          var p = (state.bpExt && state.bpExt.dir) || ''
+          if (!p) return
+          copyText(p, '#dk-bp-exthint', '✓ 已复制扩展目录: ')
+        }
+        var bpExtEvents = panel.querySelector('#dk-bp-extevents')
+        if (bpExtEvents) bpExtEvents.onclick = function () {
+          var dr = (state.bpExt && state.bpExt.dataRoot) || ''
+          if (!dr) return
+          copyText(dr + '\\botplay-events.json', '#dk-bp-exthint', '✓ 已复制事件文件路径: ')
+        }
+      }
+      // 复制文本到剪贴板(带老浏览器回落); hintSel 指定的元素里回显提示
+      function copyText(text, hintSel, okPrefix) {
+        var h = hintSel ? panel.querySelector(hintSel) : null
+        var done = function () { if (h) h.textContent = (okPrefix || '已复制: ') + text }
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done, function () { done() })
+            return
+          }
+        } catch (e) { /* 回落 */ }
+        done()
+      }
+      // 在 state.bpExt.mods 里按文件名找模块状态(插件未就绪时 bpExt 可能是 null)
+      function bpExtOf(file) {
+        if (!state.bpExt || !Array.isArray(state.bpExt.mods)) return null
+        var f = String(file || '')
+        for (var i = 0; i < state.bpExt.mods.length; i++) { if (state.bpExt.mods[i] && state.bpExt.mods[i].file === f) return state.bpExt.mods[i] }
+        return null
+      }
+      // 路径优先用 host 报的绝对路径; host 没给就按数据根拼一个(至少让主人知道该去哪儿找)
+      function pickPath(p, st) {
+        if (p) return p
+        var dr = (st && st.dataRoot) || (state.bpExt && state.bpExt.dataRoot) || ''
+        return dr ? (dr + '\\.qqbot-extensions\\botplay\\' + String((state.bpDraft && state.bpDraft.file) || '')) : ''
+      }
+      // 🤖 让 AI 写自定义事件: 把需求文本域的内容交给 host 现拼提示词(附接口文档+契约), 再由它唤醒当前会话 AI
+      function letAiWriteBotplay() {
+        var h = panel.querySelector('#dk-bp-aihint')
+        var reqEl = panel.querySelector('#dk-bp-req')
+        var req = String((reqEl ? reqEl.value : state.bpReq) || '').trim()
+        state.bpReq = req
+        if (!req) { if (h) h.textContent = '✗ 先在输入框里写你要的事件需求(大白话就行)'; return }
+        var hit = state.detectedHit
+        if (!hit || !hit.peerId) { if (h) h.textContent = '✗ 顶栏「当前会话」不是 QQ 群/私聊 —— 先切到与 bot 的群或私聊会话, 才知道把需求发给谁'; return }
+        var ns = hit.ns || state.ns
+        // 顺手把"已占用的 id/文件名"一起带过去, 免得 AI 撞号(它自己也能读文件, 但这句更省事)
+        var ids = (state.bpEvents || []).map(function (e) { return e.id }).filter(Boolean).join(', ')
+        var files = (state.bpEvents || []).map(function (e) { return e.file }).filter(Boolean).join(', ')
+        if (ids || files) req += '\n\n(小提示: 已经占用的事件 id: ' + (ids || '无') + '；已用模块文件: ' + (files || '无') + ' —— 请避开重名)'
+        if (h) h.textContent = '发给 AI 中…(' + (hit.scope === 'group' ? '群' : '私聊') + '「' + (hit.name || '') + '」)'
+        apiPost('group/botplay-ext/let-ai-write', { ns: ns || 'im-qqbot', scope: hit.scope, peerId: hit.peerId, requirement: req })
+          .then(function (d) {
+            if (h) h.textContent = (d && d.ok) ? ('✓ ' + d.msg + ' 写完记得点事件的「🔄 重载模块」') : ('✗ ' + ((d && (d.error || d.msg)) || '失败'))
+          })
+          .catch(function (e) { if (h) h.textContent = '异常: ' + e.message })
       }
       // QQ 键盘布局限制(官方 API): 键盘最多 5 行 × 每行最多 5 个按钮 → 行数=ceil(按钮数/每行数)≤5 才合法
       function bpRowCount(ev) {
@@ -4463,6 +4652,19 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
               paintBody()
             }
           }).catch(function () {})
+        // 🤖 自定义事件模块状态(路径/是否存在/mtime/加载错误) —— 与事件列表并行拉, 不阻塞编辑器渲染
+        loadBotplayExt(false)
+      }
+      // 🤖 自定义事件: 拉模块状态(有自定义事件才拉, 省一次请求)
+      // repaint=true 时重绘(重载后要刷新"已加载/已改动"标记); 否则只更新 state, 不打断正在打字的主人
+      function loadBotplayExt(repaint) {
+        if (state.tab !== 'bp') return
+        var hasExt = (state.bpEvents || []).some(function (e) { return !!(e && e.file && String(e.file).trim()) })
+        if (!hasExt && !repaint) return
+        api('group/botplay-ext/status', state.ns ? 'ns=' + encodeURIComponent(state.ns) : '')
+          .then(function (d) {
+            if (d && d.ok) { state.bpExt = d; if (repaint) paintBody() }
+          }).catch(function () { /* 拉不到就按"未就绪"显示路径 */ })
       }
       function saveBotplay() {
         var hint = panel.querySelector('#dk-bp-hint')
@@ -4546,6 +4748,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         if (mode === 'more' && state.chatOldest > 0) q += '&beforeSeq=' + state.chatOldest
         api('chat/history', q).then(function (d) {
           state.chatBusy = ''
+          try { state.chatDebug = (d && d.debug) || null } catch (e) { /* ignore */ }
           if (!d || !d.ok) { state.chatErr = (d && (d.error || d.msg)) || '加载失败'; renderChatList(); return }
           var list = (Array.isArray(d.items) ? d.items : []).filter(function (it) {
             return it && ((typeof it.text === 'string' && it.text) || (Array.isArray(it.images) && it.images.length))
@@ -4623,6 +4826,9 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         else if (state.chatErr) st.textContent = state.chatErr
         else if (!state.chatItems.length) st.textContent = '暂无记录 —— 机器人和该目标聊过后会显示在这里'
         else st.textContent = '共 ' + state.chatItems.length + ' 条 · ' + chatPeerName() + (state.chatMore ? ' · 上滑加载更早' : ' · 已到最早')
+          + (state.chatDebug ? ' ｜🔍 ' + state.chatDebug.seq + '/' + state.chatDebug.eventsLen + '/' + state.chatDebug.got : '')
+        // 🔍 临时诊断（2026-10-04，定位"只显示最旧"用）：鼠标悬停看完整信息
+        try { if (state.chatDebug) st.title = JSON.stringify(state.chatDebug) } catch (e) { /* ignore */ }
       }
       // 2026-10-01: 单条气泡 HTML 抽成函数 —— renderChatList 与"增量追加"共用同一套渲染
       function chatRowHTML(it) {
@@ -4699,20 +4905,83 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         bindChatImgs(box)
         // 滚动: 刷新/切目标 → 滚到底; 上滚加载更早 → 保持视口
         if (keepScrollOffset == null) {
-          box.scrollTop = box.scrollHeight
           // 2026-10-01 主人实测「打开 dock 显示的不是最新消息」：
           //   气泡里的图是 loading="lazy"，刚渲染时高度还没撑开 → 首次贴底其实只贴到"半截"，
-          //   等图加载完内容变高，视口就停在中间了。这里随后再补贴几次；
-          //   用户一旦手动滚（wheel）立刻停手，不跟他抢滚动条。
-          var stickCancel = false
-          try { box.addEventListener('wheel', function () { stickCancel = true }, { once: true, passive: true }) } catch (e) { /* 老浏览器忽略 */ }
-          var stickBottom = function () { if (!stickCancel) box.scrollTop = box.scrollHeight }
+          //   等图加载完内容变高，视口就停在中间了。
+          // 2026-10-04 二次修复（主人又实测到：57 条带图的会话，打开后停在**最旧**那条）：
+          //   原来的"定时补贴 4 次（最多 1.2 秒）"在图片加载慢时窗口早关了 ⇒ 之后图片撑开就再没人管。
+          //   改**事件驱动**：① 未加载完的 img 在 load/error 后贴底；
+          //                ② ResizeObserver 盯内容高度，一变高就贴底（覆盖懒加载/字体/视频等一切撑高）。
+          //
+          // 2026-10-04 三次修复（主人定位：**"自从记录滚动位置后，打开就不再默认最新了"**）：
+          //   上一版用 wheel / touchstart / keydown 当"用户在滚"的判据 —— 太容易误触发
+          //   （触控板轻点、焦点在面板里按键，甚至 image 的可聚焦元素都算），
+          //   一旦被 cancel，`box.innerHTML = html` 后的新容器 scrollTop 就停在 0 = **最旧那条** ✗
+          //   现在只看**真实滚动方向**：scrollTop 变小 = 用户主动往上翻 ⇒ 才停手。
+          //   其他一律继续贴底，等于恢复"打开/刷新默认停在最新"的老行为。
+          var lastTop = box.scrollTop
+          var userScrolledUp = false
+          try {
+            box.addEventListener('scroll', function () {
+              var t = box.scrollTop
+              if (t < lastTop - 6) userScrolledUp = true   // 往上翻 → 停手，别跟他抢
+              else if (t + 6 >= box.scrollHeight - box.clientHeight) userScrolledUp = false  // 又回到底部 → 恢复跟随
+              lastTop = t
+            }, { passive: true })
+          } catch (e) { /* 老浏览器忽略 */ }
+          var stickBottom = function () { if (!userScrolledUp) box.scrollTop = box.scrollHeight }
+          box.scrollTop = box.scrollHeight
+          // ① 图片加载完成 → 贴底
+          try {
+            var imgs = box.querySelectorAll('img')
+            for (var ii = 0; ii < imgs.length; ii++) {
+              if (imgs[ii].complete) continue
+              imgs[ii].addEventListener('load', stickBottom, { once: true })
+              imgs[ii].addEventListener('error', stickBottom, { once: true })
+            }
+          } catch (e) { /* ignore */ }
+          // ② 内容高度变化 → 贴底
+          // 2026-10-04 四次修复（主人实测"刷新后打开 dock 还是停在 9/21 最旧处"）：
+          //   上一版用 ResizeObserver 观测 `box`（#dk-chat-box）—— **错的**：
+          //   box 的高度是 CSS 写死的（height:min(36vh,300px)），图片撑高的是**内容**不是**容器**，
+          //   所以回调**永远不会触发**，一旦 1.2s 的定时补贴过去就再没人贴底 ✗
+          //   现在改为 **rAF 轮询 box.scrollHeight**（内容高度的直接度量）：
+          //   只要它在变（图片/字体/视频陆续撑开），就一直贴底；5 秒后自动停。
+          //   期间用户若真的往上翻（userScrolledUp）立刻停手。
+          try {
+            (function () {
+              var t0 = Date.now()
+              var lastH = box.scrollHeight
+              var tick = function () {
+                if (userScrolledUp) return
+                var h = box.scrollHeight
+                if (h !== lastH) {
+                  lastH = h
+                  box.scrollTop = box.scrollHeight
+                }
+                if (Date.now() - t0 < 5000) requestAnimationFrame(tick)
+              }
+              requestAnimationFrame(tick)
+            })()
+          } catch (e) { /* 没有 rAF 的环境忽略（下面还有定时补贴兜底） */ }
+          // ③ 保底定时补贴（覆盖没有 rAF 的环境）
           setTimeout(stickBottom, 80)
           setTimeout(stickBottom, 240)
           setTimeout(stickBottom, 600)
           setTimeout(stickBottom, 1200)
+          setTimeout(stickBottom, 2500)
         }
         else box.scrollTop = box.scrollHeight - keepScrollOffset
+        // 「↓ 最新」按钮：渲染即贴底 ⇒ 默认收起；并按输入框实际高度重新定位
+        //   （全屏 / 小屏 / textarea 变高时都不会压住输入区）
+        try {
+          var jbR = document.getElementById('dk-jump-latest')
+          if (jbR) {
+            jbR.classList.remove('on')
+            var comp = document.querySelector('#qqs-dock-panel .dk-composer')
+            jbR.style.bottom = (((comp && comp.offsetHeight) ? comp.offsetHeight : 66) + 10) + 'px'
+          }
+        } catch (e) { /* ignore */ }
       }
       // 2026-10-01 主人要求：滚轮向下 → **增量**追加新消息
       //   · 只 append 新气泡（不 box.innerHTML 重绘 → **不闪**）
@@ -4725,6 +4994,9 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
         if (tail) tail.insertAdjacentHTML('beforebegin', html)
         else box.insertAdjacentHTML('beforeend', html)
         bindChatImgs(box)
+        // 追加内容**不会触发 scroll 事件** ⇒ 主动同步一次「↓ 最新」按钮的显隐
+        //   （不含图片：图撑开导致的高度变化由上面 renderChatList 的 ResizeObserver 管）
+        try { syncJumpLatest(box) } catch (e) { /* ignore */ }
       }
       // 滚轮触发的"取更新的消息"：afterSeq = 当前已加载的最新位置
       function loadChatNewer() {

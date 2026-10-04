@@ -524,6 +524,83 @@ export default {
 7. 示范(点歌): ①工具里 fetch 搜索接口 → ②拼一段 markdown(封面/歌名/歌手/歌词) → ③`sender.sendMarkdown(replyTarget, 卡片)` → ④要试听就 `sender.sendMedia(...)` → ⑤返回 `{ok:true,msg:'已发卡'}`。
 8. **接口字段别猜**: 写扩展遇到不确定的官方字段/事件/错误码, 先查官方 api-v2 文档 <https://bot.q.qq.com/wiki/develop/api-v2/> (按钮 `action.type` 0=跳转/1=回调/2=指令、键盘 5 行上限、错误码等都在里面), 不要凭印象写。
 
+## 🤖 botplay 自定义事件 + 让 AI 写（v1.6.6+，2026-10-05 新增）
+
+普通 botplay 事件的按钮只能"点一次回一句死文本"（回文本 / 跳链接 / 执行命令）。想要**带状态**的互动
+（谁签到过、签了几个、只有主人能点、结束后统计公布名单），就用**自定义事件**：让 AI（或你自己）写一个
+JS 模块挂在事件上。
+
+### ① 自定义事件长什么样
+
+```
+{dataRoot}\botplay-events.json            ← 事件登记（多一个 file 字段）
+{dataRoot}\.qqbot-extensions\botplay\
+    ├─ checkin-stats.mjs                  ← 你/AI 写的模块（随包发货的示例）
+    ├─ data\checkin-stats.mjs.json        ← 模块自己的状态（模块用 ctx.store 读写）
+    └─ botplay-ext.log                    ← 加载/点击/报错的诊断日志（排查用）
+```
+
+事件 JSON 里加一个 `file` 就变成自定义事件（**buttons 可以留空**，按钮由模块给）：
+
+```json
+{ "id": "checkin-stats", "name": "签到人数统计", "file": "checkin-stats.mjs",
+  "expireSec": 3600, "maxClicks": 0, "perm": { "type": "all", "userIds": [] }, "buttonsPerRow": 1 }
+```
+
+用 `/botplay checkin-stats`（或 `/botplay` 目录里带 🤖 的那条）在群里发卡。
+
+- 模块目录在**数据根**下 → **升级/重装插件不会覆盖**你写的模块与它的状态。
+- 模块能用的能力：读写卡片正文/按钮（`ctx.card()`，改完自动重发刷新按钮）、发文本/markdown/图片到 QQ
+  （`ctx.emit` / `ctx.markdown` / `ctx.image`，支持 `<@openid>` @人）、持久化自有状态（`ctx.store`）、
+  查点击人 openid/昵称/是否主人（`ctx.user.isOwner`、`ctx.owners`）、发消息/日志等。
+- 模块钩子：`onInit` / `onClick` / `onExpire` / `onDispose`（全部可选，至少要有一个）。
+  ⚠️ 契约里还声明了 `onTick`（"卡片有效期内定期调一次"）**但当前版本框架不调用它** —— 留作以后扩展，别依赖它。
+- **权限提示**：QQ 客户端侧的按钮 permission 是**整张卡片**一个，做不到"按钮1谁都能点、按钮2只有主人"。
+  做法是事件 `perm` 设 `all`，细粒度权限**在模块的 `onClick` 里自己判** `ctx.user.isOwner` 后决定放不放行。
+- 钩子全部 **fail-soft**：模块写错/抛错只记日志 + 面板红字，不影响 QQ 正常聊天、不影响其它事件。
+
+### ② 让 AI 帮你写（面板「🎮 互动事件」页）
+
+1. 顶栏「当前会话」先切到**与 bot 的群/私聊**（提示词要发给那个会话的 AI）。
+2. 在「🤖 让 AI 写自定义事件」的输入框里用大白话写需求，例如：
+   > 我要一个签到人数统计。按钮1 签到，所有人都能点，每人只能点一次；按钮2 结束，只有我能点。
+   > 我点结束后 bot 在群里发消息，列出签到人数和所有签到者的名字。
+3. 点「🤖 让 AI 写」→ 面板会把 `需求原文 + 官方接口文档链接 + 自定义事件契约 + 环境信息(appId/主人openid，appSecret 只报位置不输出内容) + 要求`
+   拼成一条消息，用**面板既有的"唤醒当前会话 AI"通道**发给它（与「让ai写(样例库)」同一条路，不新开渠道）。
+4. AI 写好后：选中该事件 → 点 **「🔄 重载模块」**（热重载，**不用重启宿主也不用重启插件**）→ 群里发 `/botplay 事件id` 发卡验证。
+
+### ③ 选中自定义事件时，面板显示什么
+
+带 `file` 的事件**不再显示普通编辑表单**（那些字段对它没意义），改成一块提示区：
+
+- **模块文件完整路径** + 是否存在 + 最后修改时间 + 大小 + 已导出哪些钩子
+- `已加载` / `已改动, 需重载` / `尚未加载` 状态标记
+- **「🔄 重载模块」**（热重载，不用重启宿主）、**「📄 查看源码」**（面板里只读显示，可复制）、**「📁 复制路径」**（拿去编辑器打开）
+- 加载失败时**红字错误摘要**（例如"模块文件不存在或读不到: …"）
+- 想让事件回到普通编辑器：把事件 JSON 里的 `file` 字段删掉即可。
+
+### ④ 排查
+
+| 现象 | 先看哪 |
+|---|---|
+| 点了按钮没反应 | `{dataRoot}\.qqbot-extensions\botplay\botplay-ext.log` + 面板选中该事件看红字 |
+| 面板说"已改动, 需重载" | 点「🔄 重载模块」（改了 .mjs 文件后必须重载一次） |
+| 发卡报"模块没跑起来 → …" | 报错里带完整路径，按路径确认文件在不在、语法对不对（`node --check <文件>`） |
+| 模块写对了但不生效 | 确认事件的 `file` 字段值与文件名**完全一致**（含 `.mjs`） |
+| 每次点都回"你已经签过了" | 模块自己的状态在 `data\<文件名>.json`，想重来就删它（或在模块里加个重置按钮） |
+
+### ⑤ 给 AI 的要点（让 AI 写 botplay 自定义事件时照此办）
+
+1. 模块写进 `{dataRoot}\.qqbot-extensions\botplay\<文件名>.mjs`（文件名只用字母/数字/`._@-`，**不允许路径分隔符**）。
+2. `export default { name, onInit(ctx), onClick(ctx, info), … }`，至少要有 `onInit` 或 `onClick`。
+3. `info = { buttonId, buttonLabel, clickedBefore }`；`onClick` **返回非空字符串**就把那句回给点击者（最省事）。
+4. 想改按钮文字/正文就 `ctx.card()` 改完把 `dirty = true`，框架会**自动重发卡片**刷新（QQ 没有"改卡片"接口，重发是可靠做法）。
+5. 要"只有主人能点"：`ctx.user.isOwner`（或 `ctx.owners.includes(openid)`）—— 卡片级 perm 做不到按按钮区分。
+6. 状态用 `ctx.store.load()/save()`（**升级不丢**）；别把状态写在插件包内。
+7. 别改事件 JSON 里其它事件的字段；加新事件就 append 一条（`id` 不能与现有重复）。
+8. 不确定的官方字段/事件/错误码去查 <https://bot.q.qq.com/wiki/develop/api-v2/>（按钮回调事件是 `interaction_create`）。
+
+
 ## 富媒体指令（AI 回复里写标记，自动变成真消息）
 
 让 AI（或你替她）在回复正文里写以下标记，插件会自动拆出来发成真实的 QQ 消息，**标记本身不会显示**：

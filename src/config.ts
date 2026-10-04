@@ -171,6 +171,13 @@ export interface BotplayEventConfig {
     /** users 时填 openid 列表; owner 时可用(留空=取群主白名单) */
     userIds?: string[];
   };
+  /**
+   * 自定义事件模块文件名(2026-10-05): 填了 ⇒ 本事件由 AI 写的 JS 模块驱动,
+   * 放在 {dataRoot}/.qqbot-extensions/botplay/<file>; 卡片按钮与点击行为都走模块钩子,
+   * dock 编辑器对这类事件不再显示编辑表单(改为"模块路径 + 重载 + 看源码")。
+   * 空/缺省 = 普通事件(走原来的按钮配置)。
+   */
+  file?: string;
   buttons: BotplayButtonConfig[];
 }
 
@@ -490,11 +497,14 @@ const botplayEventSchema = Schema.object({
   expireSec: Schema.number().default(600).description('发卡后有效期(秒), 超时按钮失效'),
   perm: botplayPermSchema,
   buttonsPerRow: Schema.number().min(1).max(5).default(1).description('每行几个按钮(1~5, 默认1竖排; QQ 上限 5行×5钮)'),
+  // 自定义事件模块(2026-10-05): 填了就走 {dataRoot}/.qqbot-extensions/botplay/<file> 的模块钩子
+  file: Schema.string().default('').description('自定义事件模块文件名(放 {dataRoot}/.qqbot-extensions/botplay/, 如 checkin-stats.mjs); 空=普通事件'),
   buttons: Schema.array(botplayButtonSchema).default([]).description('按钮列表(QQ限制: 最多5行)'),
 }).default({
   id: '', name: '', contentText: '', maxClicks: 0, expireSec: 600,
   perm: { type: 'all', userIds: [] },
   buttonsPerRow: 1,
+  file: '',
   buttons: [],
 }).description('botplay 互动事件');
 

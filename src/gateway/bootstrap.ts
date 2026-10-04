@@ -466,8 +466,22 @@ export async function bootstrapGateway(
     () => readBotplayEvents(dataRootOf(config), () => (Array.isArray(config.botplayEvents) ? config.botplayEvents : [])),
     () => (Array.isArray(config.groupAdmin?.owners) ? config.groupAdmin.owners : []),
     () => stickerDataDir,
+    // 数据根(2026-10-05): botplay 自定义事件模块放 {dataRoot}/.qqbot-extensions/botplay/
+    // ⚠️ 必须与事件文件同源(dataRootOf), 否则面板报的路径与实际加载的不是一处, 主人改错文件还找不到原因
+    () => dataRootOf(config),
   );
   registerBotplayController(myNs, botplayController);
+  // 昵称兜底(2026-10-05 主人定: "兜底的时候用 api，其余的时候用台账"):
+  //   台账/会话壳都查不到时, 后台调官方「获取群成员信息」接口拿 username。
+  //   ⚠️ 该接口官方标注「内邀接入中」(11253=无权限) ⇒ 失败静默、只记一行日志。
+  //   借 manager.groupAdmin(懒建; groupAdmin.enabled=false 时为 undefined ⇒ 自动跳过)。
+  botplayController.setGroupAdminGetter(() => manager.groupAdmin);
+  // 卡片(= .mjs 代码)需要"钥匙"而不是"被包好的能力": 直接把 appId/appSecret 给它,
+  // 它就能自己换 access_token 调任意官方 API(查成员/发消息/上传媒体/禁言…)。
+  botplayController.setCredentialsGetter(() => ({
+    appId: String(config.appId ?? ''),
+    appSecret: String(config.appSecret ?? ''),
+  }));
   setBotplayTriggerImpl(myNs, (target, eventId, triggererId) => botplayController!.trigger(target, eventId, triggererId));
   setBotplayCatalogImpl(myNs, (target, page) => botplayController!.sendCatalog(target, page));
   // 预设切换卡片(2026-09-10): /preset 无参发按钮卡, 点击热切人格(仿 botplay 翻页)

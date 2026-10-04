@@ -16,12 +16,37 @@
  * llmEffect.mode]/maxClicks/expireSec); perm 默认 all, triggerer 推荐;
  * 行为类型 reply_text 落地, jump_url/callback 预留。
  */
+import { join } from 'node:path';
+
+/** 官方 group-admin 客户端的最小外形（只用到 getMemberInfo；避免与 api/group-admin 强耦合） */
+type GroupAdminLike = {
+  /** 带 token 的通用官方 API 调用（自定义事件模块的 ctx.api 就转调它） */
+  apiCall?: (method: 'GET' | 'POST' | 'PATCH' | 'DELETE', path: string, body?: unknown) => Promise<
+    { ok: true; data: unknown } | { ok: false; err: { code: string; human: string } }
+  >;
+  getMemberInfo?: (gid: string, memberOpenid: string) => Promise<{
+    ok: boolean;
+    data?: { username?: string };
+    err?: { code?: string };
+  }>;
+};
+import { statSync } from 'node:fs';
 import type { ReplyTarget } from '@tencent-connect/qqbot-nodejs';
 import type { QQBotSender } from '../transport/outbound-buffer.js';
 import type { SessionManager } from '../session/index.js';
 import type { Logger } from '../types.js';
 import type { BotplayButtonConfig, BotplayEventConfig } from '../config.js';
 import { readGroupMembers, readLedger } from './chat-ledger.js';
+import {
+  botplayExtDir, makeExtContext, appendExtDiag,
+  type BotplayExtCardState, type BotplayExtContext, type BotplayExtModule, type BotplayExtLoaded,
+} from './botplay-ext.js';
+import { loadBotplayExtensionModule, safeBotplayFileName } from './extension-store.js';
+
+/** 拼路径(仅用于展示/取键; 不 resolve, 免得 Windows 大小写/短名差异把缓存键搞散) */
+function joinSafe(dir: string, file: string): string {
+  return dir ? join(dir, file) : file;
+}
 
 /** 按钮回调数据前缀 + 编码: bp:<cardId>:<buttonId>(button_data 是回调唯一凭证) */
 const BTN_PREFIX = 'bp:';
@@ -42,6 +67,20 @@ interface ActiveCard {
   remainClicks: number;
   /** 过期时间戳(ms) */
   expireAt: number;
+  /** 卡片所在会话(自定义事件的 ctx.emit/刷新要能发回去; 2026-10-05) */
+  target: ReplyTarget;
+  /** 每行按钮数快照(刷新卡片要沿用) */
+  buttonsPerRow: number;
+  /** 自定义事件模块文件名(空=普通事件; 2026-10-05) */
+  extFile?: string;
+  /** 自定义事件的实例卡片状态(正文/按钮/dirty; 模块经 ctx.card() 读写) */
+  extState?: BotplayExtCardState;
+  /** 本次点击里, 自定义模块是否把卡片改脏 ⇒ 点完自动重发刷新按钮 */
+  extDirty?: boolean;
+  /** 自定义模块 onClick 返回的非空文本(回给点击者) */
+  extReply?: string;
+  /** 自定义模块执行异常(诊断; 面板可见) */
+  extError?: string;
 }
 
 export interface BotplayTriggerResult {
@@ -169,9 +208,10 @@ function catalogKeyboard(page: number, events: BotplayEventConfig[]): { content:
   });
   const rows: Array<{ buttons: unknown[] }> = [];
   // 事件按钮: 每行 CAT_COLS 个(最多4行, 第5行留给翻页导航 → 合计≤5行)
+  // 2026-10-05: 自定义事件(file)加个 🤖 前缀 —— 群里一眼看出哪些是 AI 写的模块驱动的
   const maxRows = 4;
   for (let i = 0; i < pageEvents.length && rows.length < maxRows; i += CAT_COLS) {
-    rows.push({ buttons: pageEvents.slice(i, i + CAT_COLS).map((ev) => btn(`🎮${ev.name}`, ev.id, 1)) });
+    rows.push({ buttons: pageEvents.slice(i, i + CAT_COLS).map((ev) => btn(`${ev.file ? '🤖' : '🎮'}${ev.name}`, ev.id, 1)) });
   }
   // 翻页行: 上一页 + 页码 + 下一页
   const navBtns: Array<ReturnType<typeof btn>> = [];
@@ -194,6 +234,8 @@ export class BotplayController {
     private readonly ownersGetter: () => string[],
     /** 台账 dataDir getter(表情包目录; 点击人昵称反查, 与 dock 禁言面板同源) */
     private readonly ledgerDataDirGetter: () => string,
+    /** 数据根 getter(2026-10-05: 自定义事件模块放 {dataRoot}/.qqbot-extensions/botplay/) */
+    private readonly dataRootGetter: () => string = () => '',
   ) {}
 
   /** 指令型按钮执行器(bootstrap 注入: 执行斜杠命令并返回文本) */
@@ -201,6 +243,189 @@ export class BotplayController {
   setCommandExecutor(fn: ((cmdName: string, target: ReplyTarget) => Promise<string>) | undefined): void {
     this.commandExecutor = fn;
   }
+
+  // ── 昵称兜底（2026-10-05）─────────────────────────────────────────────
+  /** API 兜底查到的昵称缓存：`${peerId}|${openid}` → name */
+  private readonly memberNameApiCache = new Map<string, string>();
+  /** 正在后台查的 key（防同一人并发重复查） */
+  private readonly memberNameProbing = new Set<string>();
+  /** 官方 group-admin 客户端 getter（bootstrap 注入；没注入就跳过兜底） */
+  private groupAdminGetter: (() => GroupAdminLike | undefined) | undefined;
+  setGroupAdminGetter(fn: (() => GroupAdminLike | undefined) | undefined): void {
+    this.groupAdminGetter = fn;
+  }
+  /** bot 凭证 getter（卡片 = 代码，直接把 appId/appSecret 给它，让它自己调官方 API） */
+  private credentialsGetter: (() => { appId: string; appSecret: string }) | undefined;
+  setCredentialsGetter(fn: (() => { appId: string; appSecret: string }) | undefined): void {
+    this.credentialsGetter = fn;
+  }
+
+  /**
+   * 后台探测某人昵称（不阻塞调用方）。
+   *   命中 → 写进 memberNameApiCache，下次同步调用就能拿到真名。
+   *   未命中/无权限/网络错 → 静默（只记一行日志，避免刷屏）。
+   */
+  private probeMemberNameAsync(target: ReplyTarget, presser: string): void {
+    if (target.scope !== 'group' || !presser) return;
+    const key = `${target.targetId}|${presser}`;
+    if (this.memberNameProbing.has(key)) return;
+    const ga = (() => { try { return this.groupAdminGetter?.() } catch { return undefined } })();
+    if (!ga || typeof ga.getMemberInfo !== 'function') return;
+    this.memberNameProbing.add(key);
+    void (async () => {
+      try {
+        const r = await ga.getMemberInfo!(target.targetId, presser);
+        if (r && r.ok && r.data && r.data.username) {
+          const nm = String(r.data.username);
+          this.memberNameApiCache.set(key, nm);
+          if (this.memberNameApiCache.size > 1000) {
+            // 简易上限：满了清一半（昵称表不值得为它做 LRU）
+            let n = 0;
+            for (const k of this.memberNameApiCache.keys()) { this.memberNameApiCache.delete(k); if (++n >= 500) break; }
+          }
+          this.logger.info?.(`[botplay] 昵称兜底命中 ${presser} → ${nm}`);
+        } else {
+          this.logger.info?.(`[botplay] 昵称兜底未命中(code=${(r && r.err && r.err.code) || '?'}) ${presser}`);
+        }
+      } catch (err) {
+        this.logger.info?.(`[botplay] 昵称兜底异常: ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        this.memberNameProbing.delete(key);
+      }
+    })();
+  }
+
+  // ── 自定义事件模块(2026-10-05) ─────────────────────────────────────────
+  /** 已加载模块缓存: 绝对路径 → 加载结果(按 mtime 判热重载; 不按时间戳刷 URL, 见 fileVersion 注释) */
+  private readonly extModules = new Map<string, BotplayExtLoaded>();
+  /** 每实例每按钮点击计数: `${cardId}|${buttonId}` → 次数(自定义事件的"是否点过"判据) */
+  private readonly extClicks = new Map<string, number>();
+  /** 加载失败原因: 文件名 → 错误(面板展示红色摘要) */
+  private readonly extErrors = new Map<string, string>();
+
+  /** 面板用: 每个自定义事件模块的状态(路径/是否存在/mtime/加载错误) —— settings-host 经此展示 */
+  extStatus(): Array<{
+    file: string; path: string; exists: boolean; mtime: number;
+    loadedMtime: number; name: string; error: string; hooks: string[];
+  }> {
+    const dataRoot = (() => { try { return this.dataRootGetter() || ''; } catch { return ''; } })();
+    const dir = dataRoot ? botplayExtDir(dataRoot) : '';
+    const out: Array<{ file: string; path: string; exists: boolean; mtime: number; loadedMtime: number; name: string; error: string; hooks: string[] }> = [];
+    const seen = new Set<string>();
+    const push = (file: string): void => {
+      if (!file || seen.has(file)) return;
+      seen.add(file);
+      const safe = safeBotplayFileName(file) ?? file;
+      let exists = false; let mtime = 0;
+      try {
+        // 现读文件系统(面板要"文件是否存在/最后修改时间"); 不用 statSync 缓存, 主人可能随时改文件
+        const st = this.statFile(dir, safe);
+        exists = st.exists; mtime = st.mtime;
+      } catch { /* 读不到就报不存在 */ }
+      const cached = this.extModules.get(joinSafe(dir, safe));
+      out.push({
+        file: safe,
+        path: joinSafe(dir, safe),
+        exists,
+        mtime,
+        loadedMtime: cached?.mtime ?? 0,
+        name: cached?.name ?? '',
+        error: this.extErrors.get(safe) ?? '',
+        hooks: cached ? Object.keys(cached.mod).filter((k) => typeof (cached.mod as Record<string, unknown>)[k] === 'function') : [],
+      });
+    };
+    for (const ev of this.listEvents()) if (ev?.file) push(String(ev.file));
+    // 目录里存在但事件没登记的模块也列出来(排查"写好了没生效"最常问的一句)
+    for (const [, l] of this.extModules) push(l.file);
+    return out;
+  }
+
+  /** 诊断日志(自定义事件加载/点击/报错都落这个文件; 面板可读) */
+  private extDiag(line: string): void {
+    const dataRoot = (() => { try { return this.dataRootGetter() || ''; } catch { return ''; } })();
+    if (!dataRoot) return;
+    appendExtDiag(dataRoot, line);
+  }
+
+  private statFile(dir: string, file: string): { exists: boolean; mtime: number } {
+    try {
+      const st = statSync(joinSafe(dir, file));
+      return { exists: true, mtime: Math.floor(st.mtimeMs) };
+    } catch {
+      return { exists: false, mtime: 0 };
+    }
+  }
+
+  /** 事件是否由自定义模块驱动(带 file 且文件名合法) */
+  private extFileOf(ev: BotplayEventConfig): string | undefined {
+    const f = String(ev?.file ?? '').trim();
+    if (!f) return undefined;
+    return safeBotplayFileName(f) ?? undefined;
+  }
+
+  /**
+   * 取(或热重载)模块: mtime 没变就复用缓存实例(模块里的内存状态得以跨卡持有),
+   * 变了就重新 import(`?v=<mtime>`)。加载失败**不抛**, 返回 {error}。
+   */
+  private async loadExt(file: string): Promise<{ loaded?: BotplayExtLoaded; error?: string }> {
+    const dataRoot = (() => { try { return this.dataRootGetter() || ''; } catch { return ''; } })();
+    if (!dataRoot) return { error: '数据根未就绪(dataRoot 为空, 自定义事件模块无法定位)' };
+    const safe = safeBotplayFileName(file);
+    if (!safe) return { error: `文件名不安全: ${file}(只允许纯文件名 + .mjs/.js/.cjs)` };
+    const key = joinSafe(botplayExtDir(dataRoot), safe);
+    // 先看 mtime: 文件没改 → 直接复用(避免每次点按钮都重新 import)
+    let mtime = 0;
+    try {
+      mtime = Math.floor(statSync(key).mtimeMs);
+    } catch { /* 不存在, 交给下面的加载器报错 */ }
+    const cached = this.extModules.get(key);
+    if (cached && mtime > 0 && cached.mtime === mtime) return { loaded: cached };
+    const r = await loadBotplayExtensionModule(dataRoot, safe, this.logger);
+    if (!r.ok) {
+      this.extErrors.set(safe, r.error);
+      this.extDiag(`加载失败 ${safe}: ${r.error}`);
+      return { error: r.error };
+    }
+    this.extErrors.delete(safe);
+    // 类型说明: extension-store 的加载器用 generic `BotplayModuleShape`(避免两模块互相 import),
+    //   这里断言成真正的契约类型 —— 运行期是同一个对象, 只是编译期形状标注不同。
+    const loaded = r.loaded as unknown as BotplayExtLoaded;
+    this.extModules.set(key, loaded);
+    this.extDiag(`已加载模块 ${safe} mtime=${loaded.mtime} hooks=${Object.keys(loaded.mod).filter((k) => typeof (loaded.mod as Record<string, unknown>)[k] === 'function').join(',')}`);
+    return { loaded };
+  }
+
+  /** 热重载指定模块(文件名; 空=全部): 清缓存 → 下次解析卡片自动加载新版本 */
+  reloadExt(file?: string): { ok: boolean; msg: string } {
+    const target = String(file ?? '').trim();
+    if (!target) {
+      const n = this.extModules.size;
+      this.extModules.clear();
+      this.extErrors.clear();
+      this.extDiag('热重载全部模块(缓存已清)');
+      return { ok: true, msg: `已清空 ${n} 个模块缓存, 下次点击/发卡时重新加载` };
+    }
+    const safe = safeBotplayFileName(target);
+    if (!safe) return { ok: false, msg: `文件名不安全: ${target}` };
+    let removed = 0;
+    for (const [k, v] of this.extModules) {
+      if (v.file === safe) { this.extModules.delete(k); removed += 1; }
+    }
+    this.extErrors.delete(safe);
+    this.extDiag(`热重载模块 ${safe}(清缓存 ${removed} 个)`);
+    return { ok: true, msg: `已热重载 ${safe}(下次发卡/点击生效)` };
+  }
+
+  /** 列表(面板/命令共用): 带"是否自定义事件"标记 */
+  listExtFiles(): string[] {
+    const out: string[] = [];
+    for (const ev of this.listEvents()) {
+      const f = this.extFileOf(ev);
+      if (f && !out.includes(f)) out.push(f);
+    }
+    return out;
+  }
+
 
   /** 列出所有事件(公开, dock/命令共用) */
   listEvents(): BotplayEventConfig[] {
@@ -215,6 +440,9 @@ export class BotplayController {
   /**
    * 触发发卡(/botplay 事件名)。定位会话用命令上下文所在 scope/peerId,
    * 归属人 = 触发者本人 openid(group=c2c 同 senderId)。
+   *
+   * 2026-10-05 加: 事件带 `file`(自定义事件模块)时, 按钮/正文先问模块要(见 resolveExtCard),
+   *   模块挂了也不挡发卡(回落到事件自带的按钮配置)。
    */
   async trigger(
     target: ReplyTarget,
@@ -223,7 +451,8 @@ export class BotplayController {
   ): Promise<BotplayTriggerResult> {
     const ev = this.findEvent(eventId);
     if (!ev) return { ok: false, msg: `事件不存在: ${eventId}(发 /botplay 查看列表)` };
-    if (!Array.isArray(ev.buttons) || ev.buttons.length === 0) {
+    const extFile = this.extFileOf(ev);
+    if (!extFile && (!Array.isArray(ev.buttons) || ev.buttons.length === 0)) {
       return { ok: false, msg: `事件「${ev.name}」没有配置按钮` };
     }
     const expireSec = Math.max(30, Number(ev.expireSec ?? 600) || 600);
@@ -231,20 +460,50 @@ export class BotplayController {
     const cardId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     const perm = ev.perm ?? { type: 'all' };
     const ownerIds = this.ownersGetter();
+    const perRow = Number(ev.buttonsPerRow ?? 1) || 1;
+
+    // 自定义事件: 问模块拿按钮/正文(onInit 也在这条路上跑一次)
+    let extState: BotplayExtCardState | undefined;
+    let buttons: BotplayButtonConfig[] = Array.isArray(ev.buttons) ? ev.buttons : [];
+    let cardContent: string | undefined;
+    let extError: string | undefined;
+    if (extFile) {
+      const r = await this.resolveExtCard(ev, extFile, cardId, target, triggererId);
+      extState = r.state;
+      buttons = r.state.buttons as BotplayButtonConfig[];
+      cardContent = r.state.contentText;
+      extError = r.error;
+      if (r.error) this.extDiag(`发卡期模块异常 event=${ev.id} file=${extFile}: ${r.error}`);
+    }
+    if (buttons.length === 0) {
+      this.cards.delete(cardId);
+      // 自定义事件没按钮 = 模块没起来(加载失败/没给按钮) 或事件没配 buttons。
+      // ⚠️ 这里必须报出**模块的错误摘要**, 否则主人只会看到"没有可用按钮"一头雾水
+      //    (2026-10-05 实测: 只报"没有可用按钮"时, 完全看不出是模块文件丢了)。
+      if (extFile && extError) {
+        return { ok: false, msg: `事件「${ev.name}」的模块没跑起来 → ${extError}` };
+      }
+      return { ok: false, msg: `事件「${ev.name}」没有可用按钮${extFile ? '(模块没给出按钮, 且事件里也没配 buttons)' : ''}` };
+    }
+
     this.cards.set(cardId, {
       cardId,
       eventId: ev.id,
       eventName: ev.name,
-      buttons: JSON.parse(JSON.stringify(ev.buttons)),
+      buttons: JSON.parse(JSON.stringify(buttons)),
       perm: JSON.parse(JSON.stringify(perm)),
       triggererId: perm.type === 'triggerer' ? triggererId : undefined,
       remainClicks: maxClicks > 0 ? maxClicks : 0,
       expireAt: Date.now() + expireSec * 1000,
+      target,
+      buttonsPerRow: perRow,
+      extFile,
+      extState,
     });
 
-    const kb = botplayKeyboard(cardId, ev.buttons, perm, ownerIds, triggererId, Number(ev.buttonsPerRow ?? 1) || 1);
-    // 卡片正文: 事件自定义 markdown 模板(contentText)优先, 支持 {name} 占位; 空=默认模板(2026-09-10 M4)
-    const tpl = (ev.contentText && ev.contentText.trim()) || '';
+    const kb = botplayKeyboard(cardId, buttons, perm, ownerIds, triggererId, perRow);
+    // 卡片正文: 自定义模块给的(若模块没给就走事件模板) > 事件自定义模板 > 默认模板
+    const tpl = String(cardContent ?? ev.contentText ?? '').trim();
     const prompt = tpl
       ? tpl.replace(/\{name\}/g, ev.name)
       : [
@@ -256,12 +515,218 @@ export class BotplayController {
         ].join('\n');
     try {
       await this.sender.sendMarkdownWithKeyboard(target, prompt, kb);
-      this.logger.info(`[botplay] 发卡 ok event=${ev.id} card=${cardId} target=${target.scope}:${target.targetId} perm=${perm.type}`);
+      this.logger.info(`[botplay] 发卡 ok event=${ev.id} card=${cardId} target=${target.scope}:${target.targetId} perm=${perm.type}${extFile ? ` ext=${extFile}` : ''}`);
       return { ok: true, msg: `已发出「${ev.name}」互动卡片 🎮` };
     } catch (err) {
       this.logger.warn(`[botplay] 发卡失败 event=${ev.id}: ${err instanceof Error ? err.message : String(err)}`);
       this.cards.delete(cardId);
       return { ok: false, msg: `发卡失败: ${err instanceof Error ? err.message : String(err)}(可能未开通卡片权限)` };
+    }
+  }
+
+  /**
+   * 解析自定义事件卡片: 加载模块 → 跑 onInit → 收下模块给的按钮/正文。
+   *
+   * 为什么整条 fail-soft 到底: 模块是主人(或 AI)手写的代码, 语法错了/钩子抛错都不该
+   * 让"发个卡片"这种小事炸掉, 更不该影响其它事件与 QQ 正常聊天 —— 一律记诊断 + 回落。
+   * 返回 state.buttons 一定非空(模块没给就用事件自带按钮)。
+   */
+  private async resolveExtCard(
+    ev: BotplayEventConfig,
+    extFile: string,
+    cardId: string,
+    target: ReplyTarget,
+    triggererId: string,
+  ): Promise<{ state: BotplayExtCardState; error?: string }> {
+    const base = Array.isArray(ev.buttons) ? ev.buttons : [];
+    const state: BotplayExtCardState = {
+      contentText: String(ev.contentText ?? ''),
+      buttons: JSON.parse(JSON.stringify(base)) as BotplayButtonConfig[],
+      buttonsPerRow: Number(ev.buttonsPerRow ?? 1) || 1,
+      dirty: false,
+    };
+    const { loaded, error } = await this.loadExt(extFile);
+    if (!loaded) {
+      state.error = error;
+      this.logger.warn?.(`[botplay] 自定义事件 ${ev.id} 模块加载失败: ${error}`);
+      return { state, error };
+    }
+    state.filePath = loaded.path;
+    const moduleForCard: BotplayExtModule = loaded.mod as BotplayExtModule;
+    const ctx = this.buildExtCtx({ ev, extFile, cardId, target, state, moduleForCard, triggererId });
+    if (typeof moduleForCard.onInit === 'function') {
+      try {
+        await moduleForCard.onInit(ctx);
+        // onInit 里可能已改过按钮(label/顺序) → 立刻收下, 别等点击
+        if (Array.isArray(state.buttons) && state.buttons.length > 0) {
+          state.buttons = this.sanitizeExtButtons(state.buttons);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        state.error = `onInit 抛错: ${msg}`;
+        this.extDiag(`onInit 抛错 ${extFile}: ${msg}`);
+        this.logger.warn?.(`[botplay] ${extFile} onInit 抛错(已忽略): ${msg}`);
+      }
+    }
+    if (!state.buttons || state.buttons.length === 0) state.buttons = JSON.parse(JSON.stringify(base)) as BotplayButtonConfig[];
+    state.dirty = false; // onInit 期不算"脏"(那是初始状态, 不是点击后的变化)
+    return { state };
+  }
+
+  /**
+   * 构造自定义模块的 ctx(每个卡片实例一个)。
+   * 说明: ctx.emit/markdown/image 都发往**该实例卡片所在的会话**(target), 不是点击人私聊 ——
+   *   群里的签到统计就该发群里; 要私聊给某人可以 ctx.markdown 之外自己判断(本期不做)。
+   */
+  private buildExtCtx(args: {
+    ev: BotplayEventConfig;
+    extFile: string;
+    cardId: string;
+    target: ReplyTarget;
+    state: BotplayExtCardState;
+    moduleForCard: BotplayExtModule;
+    triggererId: string;
+    clickerId?: string;
+    clickedBefore?: number;
+  }): BotplayExtContext {
+    const { ev, extFile, cardId, target, state, clickerId } = args;
+    const dataRoot = (() => { try { return this.dataRootGetter() || ''; } catch { return ''; } })();
+    return makeExtContext(
+      {
+        dataRoot,
+        logger: this.logger as unknown as Logger,
+        owners: this.ownersGetter(),
+        // 卡片 = 代码：直接把 bot 凭证给它，让它自己换 token 调官方 API（不经宿主/插件包能力）
+        credentialsGetter: () => {
+          try { return this.credentialsGetter?.() || { appId: '', appSecret: '' } } catch { return { appId: '', appSecret: '' } }
+        },
+        cardState: state,
+        emit: async (text: string): Promise<boolean> => {
+          try { await this.sender.sendMarkdown(target, text); return true; }
+          catch (err) { this.logger.warn?.(`[botplay] ${extFile} emit 失败: ${err instanceof Error ? err.message : String(err)}`); return false; }
+        },
+        markdown: async (content: string): Promise<boolean> => {
+          try { await this.sender.sendMarkdown(target, content); return true; }
+          catch (err) { this.logger.warn?.(`[botplay] ${extFile} markdown 失败: ${err instanceof Error ? err.message : String(err)}`); return false; }
+        },
+        image: async (source: { url?: string; localPath?: string }): Promise<boolean> => {
+          try { await this.sender.sendMedia(target, 'image', source); return true; }
+          catch (err) { this.logger.warn?.(`[botplay] ${extFile} image 失败: ${err instanceof Error ? err.message : String(err)}`); return false; }
+        },
+        memberName: (openid: string) => this.memberName(target, openid),
+        clickCount: (buttonId?: string) => {
+          if (buttonId) return this.extClicks.get(`${cardId}|${buttonId}`) ?? 0;
+          let n = 0;
+          for (const [k, v] of this.extClicks) if (k.startsWith(`${cardId}|`)) n += v;
+          return n;
+        },
+        reloadSelf: async () => this.reloadExt(extFile),
+        diag: (line: string) => this.extDiag(line),
+        /**
+         * 带 token 的官方 API 调用：转调 GroupAdminClient.apiCall。
+         *   模块自己 fetch 拿不到 access_token（没有 appSecret），这就是本能力的价值所在。
+         */
+        onApiCall: async (method: 'GET' | 'POST' | 'PATCH' | 'DELETE', path: string, body?: unknown) => {
+          const ga = (() => { try { return this.groupAdminGetter?.() } catch { return undefined } })();
+          if (!ga || typeof ga.apiCall !== 'function') {
+            return { ok: false as const, err: { code: 'NO_CLIENT', human: '群管理客户端未就绪(检查 groupAdmin.enabled)' } };
+          }
+          try {
+            return await ga.apiCall(method, path, body);
+          } catch (err) {
+            return { ok: false as const, err: { code: 'THROW', human: err instanceof Error ? err.message : String(err) } };
+          }
+        },
+        /**
+         * 影响 LLM 上下文：转调框架自己的 applyEffect（与事件级 llmEffect 同一套两档）。
+         *   append_silent = 只落上下文不唤醒；append_wake = 落上下文并唤醒一轮 AI。
+         */
+        onLlmAppend: async (mode: 'append_silent' | 'append_wake', text: string): Promise<boolean> => {
+          try {
+            const presser = String(args.clickerId || args.triggererId || '');
+            await this.applyEffect(mode, target, text, presser);
+            return true;
+          } catch (err) {
+            this.logger.warn?.(`[botplay] ${extFile} append 失败: ${err instanceof Error ? err.message : String(err)}`);
+            return false;
+          }
+        },
+      },
+      {
+        id: ev.id,
+        name: ev.name,
+        file: extFile,
+        maxClicks: ev.maxClicks,
+        expireSec: ev.expireSec,
+        scope: target.scope === 'group' ? 'group' : 'c2c',
+        peerId: target.targetId,
+      },
+      cardId,
+      clickerId ? { openid: clickerId, clickedBefore: args.clickedBefore ?? 0 } : undefined,
+    );
+  }
+
+  /** 把模块给的按钮洗成合法形状(缺 id/label 的丢掉; 防止脏数据把 keyboard 生成搞炸) */
+  private sanitizeExtButtons(buttons: unknown[]): BotplayButtonConfig[] {
+    const out: BotplayButtonConfig[] = [];
+    for (const raw of buttons) {
+      const b = raw as Partial<BotplayButtonConfig>;
+      const id = String(b?.id ?? '').trim();
+      const label = String(b?.label ?? '').trim();
+      if (!id || !label) continue;
+      const actType = String(b?.botAction?.type ?? 'reply_text');
+      out.push({
+        id,
+        label: label.slice(0, 20),
+        visitedLabel: String(b?.visitedLabel ?? '').slice(0, 20),
+        style: Number(b?.style ?? 1) === 0 ? 0 : 1,
+        botAction: {
+          // 只放行 reply_text/jump_url(自定义事件的按钮动作实际由模块 onClick 决定,
+          // 这两个字段只是键盘渲染需要; command/callback 由模块自己用 ctx 表达)
+          type: actType === 'jump_url' ? 'jump_url' : 'reply_text',
+          text: String(b?.botAction?.text ?? ''),
+          url: String(b?.botAction?.url ?? ''),
+        },
+      });
+    }
+    return out.slice(0, 25); // QQ 键盘上限 5行×5列
+  }
+
+  /** 点击后按钮变了 ⇒ 重发卡片刷新(QQ 没有现成的"改卡片"接口, 重发是可靠做法) */
+  private async refreshCard(card: ActiveCard, content: string): Promise<void> {
+    try {
+      const kb = botplayKeyboard(card.cardId, card.buttons, card.perm, this.ownersGetter(), card.triggererId, card.buttonsPerRow);
+      const body = content.trim() || `## 🎮 ${card.eventName}`;
+      await this.sender.sendMarkdownWithKeyboard(card.target, body.replace(/\{name\}/g, card.eventName), kb);
+      this.logger.info(`[botplay] 卡片刷新 card=${card.cardId} event=${card.eventId}`);
+    } catch (err) {
+      this.logger.warn?.(`[botplay] 卡片刷新失败 card=${card.cardId}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /** 清理一个卡片实例的扩展资源(点击计数/模块 onDispose) */
+  private async disposeCard(card: ActiveCard): Promise<void> {
+    for (const k of [...this.extClicks.keys()]) if (k.startsWith(`${card.cardId}|`)) this.extClicks.delete(k);
+    if (!card.extFile) return;
+    try {
+      const { loaded } = await this.loadExt(card.extFile);
+      if (!loaded) return;
+      const mod = loaded.mod as BotplayExtModule;
+      if (typeof mod.onDispose === 'function') {
+        const fallbackEv: BotplayEventConfig = { id: card.eventId, name: card.eventName, buttons: [] };
+        const ctx = this.buildExtCtx({
+          ev: this.findEvent(card.eventId) ?? fallbackEv,
+          extFile: card.extFile,
+          cardId: card.cardId,
+          target: card.target,
+          state: card.extState ?? { contentText: '', buttons: [], dirty: false },
+          moduleForCard: mod,
+          triggererId: card.triggererId ?? '',
+        });
+        await mod.onDispose(ctx);
+      }
+    } catch (err) {
+      this.logger.warn?.(`[botplay] ${card.extFile} onDispose 抛错(已忽略): ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -322,9 +787,10 @@ export class BotplayController {
       await this.safeReply(replyTarget, '这张互动卡片已失效, 请重新发 /botplay 触发~');
       return true;
     }
-    // 过期校验
+    // 过期校验(2026-10-05: 自定义事件也走一次 onExpire, 让模块知道卡片死了)
     if (Date.now() > card.expireAt) {
       this.cards.delete(parsed.cardId);
+      await this.fireExtExpire(card);
       await this.safeReply(replyTarget, '这张互动卡片已超时失效, 请重新发 /botplay~');
       return true;
     }
@@ -359,6 +825,26 @@ export class BotplayController {
     }
 
     // ① bot(非LLM)行为(按快照)
+    // ── 自定义事件(2026-10-05): 走模块的 onClick, 完全不碰下面的 botAction 分支 ──
+    if (card.extFile && card.extState) {
+      await this.runExtClick(card, btn, presser, replyTarget);
+    } else {
+      await this.runBuiltinAction(btn, replyTarget);
+    }
+
+    // ② LLM 影响三档(按快照; 注入文本带点击人身份: 昵称(openid), 台账/会话历史反查)
+    //    自定义事件的 llmEffect 仍按事件快照生效(=模块写了 llmEffect 就照常影响 AI)。
+    const mode = btn.llmEffect?.mode ?? 'no_append';
+    if (mode !== 'no_append') {
+      const clicker = this.clickerLabel(replyTarget, presser);
+      const text = renderContext(btn.llmEffect?.contextText, card.eventName, btn.label ?? '', clicker);
+      await this.applyEffect(mode, replyTarget, text, presser);
+    }
+    return true;
+  }
+
+  /** 内置三型按钮行为(reply_text / jump_url / command; 普通事件用) */
+  private async runBuiltinAction(btn: BotplayButtonConfig, replyTarget: ReplyTarget): Promise<void> {
     const actionType = btn.botAction?.type ?? 'reply_text';
     if (actionType === 'reply_text') {
       const text = String(btn.botAction?.text ?? '').trim();
@@ -391,16 +877,76 @@ export class BotplayController {
       }
     }
     // callback=仅结算, 无 bot 回复
-
-    // ② LLM 影响三档(按快照; 注入文本带点击人身份: 昵称(openid), 台账/会话历史反查)
-    const mode = btn.llmEffect?.mode ?? 'no_append';
-    if (mode !== 'no_append') {
-      const clicker = this.clickerLabel(replyTarget, presser);
-      const text = renderContext(btn.llmEffect?.contextText, card.eventName, btn.label ?? '', clicker);
-      await this.applyEffect(mode, replyTarget, text, presser);
-    }
-    return true;
   }
+
+  /**
+   * 跑自定义模块的 onClick(2026-10-05)。
+   *
+   * 顺序(为什么这么排):
+   *   ① 计数先 ++, 让模块里的 ctx.clicked 立刻反映"这是第几次点"(签到判重的关键);
+   *   ② 跑模块(它可能改按钮/正文/发消息/持久化);
+   *   ③ 模块返回非空字符串 → 当普通文本回给点击者(比让模块自己 emit 更省事);
+   *   ④ 模块把卡片改脏 → 重发卡片刷新按钮(QQ 没"改卡片"接口, 重发是可靠做法);
+   *   ⑤ 模块抛错 → 回一句人话 + 落诊断, 绝不让一次点击把插件带崩(fail-soft)。
+   */
+  private async runExtClick(card: ActiveCard, btn: BotplayButtonConfig, presser: string, replyTarget: ReplyTarget): Promise<void> {
+    const extFile = card.extFile ?? '';
+    const state = card.extState!;
+    const key = `${card.cardId}|${btn.id}`;
+    const count = (this.extClicks.get(key) ?? 0) + 1;
+    this.extClicks.set(key, count);
+    const { loaded, error } = await this.loadExt(extFile);
+    if (!loaded) {
+      this.extDiag(`点击期模块加载失败 ${extFile}: ${error}`);
+      // 加载失败时给用户一句人话(而不是静默无反应), 方便主人定位
+      await this.safeReply(replyTarget, `⚠️ 这个事件的模块加载失败, 请到面板看看错误摘要(文件: ${extFile})`);
+      return;
+    }
+    const mod = loaded.mod as BotplayExtModule;
+    if (typeof mod.onClick !== 'function') {
+      this.extDiag(`模块 ${extFile} 没有 onClick, 点击被忽略 button=${btn.id}`);
+      await this.safeReply(replyTarget, '这个事件没有处理点击的逻辑(onClick)');
+      return;
+    }
+    const ev = this.findEvent(card.eventId) ?? { id: card.eventId, name: card.eventName, buttons: [] };
+    const ctx = this.buildExtCtx({
+      ev: ev as BotplayEventConfig,
+      extFile,
+      cardId: card.cardId,
+      target: card.target,
+      state,
+      moduleForCard: mod,
+      triggererId: card.triggererId ?? '',
+      clickerId: presser,
+      clickedBefore: count - 1,
+    });
+    // 让按钮快照跟着模块的修改走(下一行点击/重发卡片都用最新按钮)
+    const beforeButtons = JSON.stringify(state.buttons);
+    try {
+      const ret = await mod.onClick(ctx, { buttonId: btn.id, buttonLabel: btn.label ?? '', clickedBefore: count - 1 });
+      if (state.buttons && JSON.stringify(state.buttons) !== beforeButtons) {
+        state.buttons = this.sanitizeExtButtons(state.buttons);
+      }
+      if (Array.isArray(state.buttons) && state.buttons.length > 0) {
+        card.buttons = JSON.parse(JSON.stringify(state.buttons)) as BotplayButtonConfig[];
+      }
+      if (typeof ret === 'string' && ret.trim()) await this.safeReply(replyTarget, ret.trim());
+      card.extReply = typeof ret === 'string' ? ret : '';
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      card.extError = msg;
+      state.error = `onClick 抛错: ${msg}`;
+      this.extDiag(`onClick 抛错 ${extFile} button=${btn.id}: ${msg}`);
+      this.logger.warn?.(`[botplay] ${extFile} onClick 抛错(已忽略): ${msg}`);
+      await this.safeReply(replyTarget, `⚠️ 事件逻辑出错了(onClick): ${msg}`);
+    }
+    // 模块改过卡片(按钮 label style / 正文) → 重发刷新, 群里看到的就是最新状态
+    if (state.dirty) {
+      state.dirty = false;
+      await this.refreshCard(card, state.contentText);
+    }
+  }
+
 
   /**
    * 点击人可读标签(与 dock 禁言面板/审批同源的昵称反查):
@@ -411,6 +957,22 @@ export class BotplayController {
    */
   private clickerLabel(target: ReplyTarget, presser: string): string {
     if (!presser) return '未知用户';
+    const name = this.memberName(target, presser);
+    // 台账/会话里查到的是纯昵称 → 补个 openid 尾巴(诊断/排查用); 查不到就是 openid 本身
+    return name === presser ? presser : `${name}(${presser.slice(0, 8)}…)`;
+  }
+
+  /**
+   * 昵称反查(2026-10-05 从 clickerLabel 抽出来给自定义模块用): 只要**纯昵称**, 不带 openid 尾巴
+   * (签到统计那种"列出所有签到者名字"的场景, 名字后面挂截断 openid 很难看)。
+   * 数据源与 clickerLabel 同源(见其注释): 群成员台账 → 私聊台账 → 会话消息壳 → 回落 openid。
+   */
+  private memberName(target: ReplyTarget, presser: string): string {
+    if (!presser) return '';
+      // ⓪ 内存缓存（后台 API 兜底查到的；比台账更新，优先用）
+      const _ck = `${target.targetId}|${presser}`;
+      const _cc = this.memberNameApiCache.get(_ck);
+      if (_cc) return _cc;
     // ① 台账(host 侧与 dock 禁言同源: dataDir=表情包目录, 同 group-members.jsonl)
     try {
       const dataDir = this.ledgerDataDirGetter();
@@ -418,11 +980,11 @@ export class BotplayController {
         if (target.scope === 'group') {
           const members = readGroupMembers(dataDir, target.targetId);
           const hit = members.find((m) => m.mid === presser);
-          if (hit && hit.name) return `${hit.name}(${presser.slice(0, 8)}…)`;
+          if (hit && hit.name) return hit.name;
         } else {
           const chats = readLedger(dataDir);
           const hit = chats.filter((c) => c.scope === 'c2c' && c.id === presser).sort((a, b) => b.ts - a.ts)[0];
-          if (hit && hit.name) return `${hit.name}(${presser.slice(0, 8)}…)`;
+          if (hit && hit.name) return hit.name;
         }
       }
     } catch { /* 台账读取失败, 走下一步 */ }
@@ -445,11 +1007,17 @@ export class BotplayController {
           const idx = text.indexOf(`(${presser})`);
           if (idx > 1) {
             const head = text.slice(0, idx).replace(/^\[+/, '').trim();
-            if (head && !head.includes(presser)) return `${head}(${presser.slice(0, 8)}…)`;
+            if (head && !head.includes(presser)) return head;
           }
         }
       }
     } catch { /* 解析失败回落 */ }
+      // ④ API 兜底（2026-10-05，主人定："兜底的时候用 api，其余的时候用台账"）
+      //   ⚠️ 本函数是【同步】的（调用方很多，改异步要动一大片），所以做法是：
+      //   本次仍回落 openid，**同时后台发起一次查询**；查到就写进内存缓存，
+      //   下一次再问同一个人就有名字了（一场签到里通常只差几秒）。
+      //   官方该接口标注「内邀接入中」（11253 = 无权限）⇒ 失败一律静默，只记一行日志。
+      this.probeMemberNameAsync(target, presser);
     return presser;
   }
 
@@ -521,17 +1089,53 @@ export class BotplayController {
     try { await this.sender.sendMarkdown(target, text); } catch { /* 回复失败不致命 */ }
   }
 
-  /** 清理全部活动卡(dispose 用) */
-  clear(): void {
-    this.cards.clear();
+  /**
+   * 通知自定义模块"这张卡片过期了"(onExpire; 2026-10-05)。
+   * 为什么要有: 签到类事件常要"到点自动结算/清场", 模块没有这个回调就只能等主人手点。
+   * fail-soft: 模块抛错只记日志。
+   */
+  private async fireExtExpire(card: ActiveCard): Promise<void> {
+    if (!card.extFile) return;
+    try {
+      const { loaded } = await this.loadExt(card.extFile);
+      if (!loaded) return;
+      const mod = loaded.mod as BotplayExtModule;
+      if (typeof mod.onExpire !== 'function') return;
+      const ev = (this.findEvent(card.eventId) ?? { id: card.eventId, name: card.eventName, buttons: [] }) as BotplayEventConfig;
+      const ctx = this.buildExtCtx({
+        ev, extFile: card.extFile, cardId: card.cardId, target: card.target,
+        state: card.extState ?? { contentText: '', buttons: [], dirty: false },
+        moduleForCard: mod, triggererId: card.triggererId ?? '',
+      });
+      await mod.onExpire(ctx);
+      this.extDiag(`onExpire ok ${card.extFile} card=${card.cardId}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.extDiag(`onExpire 抛错 ${card.extFile}: ${msg}`);
+      this.logger.warn?.(`[botplay] ${card.extFile} onExpire 抛错(已忽略): ${msg}`);
+    }
+    await this.disposeCard(card);
   }
 
-  /** 扫掉过期卡(Phase2: 定期/触发时调用, 防内存积压) */
+  /** 清理全部活动卡(dispose 用; 自定义事件会收到 onDispose) */
+  clear(): void {
+    const snapshot = [...this.cards.values()];
+    this.cards.clear();
+    // onDispose 是异步的, 但不能让 dispose 链路等它 —— 逐个 fire 并吞掉异常
+    for (const c of snapshot) void this.disposeCard(c).catch(() => { /* 忽略 */ });
+  }
+
+  /** 扫掉过期卡(Phase2: 定期/触发时调用, 防内存积压; 2026-10-05 顺带通知模块 onExpire) */
   sweepExpired(): number {
     const now = Date.now();
     let n = 0;
     for (const [id, c] of this.cards) {
-      if (now > c.expireAt) { this.cards.delete(id); n += 1; }
+      if (now > c.expireAt) {
+        this.cards.delete(id);
+        n += 1;
+        if (c.extFile) void this.fireExtExpire(c).catch(() => { /* 忽略 */ });
+        else void this.disposeCard(c).catch(() => { /* 忽略 */ });
+      }
     }
     if (n > 0) this.logger.info(`[botplay] 清理过期卡 ${n} 张(剩 ${this.cards.size})`);
     return n;
@@ -599,6 +1203,34 @@ export function listBotplayEventsAny(): Array<BotplayEventConfig & { ns: string 
     for (const e of c.listEvents()) out.push({ ns, ...e });
   }
   return out;
+}
+
+// ── 自定义事件面板出口(2026-10-05): settings-host 经 channel-tools 读这些 ──
+// host 半边不能直接拿 manager/controller, 只能走插件侧导出的模块级入口(与 triggerBotplay 同款)。
+
+/** 取某 ns 的 botplay 控制器(未注册返回 undefined) */
+export function botplayControllerOf(ns: string): BotplayController | undefined {
+  return botplayControllers.get(ns);
+}
+
+/**
+ * 面板用: 某实例的自定义事件模块状态(路径/是否存在/mtime/加载错误/hooks)。
+ * 找不到实例时返回空数组(面板显示"未就绪"即可, 不报错)。
+ */
+export function botplayExtStatus(ns: string): Array<{
+  file: string; path: string; exists: boolean; mtime: number;
+  loadedMtime: number; name: string; error: string; hooks: string[];
+}> {
+  const c = botplayControllers.get(ns);
+  if (!c) return [];
+  try { return c.extStatus(); } catch { return []; }
+}
+
+/** 面板「🔄 重载模块」用: 热重载指定模块(空=全部); 不重启宿主 */
+export function reloadBotplayExt(ns: string, file?: string): { ok: boolean; msg: string } {
+  const c = botplayControllers.get(ns);
+  if (!c) return { ok: false, msg: 'botplay 未就绪(插件未启动或该账号实例未加载)' };
+  try { return c.reloadExt(file); } catch (err) { return { ok: false, msg: `重载异常: ${err instanceof Error ? err.message : String(err)}` }; }
 }
 
 /**

@@ -193,11 +193,14 @@ const botplayEventSchema = Schema.object({
     expireSec: Schema.number().default(600).description('发卡后有效期(秒), 超时按钮失效'),
     perm: botplayPermSchema,
     buttonsPerRow: Schema.number().min(1).max(5).default(1).description('每行几个按钮(1~5, 默认1竖排; QQ 上限 5行×5钮)'),
+    // 自定义事件模块(2026-10-05): 填了就走 {dataRoot}/.qqbot-extensions/botplay/<file> 的模块钩子
+    file: Schema.string().default('').description('自定义事件模块文件名(放 {dataRoot}/.qqbot-extensions/botplay/, 如 checkin-stats.mjs); 空=普通事件'),
     buttons: Schema.array(botplayButtonSchema).default([]).description('按钮列表(QQ限制: 最多5行)'),
 }).default({
     id: '', name: '', contentText: '', maxClicks: 0, expireSec: 600,
     perm: { type: 'all', userIds: [] },
     buttonsPerRow: 1,
+    file: '',
     buttons: [],
 }).description('botplay 互动事件');
 /** Phase1 内置演示事件(仅当用户从未配置时生效; 保存后以用户配置为准) */

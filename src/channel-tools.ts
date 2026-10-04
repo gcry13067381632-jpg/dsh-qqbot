@@ -24,6 +24,8 @@ import { readGroupMembers } from './features/chat-ledger.js';
 import * as broadcastQueue from './features/broadcast.js';
 import { wakeSessionAgent, safeAppendUserMessage } from './features/group-hub.js';
 import { managersOf, findManagerByPeer, findManagerBySessionId } from './features/session-registry.js';
+// botplay 自定义事件(2026-10-05): 面板出口转发(status/reload) —— host 半边只能经本文件拿到 controller
+import { botplayExtStatus as botplayExtStatusOf, reloadBotplayExt as reloadBotplayExtOf } from './features/botplay.js';
 import { handleInbound } from './transport/inbound.js';
 import { getQuote } from './features/quote-cache.js';
 import { appendMemoLine, deleteMemo, listMemos, readMemo } from './features/people-memo.js';
@@ -2228,6 +2230,43 @@ export async function askAiToWriteSamples(
   scope: 'group' | 'c2c',
   peerId: string,
 ): Promise<{ ok: boolean; msg: string }> {
+  const root = (() => {
+    try {
+      const managers = managersOf();
+      const nsOf = (m: unknown): string => String((m as { settingsNs?: string })?.settingsNs ?? '');
+      const mgr = managers.find((m) => nsOf(m) === ns) ?? managers[0];
+      return String((mgr as unknown as { dataRoot?: string })?.dataRoot ?? '');
+    } catch { return ''; }
+  })();
+  const prompt = [
+    '【样例库维护】主人点了面板上的「让ai写(有聊天记录最好)」, 请你来维护本地小模型的"开口标准"样例库。',
+    `· 样例库(你要写的): ${root}\\.qqbot\\value-samples.jsonl —— 一行一条 {"m":"群消息文本","y":1} / y=0; 1=你会想接话, 0=你不会理`,
+    `· 评分记录(你来读): ${root}\\.qqbot\\value-scores.jsonl —— 一行一行 JSON, 字段: text=消息原文, score=本地小模型给的分, worth=是否判值得接, min=本会话门槛, gate=当时生效的模式(block=低分不唤醒/log=只记录不拦), conf=置信度(越接近1越有把握), mention=是否被@, top=最近邻样例, agg=聚合条数`,
+    '做法: ①读评分记录最近 100~200 条(用文件工具) ②挑出标注可疑的 —— 尤其 conf<0.5(地图上没这类样本)、mention=true 却 worth=false(被点名却没打算回)、内容与分数明显不符的',
+    '③对照真人群聊语境, 提炼 20~40 条新样例 ④用文件工具把它们**追加**写入样例库(不要覆盖整库) ⑤回报加了几条、都补了哪类。',
+    '样例写法(一行一条 JSON): {"m":"消息文本","y":1或0} —— y=1 她会想接话(提问/求助/@她/她接得住的梗) / y=0 她不会理(群友互聊/短应答/表情)。',
+  ].join('\n');
+  return askAiToWriteFakeMsg(ns, scope, peerId, '样例库维护', prompt);
+}
+
+/**
+ * 「伪造一条用户消息 → 直调 handleInbound 唤醒该会话 AI」的共用实现(2026-10-05 抽出来)。
+ *
+ * 原实现只服务"让ai写样例库"; botplay 自定义事件也要同一条路(面板「🤖 让 AI 写」),
+ * 于是把可复用的骨架抽到这里, 只有 senderName/正文不同 —— 两处行为完全一致, 少一套要维护的语义。
+ *
+ * 细节(继承自 2026-09-13 的样例库版本, 不要改):
+ *   · messageId 留空 → 出站自动走**主动推送**(不受 5 条被动回复限制);
+ *   · senderName 用中性名、正文不打假 (@you) → 防污染主人交互记忆;
+ *   · 与定时任务 fireTask 同姿势(伪造消息唤醒回合), 而不是塞聚合窗口(那个要等人停口)。
+ */
+export async function askAiToWriteFakeMsg(
+  ns: string,
+  scope: 'group' | 'c2c',
+  peerId: string,
+  senderName: string,
+  prompt: string,
+): Promise<{ ok: boolean; msg: string }> {
   try {
     const managers = managersOf();
     if (managers.length === 0) return { ok: false, msg: '还没有活跃的机器人实例' };
@@ -2237,22 +2276,13 @@ export async function askAiToWriteSamples(
     if (!peerId) return { ok: false, msg: '请先在面板上方选一个群/私聊目标' };
     const cfg = (mgr as unknown as { config?: unknown }).config;
     if (!cfg) return { ok: false, msg: '该实例配置未就绪' };
-    const root = (mgr as unknown as { dataRoot?: string }).dataRoot || '';
-    const prompt = [
-      '【样例库维护】主人点了面板上的「让ai写(有聊天记录最好)」, 请你来维护本地小模型的"开口标准"样例库。',
-      `· 样例库(你要写的): ${root}\\.qqbot\\value-samples.jsonl —— 一行一条 {"m":"群消息文本","y":1} / y=0; 1=你会想接话, 0=你不会理`,
-      `· 评分记录(你来读): ${root}\\.qqbot\\value-scores.jsonl —— 一行一条 JSON, 字段: text=消息原文, score=本地小模型给的分, worth=是否判值得接, min=本会话门槛, gate=当时生效的模式(block=低分不唤醒/log=只记录不拦), conf=置信度(越接近1越有把握), mention=是否被@, top=最近邻样例, agg=聚合条数`,
-      '做法: ①读评分记录最近 100~200 条(用文件工具) ②挑出标注可疑的 —— 尤其 conf<0.5(地图上没这类样本)、mention=true 却 worth=false(被点名却没打算回)、内容与分数明显不符的',
-      '③对照真人群聊语境, 提炼 20~40 条新样例 ④用文件工具把它们**追加**写入样例库(不要覆盖整库) ⑤回报加了几条、都补了哪类。',
-      '样例写法(一行一条 JSON): {"m":"消息文本","y":1或0} —— y=1 她会想接话(提问/求助/@她/她接得住的梗) / y=0 她不会理(群友互聊/短应答/表情)。',
-    ].join('\n');
     const now = new Date();
     const pad = (n: number): string => String(n).padStart(2, '0');
     const ts = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
     const fakeMsg = {
       kind: scope,
       senderId: scope === 'c2c' ? peerId : 'master',
-      senderName: '样例库维护',
+      senderName: String(senderName || '面板任务'),
       content: `[面板任务 ${ts}] ${prompt}`,
       messageId: '',
       timestamp: now.toISOString(),
@@ -2267,6 +2297,51 @@ export async function askAiToWriteSamples(
   } catch (e) {
     return { ok: false, msg: `异常: ${e instanceof Error ? e.message : String(e)}` };
   }
+}
+
+// ── botplay 自定义事件: 面板出口(2026-10-05) ────────────────────────────────
+// host 半边(settings-host.js)只能 `import('@zaofan/dsh-qqbot/channel-tools')`, 拿不到 manager/controller;
+// 所以自定义事件相关的三件事(模块状态 / 热重载 / 让AI写)都在这里做转发, 与 askAiToWriteSamples
+// 「桥只负责递话、实现留在插件侧」同一姿势。
+
+/**
+ * 面板用: 某实例的自定义事件模块状态(路径/是否存在/mtime/hooks/加载错误)。
+ * 未注册实例返回 [] (面板显示"未就绪", 不报错)。
+ */
+export function botplayExtStatus(ns: string) {
+  return botplayExtStatusOf(ns);
+}
+
+/** 面板「🔄 重载模块」用: 热重载指定模块(空=全部); 不重启宿主 */
+export function reloadBotplayExt(ns: string, file?: string): { ok: boolean; msg: string } {
+  return reloadBotplayExtOf(ns, file);
+}
+
+/**
+ * 「让 AI 写」自定义事件: 把拼好的提示词当作**用户消息**唤醒该群/私聊的 AI 回合。
+ *
+ * 为什么不能用函数参数把提示词传进来: host 半边是**另一份模块实例**(它 import 的是 dist 里的同一份
+ * 文件, 但跨模块传函数/大对象容易撞上"参数必须是纯数据"的边界, 也难排查)。
+ * 于是照抄 settings-host 里"写样例库"的既有做法 —— 用 setXxxPrompt 先递数据, 再调无参入口。
+ *
+ * ⚠️ 提示词由 host 现拼(需求原文 + 接口文档索引摘录 + 契约 + 环境信息), 这里只负责"送进去"。
+ */
+let botplayWritePrompt = '';
+export function setBotplayWritePrompt(text: string): void {
+  botplayWritePrompt = String(text ?? '');
+}
+
+/**
+ * 「让 AI 写」自定义事件: 把拼好的提示词当作**用户消息**唤醒该群/私聊的 AI 回合。
+ *
+ * 提示词由 host 现拼(需求原文 + 官方文档链接 + 自定义事件契约 + 环境信息 + 要求), 这里只负责"送进去"。
+ * 参考资料给的是**官方文档链接**(不随包塞本地镜像) —— 理由见 settings-host.js 的 apiV2DocLinks 注释。
+ */
+export async function askAiToWriteBotplayEvent(ns: string, scope: 'group' | 'c2c', peerId: string): Promise<{ ok: boolean; msg: string }> {
+  const prompt = botplayWritePrompt;
+  if (!prompt.trim()) return { ok: false, msg: '内部错误: 写作请求内容为空(请重试)' };
+  // 借用既有的"伪造一条用户消息唤醒 AI"链路(与「让ai写样例库」完全同一条路, 不新开渠道)
+  return askAiToWriteFakeMsg(ns, scope, peerId, 'botplay自定义事件', prompt);
 }
 
 /** 每个 agentCtx 已注册的上下文工具 disposer（WeakMap：多会话互不影响） */

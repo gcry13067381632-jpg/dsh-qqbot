@@ -32,6 +32,23 @@ export declare function findRecordByPeerWeb(ns: string, scope: ChatScope, peerId
     senderId: string;
     agent?: unknown;
 } | undefined;
+/**
+ * 遍历**所有**实例(ns)，找出「有该 peer 活跃会话」的记录。
+ *
+ * 2026-10-04 新增（主人实测：dock 聊天页只显示到几天前的最旧消息）：
+ *   findRecordByPeerWeb 需要调用方给对 ns；一旦 ns 指到别的实例（多 bot 场景常见），
+ *   拿到的就是那个实例里的**过期会话记录** ⇒ 聊天记录停在很久以前。
+ *   这里提供跨实例兜底，由调用方按 seq 取「最新的那个」。
+ */
+export declare function listPeerRecordsWeb(scope: ChatScope, peerId: string): Array<{
+    ns: string;
+    sessionId: string;
+    scope: ChatScope;
+    peerId: string;
+    senderId: string;
+    agent?: unknown;
+    seq: number;
+}>;
 /** 活跃表 miss(会话被回收/未建立)时恢复/重建会话 —— 与入群申请通知/定时任务同款 getOrCreate(不开回合, 只保证 log 存在) */
 export declare function getOrCreateByPeerWeb(ns: string, scope: ChatScope, peerId: string, senderId?: string): Promise<{
     ns: string;

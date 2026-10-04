@@ -55,6 +55,7 @@ function resolveProfileRoot() {
 const PROFILE_ROOT = resolveProfileRoot();
 /** cordis.patch.yml = 宿主插件装配文件(账号实例声明处; 改它需重启 dsh 生效) */
 const PATCH_FILE = join(PROFILE_ROOT, 'cordis.patch.yml');
+
 /** dsh 家目录(与宿主保持一致: 优先环境变量 DSH_HOME, 否则回落 ~/.dsh) */
 const DSH_HOME_DIR = ((process.env.DSH_HOME ?? '').trim()) || join(homedir(), '.dsh');
 /** agent 预设根目录 —— ⚠️ 仅 ≤0.1.6 的**旧机制**(每预设一个子目录, 目录名=预设 id)。
@@ -2871,6 +2872,234 @@ export function apply(ctx) {
     writeJson(res, 200, { ok: okFile, msg: okFile ? '✅ 已保存(独立文件, live 热更已生效)' : '写入文件失败' });
   });
 
+  // ── botplay 自定义事件(2026-10-05): 模块状态 / 热重载 / 看源码 ───────────
+  // 自定义事件 = 事件 JSON 里带 `file`, 由 {dataRoot}/.qqbot-extensions/botplay/<file> 的 JS 模块驱动。
+  // 面板要给主人看: 模块文件**完整路径**、是否存在、最后修改时间、加载错误摘要 → 走 GET status。
+  // 「🔄 重载模块」走 reload: 只清插件内存里的模块缓存(下次发卡/点击重新 import),
+  //   **不需要重启宿主**, 也不需要重启插件 —— 这是本功能"改完即生效"的关键。
+  // 数据源: channel-tools 的 botplayExtStatus/reloadBotplayExt(只有插件侧才拿得到 controller)。
+  route(ctx, 'GET', '/api/qqbot-settings/group/botplay-ext/status', async (req, res) => {
+    try {
+      const u = new URL(req.url ?? '/', 'http://x');
+      const ns = NSQ(u);
+      const b2 = nsBot(ns);
+      const dataRoot = (b2 && b2.cfg && typeof b2.cfg.dataRoot === 'string' && b2.cfg.dataRoot) ? b2.cfg.dataRoot : ((b2 && b2.cwd) || '');
+      const dir = dataRoot ? join(dataRoot, '.qqbot-extensions', 'botplay') : '';
+      let dirExists = false;
+      try { dirExists = !!dir && existsSync(dir); } catch { dirExists = false; }
+      // 目录实况(size; 插件侧状态里没有这个字段, 面板要显示"多大")
+      const files = [];
+      if (dirExists) {
+        try {
+          for (const f of readdirSync(dir)) {
+            if (!/\.(mjs?|cjs)$/i.test(f)) continue;
+            let mtime = 0; let size = 0;
+            try { const st = statSync(join(dir, f)); mtime = Math.floor(st.mtimeMs); size = st.size; } catch { /* 单文件读不到就按 0 */ }
+            files.push({ file: f, path: join(dir, f), mtime, size });
+          }
+        } catch { /* 目录读不了就空列表 */ }
+      }
+      let mods = [];
+      let note = '';
+      try {
+        const mod = await import('@zaofan/dsh-qqbot/channel-tools');
+        if (typeof mod.botplayExtStatus === 'function') mods = mod.botplayExtStatus(ns) || [];
+        else note = '线上插件还是旧版本(需重启宿主加载新代码) —— 现在只能显示文件路径';
+      } catch (e) { note = String((e && e.message) || e); }
+      // 合并: 插件侧状态(带 hooks/加载错误) + 目录实况; 插件未就绪时退化成"只报路径"
+      const merged = (mods.length ? mods : files).map((m) => {
+        const hit = files.find((f) => f.file === m.file);
+        return Object.assign({ hooks: [], error: '', name: '', loadedMtime: 0, exists: false, mtime: 0 }, m, {
+          size: hit ? hit.size : 0,
+          path: m.path || (hit ? hit.path : (dir ? join(dir, m.file) : m.file)),
+          exists: typeof m.exists === 'boolean' ? m.exists : !!hit,
+          mtime: m.mtime || (hit ? hit.mtime : 0),
+        });
+      });
+      writeJson(res, 200, { ok: true, dir, dirExists, dataRoot, mods: merged, note });
+    } catch (e) { writeJson(res, 500, { ok: false, error: String((e && e.message) || e) }); }
+  });
+
+  // 「🔄 重载模块」: {ns?, file?}(file 空=全部模块) —— 热重载, 不重启宿主
+  route(ctx, 'POST', '/api/qqbot-settings/group/botplay-ext/reload', async (req, res) => {
+    try {
+      const body = await readJsonBody(req);
+      const ns = String((body && body.ns) || NS);
+      const file = String((body && body.file) || '').trim();
+      const mod = await import('@zaofan/dsh-qqbot/channel-tools');
+      if (typeof mod.reloadBotplayExt !== 'function') {
+        return writeJson(res, 500, { ok: false, error: '线上插件还是旧版本(需重启宿主加载新代码)' });
+      }
+      const r = mod.reloadBotplayExt(ns, file || undefined);
+      const b2 = nsBot(ns);
+      if (b2 && b2.cwd) audit(b2.cwd, { ev: 'botplay.ext-reload', ns, file: file || '(all)', ok: r.ok });
+      writeJson(res, 200, r);
+    } catch (e) { writeJson(res, 500, { ok: false, error: String((e && e.message) || e) }); }
+  });
+
+  // 「📄 查看源码」: 读模块文件原文(插件/宿主读不到时回落)
+  route(ctx, 'GET', '/api/qqbot-settings/group/botplay-ext/source', async (req, res) => {
+    try {
+      const u = new URL(req.url ?? '/', 'http://x');
+      const ns = NSQ(u);
+      const file = String(u.searchParams.get('file') || '').trim();
+      if (!file) return writeJson(res, 400, { error: 'file 必填' });
+      // 文件名安全校验(与插件侧 safeBotplayFileName 同款判据: 不许任何路径分隔符 → 防逃逸读任意文件)
+      if (/[\\/]/.test(file) || file.includes('..') || !/^[A-Za-z0-9._@-]+$/.test(file)) {
+        return writeJson(res, 400, { error: '文件名不合法' });
+      }
+      const b2 = nsBot(ns);
+      const dataRoot = (b2 && b2.cfg && typeof b2.cfg.dataRoot === 'string' && b2.cfg.dataRoot) ? b2.cfg.dataRoot : ((b2 && b2.cwd) || '');
+      if (!dataRoot) return writeJson(res, 400, { error: '找不到数据目录' });
+      const p = join(dataRoot, '.qqbot-extensions', 'botplay', file);
+      if (!existsSync(p)) return writeJson(res, 404, { error: '文件不存在: ' + p });
+      const st = statSync(p);
+      if (st.size > 512 * 1024) return writeJson(res, 400, { error: '文件过大(>512KB), 请直接用编辑器打开: ' + p });
+      writeJson(res, 200, { ok: true, path: p, text: readFileSync(p, 'utf8') });
+    } catch (e) { writeJson(res, 500, { ok: false, error: String((e && e.message) || e) }); }
+  });
+
+  /**
+   * 给 AI 的"官方接口文档"指引(2026-10-05 主人定的最终形态)。
+   *
+   * 为什么给**链接**而不是随包塞一份本地文档镜像(这段是踩过两轮后的结论, 别再改回去):
+   *   ① 本地镜像 4.2MB / 191 页, 塞进 npm 包会把包体积从 ~2.1MB 抬到 ~6MB —— 为了一个
+   *      "给 AI 看一眼"的功能不值当;
+   *   ② 之前一版还写过"运行时按包根解析本地路径" —— 能跑, 但那等于把**开发机/本包**的
+   *      文件布局变成功能依赖: 换个装法(link/软链)、文档没被 files 带上, 功能就静默失效;
+   *   ③ 官方文档是**权威且持续更新**的, 而 AI 自己能联网读页面 —— 给链接既省体积也更新鲜。
+   * ⚠️ 这里只放"最该看的 3 个": 总入口 + interaction_create(按钮回调事件) + 互动回调 API。
+   *   全量清单让 AI 从总入口自己爬, 不在提示词里堆(堆了也是噪音, 还吃 token)。
+   */
+  function apiV2DocLinks() {
+    return [
+      '── 官方接口文档（需要细节时自行查阅）──',
+      '· 总入口：https://bot.q.qq.com/wiki/develop/api-v2/',
+      '· 按钮交互事件 interaction_create（用户点击按钮时触发，本功能的核心事件）：',
+      '  https://bot.q.qq.com/wiki/develop/api-v2/autogen/event/interaction_create.html',
+      '· 互动回调 API（PUT /interactions/{interaction_id}，回执 / 更新按钮状态用）：',
+      '  https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/interactions_interaction_id.put.html',
+    ];
+  }
+
+  /**
+   * 给 AI 的"如何注册成 botplay 自定义事件"契约说明(纯文案, 与 features/botplay-ext.ts 的契约一一对应)。
+   * ⚠️ 改契约时**两处都要改**(这里 + botplay-ext.ts 的类型与注释), 否则 AI 会按旧契约写出跑不起来的模块。
+   */
+  /**
+   * botplay 自定义事件的契约正文 —— **已搬到 docs/botplay-contract.md**（可版本管理，改契约不用动本文件）。
+   *
+   * 2026-10-05 拆分：原来近 90 行契约硬编码在这里的字符串数组里，改一句话要翻 4000 行，
+   *   也没法给人直接看 ⇒ 改为读 md；动态部分用占位符，运行时替换：
+   *     {{EXT_DIR}}      模块目录（数据根下）
+   *     {{EVENTS_FILE}}  事件登记文件
+   *     {{NS}}           账号实例 id
+   *   md 里 <!-- 开头的行是给人看的注释，拼接时剔除。
+   *   ⚠️ 读不到（旧包/文件缺失）不报错，回落成一句可操作提示，保证「让 AI 写」仍可用。
+   */
+  function botplayContractLines(extDir, ns, eventsFile) {
+    const dir = extDir || '{dataRoot}/.qqbot-extensions/botplay'
+    const evFile = eventsFile || '{dataRoot}/botplay-events.json'
+    try {
+      const p = join(dirname(fileURLToPath(import.meta.url)), 'docs', 'botplay-contract.md')
+      const raw = readFileSync(p, 'utf8')
+      const txt = raw
+        .split(/\r?\n/)
+        .filter((l) => !l.trim().startsWith('<!--'))
+        .join('\n')
+        .replace(/\{\{EXT_DIR\}\}/g, dir)
+        .replace(/\{\{EVENTS_FILE\}\}/g, evFile)
+        .replace(/\{\{NS\}\}/g, String(ns || ''))
+      const out = txt.split(/\n/)
+      while (out.length && !out[out.length - 1].trim()) out.pop()
+      if (out.length > 5) return out
+    } catch { /* 读不到 → 回落 */ }
+    return [
+      '（契约文件 docs/botplay-contract.md 读取失败，请检查插件包是否完整）',
+      `1) 模块文件放：${dir}/<文件名>.mjs（必须 .mjs/.js/.cjs）`,
+      `4) 登记事件：在 ${evFile} 的 events 数组里加 { "id":"...", "name":"...", "file":"<文件名>.mjs" }`,
+      '5) 改完在面板点「🔄 重载模块」即可生效（不用重启）。',
+    ]
+  }
+
+
+  // ── 🤖「让 AI 写」自定义事件(2026-10-05 主人要求) ─────────────────────────
+  // 面板输入需求 → 这里把「需求 + 接口文档索引 + 自定义事件契约 + 环境信息 + 要求」拼成一条消息,
+  // 用**面板既有的"唤醒当前会话 AI"通道**(channel-tools.askAiToWriteBotplayEvent, 内部伪造一条
+  // 用户消息直调 handleInbound —— 与「让ai写样例库」「定时任务到点」同一条路)发过去。
+  // 为什么不新开渠道: 面板"代你发送/让ai写"已经是主人认可的交互姿势, 再开一条只会多一套要维护的语义。
+  //
+  // ⚠️ 两个诚实点(写进给 AI 的文案里, 免得它乱猜):
+  //   ① 接口文档目录是**运行时按包根算出来的**(PKG_ROOT = 本文件所在目录), 不是写死的开发机路径 ——
+  //      插件被别人 npm 装到任何 profile 下都对, 因为 docs/ 是随包发布的(见 package.json 的 files);
+  //   ② appSecret 只报"已配置/未配置", 绝不把内容输出到会话里。
+  route(ctx, 'POST', '/api/qqbot-settings/group/botplay-ext/let-ai-write', async (req, res) => {
+    try {
+      const body = await readJsonBody(req);
+      const ns = String((body && body.ns) || NS);
+      const scope = String((body && body.scope) || 'group') === 'c2c' ? 'c2c' : 'group';
+      const peerId = String((body && body.peerId) || '');
+      const reqText = String((body && body.requirement) || '').trim();
+      if (!reqText) return writeJson(res, 400, { ok: false, error: '请先在输入框里写你要的事件需求' });
+      if (reqText.length > 4000) return writeJson(res, 400, { ok: false, error: '需求太长了(最多 4000 字)' });
+      if (!peerId) return writeJson(res, 400, { ok: false, error: '当前会话不是 QQ 群/私聊(顶栏「当前会话」未命中) —— 请先切到与 bot 的群或私聊会话' });
+
+      const bot = nsBot(ns);
+      if (!bot) return writeJson(res, 400, { ok: false, error: '找不到该账号实例' });
+      const dataRoot = (bot.cfg && typeof bot.cfg.dataRoot === 'string' && bot.cfg.dataRoot) ? bot.cfg.dataRoot : (bot.cwd || '');
+      const extDir = dataRoot ? join(dataRoot, '.qqbot-extensions', 'botplay') : '';
+      const eventsFile = dataRoot ? join(dataRoot, 'botplay-events.json') : '';
+
+      // ── 环境信息(从既有配置读; 读不到就照降级写法) ──
+      // value 来源与 /read 一致: patch 基线 + 自有存储覆盖(**自有存储优先**, 就是用户在设置页存的那份)
+      let value = {};
+      try {
+        const base = viewOf(ctx.settings, bot.ns) || {};
+        const own = readOwnSettings(bot.ns);
+        value = Object.assign({}, base.value || {}, own);
+      } catch { value = {}; }
+      const appId = String(value.appId || (bot.cfg && bot.cfg.appId) || '').trim();
+      const hasSecret = !!String(value.appSecret || (bot.cfg && bot.cfg.appSecret) || '').trim();
+      const owners = (value.groupAdmin && Array.isArray(value.groupAdmin.owners) ? value.groupAdmin.owners : [])
+        .map((x) => String(x)).filter(Boolean);
+      const masterOpenid = owners.length ? owners[0] : '';
+
+      const prompt = [
+        '【botplay 自定义事件 · 写作请求】',
+        reqText,
+        '',
+        '── 参考资料 ──',
+        ...apiV2DocLinks(),
+        '',
+        '── 如何注册成 botplay 事件 ──',
+        ...botplayContractLines(extDir, ns, eventsFile),
+        '',
+        '── 环境信息 ──',
+        `bot appId: ${appId || '未配置'}`,
+        `主人 openid: ${masterOpenid || '未配置'}`,
+        // appSecret 绝不输出内容, 只报状态(主人明确要求)
+        `appSecret: ${hasSecret ? '已配置（位置：设置 → QQ 机器人）' : '未配置'}`,
+        `数据根 dataRoot: ${dataRoot || '未配置'}`,
+        `事件登记文件: ${eventsFile || '未配置'}`,
+        `当前会话: ${scope === 'group' ? '群' : '私聊'} ${peerId}`,
+        '',
+        '── 要求 ──',
+        `请按上面的契约写一个可直接用的自定义事件模块（写进 ${extDir || '{dataRoot}/.qqbot-extensions/botplay'}），并在 botplay-events.json 里登记对应事件（id/name/file）。`,
+        '写完自己核对一遍语法；可以用 /botplay 事件id 在群里发卡试一下, 或让主人去面板点「🔄 重载模块」后再发卡。',
+      ].join('\n');
+
+      const mod = await import('@zaofan/dsh-qqbot/channel-tools');
+      if (typeof mod.setBotplayWritePrompt !== 'function' || typeof mod.askAiToWriteBotplayEvent !== 'function') {
+        return writeJson(res, 500, { ok: false, error: '线上插件还是旧版本(需重启宿主加载新代码)' });
+      }
+      // 接口是纯数据参数(函数不能跨模块实例传值), 所以先用 setter 把提示词递过去
+      mod.setBotplayWritePrompt(prompt);
+      const r = await mod.askAiToWriteBotplayEvent(ns, scope, peerId);
+      if (bot.cwd) audit(bot.cwd, { ev: 'botplay.let-ai-write', ns, scope, peerId, reqLen: reqText.length, ok: r.ok });
+      writeJson(res, 200, r);
+    } catch (e) { writeJson(res, 500, { ok: false, error: String((e && e.message) || e) }); }
+  });
+
   // ── M3 群发任务队列(2026-09-10): 持久化状态机 draft→queued→sending→done, 二次确认, 可中止/撤回 ──
   // 数据: {dataRoot}/.qqbot/broadcast-tasks.json(broadcast.ts 管理); 推进由每次 list 请求驱动(串行, 天然限频)。
   // 路由: broadcast/create(草稿) → broadcast/confirm(二次确认后入队) → broadcast/list(推进+展示) →
@@ -3593,17 +3822,39 @@ export function apply(ctx) {
       if (scope !== 'group' && scope !== 'c2c') return writeJson(res, 400, { error: 'scope 必须为 group|c2c' });
       if (!peerId) return writeJson(res, 400, { error: 'peerId 必填' });
       const limit = Math.max(1, Math.min(200, Math.round(Number(u.searchParams.get('limit'))) || 50));
-      const bRaw = Number(u.searchParams.get('beforeSeq'));
+      const _bStr = u.searchParams.get('beforeSeq');
+      const bRaw = (_bStr === null || _bStr === '') ? NaN : Number(_bStr);   // 同理：空串/缺失不能当 0
       const beforeSeq = Number.isFinite(bRaw) && bRaw > 0 ? Math.floor(bRaw) : undefined;
       // 2026-10-01 新增 afterSeq：**往后取更新的消息**（dock 聊天页滚轮增量刷新用 ——
       //   只 append 新气泡，不重绘不闪、不跳滚动位置）。与 beforeSeq 互斥：给了 afterSeq 就正扫。
-      const aRaw = Number(u.searchParams.get('afterSeq'));
+      // ⚠️ 2026-10-04 修复（主人实测：dock 聊天页永远只显示最旧那批，一直以为数据没加载）：
+      //   Number(null) === 0！参数【不存在】时 searchParams.get() 返回 null，
+      //   原来的 `aRaw >= 0` 于是成立 ⇒ afterSeq=0 ⇒ 走进【正扫】分支，
+      //   从 seq=1 开始往前捞 ⇒ 捞到的全是最早的历史（表现：停在几天前，怎么刷新都一样）✗
+      //   必须先判"参数是否真的存在"，缺失就送 NaN（→ undefined → 走倒扫）。
+      const _aStr = u.searchParams.get('afterSeq');
+      const aRaw = (_aStr === null || _aStr === '') ? NaN : Number(_aStr);
       const afterSeq = Number.isFinite(aRaw) && aRaw >= 0 ? Math.floor(aRaw) : undefined;
-      const bot = nsBot(ns);
+      let bot = nsBot(ns);
       if (!bot) return writeJson(res, 400, { error: '找不到该账号实例(请先在账号页配置 appId/appSecret)' });
       const reg = await import('./dist/features/session-registry.js');
-      const rec = typeof reg.findRecordByPeerWeb === 'function'
-        ? reg.findRecordByPeerWeb(String(ns || 'im-qqbot'), scope, peerId) : undefined;
+      let rec = typeof reg.findRecordByPeerWeb === 'function'
+        ? reg.findRecordByPeerWeb(String(ns || ''), scope, peerId) : undefined;
+            // ⚠️ 2026-10-04 修复（主人实测：dock 聊天页只显示到几天前的最旧消息）：
+      //   原实现兜底默认值硬编码 'im-qqbot'；多 bot 场景（主人在用 im-qqbot-2）会去查**另一个实例**，
+      //   拿到那个实例里的过期会话记录 ⇒ 聊天停在很久以前（实际活跃会话在别的实例）。
+      //   现在：按 ns 查不到就**遍历所有实例**，挑 seq 最大（= 最新）的那个。
+      if ((!rec || !rec.agent) && typeof reg.listPeerRecordsWeb === 'function') {
+        try {
+          const cands = reg.listPeerRecordsWeb(scope, peerId) || [];
+          if (cands.length) {
+            cands.sort((a, b) => (Number(b.seq) || 0) - (Number(a.seq) || 0));
+            rec = cands[0];
+            const b2 = nsBot(rec.ns);
+            if (b2) bot = b2;
+          }
+        } catch { /* 兜底失败按原样走 */ }
+      }
       if (!rec || !rec.agent) {
         return writeJson(res, 200, { ok: true, code: 'no-session', items: [], hasMore: false, msg: '该目标暂无活跃会话' });
       }
@@ -3627,8 +3878,9 @@ export function apply(ctx) {
       const fallbackSender = scope === 'c2c' ? ((ledger.get('c2c:' + peerId) || {}).name || '') : '';
       // 尾部倒扫: 默认从最新一条事件 seq 往前; beforeSeq=加载更早(beforeSeq 之前的)
       const items = [];
-      const STEP = 500;
-      let reachedEnd = false;
+      const STEP = 200;   // 2026-10-04: 500 → 200（主人实测大跨度区间取不到数据，小步更容易落进有效区）
+      const diagScan = [];   // 🔍 临时诊断：每轮扫了哪个 seq 区间、拿到几条
+        let reachedEnd = false;
       if (afterSeq !== undefined) {
         // ★ 正扫：从 afterSeq+1 扫到最新（升序）—— 只取"比前端已有的更新"的那批
         const top = Math.max(0, sess.seq - 1);
@@ -3655,6 +3907,12 @@ export function apply(ctx) {
         const low = Math.max(0, high - STEP + 1);
         let evs = [];
         if (snap) { try { evs = snap(low, high + 1) || []; } catch { evs = []; } }
+        // 🔍 2026-10-04 临时诊断：记录每一轮"扫了哪个 seq 区间、拿到几条"
+        //   主人实测"只显示 9/21 最旧那批"，而单点探针 snap(seq-5,seq) 却能拿到最新 ⇒
+        //   怀疑 snapshotEvents 对大跨度区间返回空。这里把每轮的实况记下来，一眼可辨。
+        try {
+          if (diagScan.length < 12) diagScan.push({ low, hi: high + 1, got: evs.length })
+        } catch { /* ignore */ }
         if (!evs.length) { const all = sess.events; if (Array.isArray(all) && all.length && all.length > low) evs = all.slice(low, high + 1); }
         for (let i = evs.length - 1; i >= 0; i--) {
           const got = chatDecodeEvent(evs[i], scope, nameByMid, fallbackSender);
@@ -3705,7 +3963,37 @@ export function apply(ctx) {
           }
         }
       }
-      writeJson(res, 200, { ok: true, items, hasMore: !reachedEnd, tailSeq: sess.seq });
+      // 🔍 2026-10-04 临时诊断（主人实测"聊天页只显示最旧的 9/21，刷新也一样"）：
+      //   把"后端到底扫到了哪"直接回给前端，免得再靠猜。定位完可删。
+      // 🔍 窗口探针：snapshotEvents 到底能往前回溯多少（主人实测单点可读、大跨度读空）
+      let winProbe = null
+      try {
+        const _w = (n) => { try { return snap ? (snap(Math.max(0, sess.seq - n), sess.seq) || []).length : -1 } catch (e) { return -1 } }
+        winProbe = { w100: _w(100), w500: _w(500), w2000: _w(2000), w5000: _w(5000) }
+      } catch (e) { winProbe = String((e && e.message) || e) }
+      let diag = {}
+      try {
+        const _all = Array.isArray(sess.events) ? sess.events : null
+        let _probe = null
+        try {
+          const _a = snap ? (snap(Math.max(0, sess.seq - 5), sess.seq) || []) : []
+          _probe = { len: _a.length, last3: _a.slice(-3).map((e) => (e && e.type) || '?') }
+        } catch (e) { _probe = 'ERR ' + String((e && e.message) || e) }
+        diag = {
+          sessionId: rec && rec.sessionId ? String(rec.sessionId) : '',
+          seq: sess.seq,
+          eventsLen: _all ? _all.length : -1,
+          snapProbe: _probe,
+          query: { scope, peerId, beforeSeq: beforeSeq === undefined ? null : beforeSeq, afterSeq: afterSeq === undefined ? null : afterSeq, limit },
+          got: items.length,
+          firstText: items.length ? String(items[0].text || '').slice(0, 40) : '',
+          lastText: items.length ? String(items[items.length - 1].text || '').slice(0, 40) : '',
+          reachedEnd,
+          scan: diagScan,
+          win: winProbe,
+        }
+      } catch (e) { diag = { err: String((e && e.message) || e) } }
+      writeJson(res, 200, { ok: true, items, hasMore: !reachedEnd, tailSeq: sess.seq, debug: diag });
     } catch (e) { writeJson(res, 500, { error: String((e && e.message) || e) }); }
   });
 

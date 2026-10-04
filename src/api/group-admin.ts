@@ -25,6 +25,7 @@ export const FEATURE_GATES: Record<string, { open: boolean; human: string }> = {
   removeMembers: { open: false, human: '踢人: 官方尚未开放(社区 2026-09-05 确认"暂时未开放权限"), 开放后自动可用' },
   listJoinRequests: { open: true, human: '入群申请列表: 机器人需为群管理员' },
   approveJoinRequest: { open: true, human: '入群申请审批: 机器人需为群管理员' },
+  getMemberInfo: { open: false, human: '获取群成员信息(含昵称): 官方标注「内邀接入中」, 申请到白名单后自动可用' },
   getMuteState: { open: true, human: '群禁言状态查询: 机器人需为群管理员' },
   setMute: { open: true, human: '设置禁言: 机器人需为群管理员' },
 };
@@ -207,6 +208,44 @@ export class GroupAdminClient {
     }
     const code = String(j.code ?? res.status);
     return { ok: false, err: { code, human: mapErrHuman(code) } };
+  }
+
+  /**
+   * 获取【单个】群成员信息 —— 重点是它返回 `username`（昵称）。
+   *
+   * ⚠️ 2026-10-05：官方文档对该接口标注「该能力正在内邀接入中，敬请期待」，
+   *   错误码 11253 = 应用无接口访问权限（仅白名单机器人可用）。
+   *   所以它只适合当**兜底**：调用方拿到 FEATURE_NOT_OPEN / 11253 就静默回落，别报错。
+   *   一旦申请到权限，把 FEATURE_GATES.getMemberInfo.open 改 true 即自动生效。
+   */
+  /**
+   * 【给自定义事件模块用】带 token 的**通用**官方 API 调用。
+   *
+   * 价值：框架负责 access_token 的获取与缓存（per-appId + 并发单飞）—— 这是模块自己做不到的
+   *   （它拿不到 appSecret）。模块只管给 path，就能调任意官方接口：查成员、发消息、撤回、
+   *   上传媒体、禁言、入群审批……
+   *
+   * @param method GET/POST/PATCH/DELETE
+   * @param path   不含 host 的路径，形如 /v2/groups/{group_openid}/members/{member_openid}
+   * @param body   可选 JSON body
+   * @returns { ok:true, data } | { ok:false, err:{ code, human } }（human 已是人话）
+   *
+   * ⚠️ 2026-10-05：**不做**能力门控（FEATURE_GATES 是给"已知未开放"的主流程用的）；
+   *   未开放的接口会走官方错误码（如 11253），调用方自己看 err.code 判定。
+   *   path 也不做白名单（模块是主人自己写的代码，沙箱边界不在这一层）。
+   */
+  async apiCall(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', path: string, body?: unknown): Promise<ApiResult<unknown>> {
+    const p = String(path || '').trim();
+    if (!p.startsWith('/')) {
+      return { ok: false, err: { code: 'BAD_PATH', human: 'path 必须以 / 开头（不含 host），例如 /v2/groups/{gid}/members/{mid}' } };
+    }
+    return this.call<unknown>(method, p, body);
+  }
+
+  async getMemberInfo(gid: string, memberOpenid: string): Promise<ApiResult<MemberInfo>> {
+    const blocked = this.gate('getMemberInfo')
+    if (blocked) return blocked
+    return this.call('GET', `/v2/groups/${encodeURIComponent(gid)}/members/${encodeURIComponent(memberOpenid)}`)
   }
 
   /** 获取群成员列表(🔴 未开放, 完整实现保留, 开放即用) */

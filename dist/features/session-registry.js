@@ -64,6 +64,30 @@ export function findRecordByPeerWeb(ns, scope, peerId) {
         return undefined;
     }
 }
+/**
+ * 遍历**所有**实例(ns)，找出「有该 peer 活跃会话」的记录。
+ *
+ * 2026-10-04 新增（主人实测：dock 聊天页只显示到几天前的最旧消息）：
+ *   findRecordByPeerWeb 需要调用方给对 ns；一旦 ns 指到别的实例（多 bot 场景常见），
+ *   拿到的就是那个实例里的**过期会话记录** ⇒ 聊天记录停在很久以前。
+ *   这里提供跨实例兜底，由调用方按 seq 取「最新的那个」。
+ */
+export function listPeerRecordsWeb(scope, peerId) {
+    const out = [];
+    for (const [ns, m] of managers) {
+        try {
+            const r = m.findByPeer(scope, peerId);
+            if (!r)
+                continue;
+            const ag = r.agent;
+            const sess = ag && (ag.session || (ag.ctx && ag.ctx.session));
+            const seq = sess && typeof sess.seq === "number" ? sess.seq : -1;
+            out.push({ ns, sessionId: r.sessionId, scope: r.scope, peerId: r.peerId, senderId: r.senderId, agent: r.agent, seq });
+        }
+        catch { /* ignore */ }
+    }
+    return out;
+}
 /** 活跃表 miss(会话被回收/未建立)时恢复/重建会话 —— 与入群申请通知/定时任务同款 getOrCreate(不开回合, 只保证 log 存在) */
 export async function getOrCreateByPeerWeb(ns, scope, peerId, senderId = 'master') {
     const m = managers.get(ns);
