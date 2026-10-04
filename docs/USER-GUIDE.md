@@ -524,7 +524,7 @@ export default {
 7. 示范(点歌): ①工具里 fetch 搜索接口 → ②拼一段 markdown(封面/歌名/歌手/歌词) → ③`sender.sendMarkdown(replyTarget, 卡片)` → ④要试听就 `sender.sendMedia(...)` → ⑤返回 `{ok:true,msg:'已发卡'}`。
 8. **接口字段别猜**: 写扩展遇到不确定的官方字段/事件/错误码, 先查官方 api-v2 文档 <https://bot.q.qq.com/wiki/develop/api-v2/> (按钮 `action.type` 0=跳转/1=回调/2=指令、键盘 5 行上限、错误码等都在里面), 不要凭印象写。
 
-## 🤖 botplay 自定义事件 + 让 AI 写（v1.6.6+，2026-10-05 新增）
+## 🤖 botplay 自定义事件 + 让 AI 写（v1.6.7+，2026-10-05 新增）
 
 普通 botplay 事件的按钮只能"点一次回一句死文本"（回文本 / 跳链接 / 执行命令）。想要**带状态**的互动
 （谁签到过、签了几个、只有主人能点、结束后统计公布名单），就用**自定义事件**：让 AI（或你自己）写一个
@@ -550,9 +550,19 @@ JS 模块挂在事件上。
 用 `/botplay checkin-stats`（或 `/botplay` 目录里带 🤖 的那条）在群里发卡。
 
 - 模块目录在**数据根**下 → **升级/重装插件不会覆盖**你写的模块与它的状态。
-- 模块能用的能力：读写卡片正文/按钮（`ctx.card()`，改完自动重发刷新按钮）、发文本/markdown/图片到 QQ
-  （`ctx.emit` / `ctx.markdown` / `ctx.image`，支持 `<@openid>` @人）、持久化自有状态（`ctx.store`）、
-  查点击人 openid/昵称/是否主人（`ctx.user.isOwner`、`ctx.owners`）、发消息/日志等。
+  - 模块能用的能力（**它本质是一段跑在宿主里的 JS，能力很足**）：
+
+    | 能力 | 怎么写 | 用途 |
+    |---|---|---|
+    | 读写卡片 | `ctx.card()`（改完置 `dirty = true` 才会重发刷新） | 改按钮文字/正文，比如"签到 (3)" |
+    | 自己发消息 | `ctx.emit(text, at?)` / `ctx.markdown(md)` / `ctx.image({url\|localPath})` | 文本、富文本、图片，可 @ 人 |
+    | 存自己的状态 | `ctx.store.load()` / `ctx.store.save(obj)` | 谁签到了、第几轮 —— **落盘、升级不丢** |
+    | 查 / 判权限 | `ctx.user`(openid/name/pureName/isOwner)、`ctx.owners`、`ctx.getMember(openid)`、`ctx.clickCount(btnId)` | "只有主人能点"这类细粒度控制 |
+    | **叫醒 AI** | `ctx.appendWake(text)` 写进会话并**触发一次 AI 回合**<br>`ctx.appendSilent(text)` 只写进上下文不叫醒 | ★ 让 AI 参与收尾（结算后补一句人话） |
+    | **调官方 API** | `ctx.api(path, {method, body})` 框架代拿 token（带缓存），你只管给路径 | 查成员、发消息、撤回、上传媒体… |
+    | **自己换 token** | `ctx.appId` + `ctx.appSecret` —— 直接给"钥匙" | 想完全自己 `fetch` 官方接口时用（token 约 2h，自己缓存） |
+    | 日志 | `ctx.log(...)` | 落在 `botplay-ext.log` + 面板可见 |
+
 - 模块钩子：`onInit` / `onClick` / `onExpire` / `onDispose`（全部可选，至少要有一个）。
   ⚠️ 契约里还声明了 `onTick`（"卡片有效期内定期调一次"）**但当前版本框架不调用它** —— 留作以后扩展，别依赖它。
 - **权限提示**：QQ 客户端侧的按钮 permission 是**整张卡片**一个，做不到"按钮1谁都能点、按钮2只有主人"。
@@ -566,6 +576,7 @@ JS 模块挂在事件上。
    > 我要一个签到人数统计。按钮1 签到，所有人都能点，每人只能点一次；按钮2 结束，只有我能点。
    > 我点结束后 bot 在群里发消息，列出签到人数和所有签到者的名字。
 3. 点「🤖 让 AI 写」→ 面板会把 `需求原文 + 官方接口文档链接 + 自定义事件契约 + 环境信息(appId/主人openid，appSecret 只报位置不输出内容) + 要求`
+     （契约正文在插件包的 `docs/botplay-contract.md`，**纯文本可直接改**；改完重启宿主生效）
    拼成一条消息，用**面板既有的"唤醒当前会话 AI"通道**发给它（与「让ai写(样例库)」同一条路，不新开渠道）。
 4. AI 写好后：选中该事件 → 点 **「🔄 重载模块」**（热重载，**不用重启宿主也不用重启插件**）→ 群里发 `/botplay 事件id` 发卡验证。
 
@@ -589,6 +600,32 @@ JS 模块挂在事件上。
 | 模块写对了但不生效 | 确认事件的 `file` 字段值与文件名**完全一致**（含 `.mjs`） |
 | 每次点都回"你已经签过了" | 模块自己的状态在 `data\<文件名>.json`，想重来就删它（或在模块里加个重置按钮） |
 
+### ⑥ 进阶：让卡片把 AI 叫起来（v1.6.7+）
+
+普通卡片点完就结束了；自定义事件可以用 **`ctx.appendWake(text)`** 把 AI 拉进来一起收尾。
+
+**随包示例就是这么干的**（`checkin-stats.mjs`）：主人点「🏁 结束并统计」后，
+卡片先把统计消息**直接发到群里**（快、不花 token），**再叫醒 AI 补一句人话**：
+
+```js
+// 只在"真正出结果"时调一次，别在每次点击里都调（会烧 token）
+if (finallyDone) {
+  await ctx.appendWake(
+    `【签到统计】本轮已结算，通知你一下结果：\n` +
+    `· 触发方式：${reason}\n· 签到人数：${names.length} 人\n` +
+    `· 名单（按先后）：${names.map((n, i) => `${i + 1}. ${n}`).join("、")}\n\n` +
+    `统计文本已经由卡片直接发到群里了（群友已能看到）。` +
+    `你只需要用鲸鱼娘的口吻补一句简短回应，不需要把名单再复述一遍。`
+  )
+}
+```
+
+于是群里会是这个效果：**卡片先播报统计 → AI 紧接着用自己的口吻说一句**（播报 / 吐槽 / 道谢都可能）。
+
+- `ctx.appendWake` = 写进上下文 **+ 叫醒一轮**（AI 会真的开口）
+- `ctx.appendSilent` = 只写进上下文（AI 下一轮自然看到，不打扰它）
+- 两者都**自带"等回合空闲"保护**（不会把会话记录写坏）；失败也只是跳过，不影响签到流程。
+
 ### ⑤ 给 AI 的要点（让 AI 写 botplay 自定义事件时照此办）
 
 1. 模块写进 `{dataRoot}\.qqbot-extensions\botplay\<文件名>.mjs`（文件名只用字母/数字/`._@-`，**不允许路径分隔符**）。
@@ -598,6 +635,12 @@ JS 模块挂在事件上。
 5. 要"只有主人能点"：`ctx.user.isOwner`（或 `ctx.owners.includes(openid)`）—— 卡片级 perm 做不到按按钮区分。
 6. 状态用 `ctx.store.load()/save()`（**升级不丢**）；别把状态写在插件包内。
 7. 别改事件 JSON 里其它事件的字段；加新事件就 append 一条（`id` 不能与现有重复）。
+  8. 想让 AI 参与收尾：`ctx.appendWake(text)`（会真触发一轮 AI 回复）/ `ctx.appendSilent(text)`（只记上下文）。
+     ⚠️ 只在"关键节点"调（如最终结算），别在每次点击里调，会很烧 token。
+  9. 要调官方接口：优先 `ctx.api(path, {method, body})`（框架代拿 token + 缓存）；
+     想完全自己来就用 `ctx.appId` + `ctx.appSecret` 自己换 token（POST `https://bots.qq.com/app/getAppAccessToken`，
+     再用 `Authorization: QQBot <token>` 调 `https://api.bot.qq.com/...`）。接口清单见随包的《QQ机器人API-v2-底层调用参考》；
+     官方未开放的接口（如查群成员信息）会返回 `code: 11253`，**当正常分支处理、别当异常**。
 8. 不确定的官方字段/事件/错误码去查 <https://bot.q.qq.com/wiki/develop/api-v2/>（按钮回调事件是 `interaction_create`）。
 
 
