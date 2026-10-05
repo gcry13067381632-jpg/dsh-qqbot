@@ -2908,51 +2908,101 @@ export function apply(ctx) {
   //        · sessions —— 所有 dsh 会话的 { sessionId, at }（扫磁盘会话文件 mtime）
   //                     ⚠️ 这样浏览器端不必读 DOM、也不必解析"16小时"这种相对时间
   //        · ready    —— dsh 是否已就绪（没就绪前端不排序，见下）
-  route(ctx, 'GET', '/api/qqbot-settings/workspace/active-session', async (req, res) => {
+  // ── web 会话列表自动重排（2026-10-05 主人定）────────────────────────────
+  //   规则：QQ 消息入站到某个 web 会话、且 AI 真的产出了
+  //         ⇒ 从侧边栏列表头往下数 n 个仍"热的"（对话间隔 < 10min）会话，
+  //           把目标会话插到第 n+1 位；若第 1 个就冷掉（n=0）⇒ 直接插第 1 位。
+  //           · 置顶（「进行中」）不参与计数、位置也不动。
+  //
+  //   ★ 事件驱动，不轮询（2026-10-05 主人要求）——
+  //     判据："AI 真的产出了" = 该会话出现 assistant/message 事件。
+  //     我们直接订阅宿主自己的 session/event（与出站层同一个事件源），
+  //     命中就向订阅中的浏览器推一条 SSE；没人订阅 ⇒ 零开销、零扫描。
+  //
+  //   分工：侧边栏顺序是 browser-local 的 localStorage["dsh.workspace.view.v5"]，
+  //         服务端改不了 ⇒ 这里只"通知"，排序在 client/qqbot-settings.js 里做。
+  const wsWatchers = new Set();
+
+  /** 向所有订阅中的浏览器推一条"某会话刚产出" */
+  function wsBroadcast(sessionId) {
+    if (!wsWatchers.size || !sessionId) return;
+    const payload = 'data: ' + JSON.stringify({ sessionId: String(sessionId), at: Date.now() }) + '\n\n';
+    for (const res of [...wsWatchers]) {
+      try { res.write(payload); } catch { wsWatchers.delete(res); }
+    }
+  }
+
+  // 订阅宿主会话事件：assistant/message = 这一轮 AI 真的说话了（判据见上）
+  ctx.on('session/event', (session, event) => {
     try {
-      const u = new URL(req.url ?? '/', 'http://x');
-      const freshMs = Number(u.searchParams.get('freshMs')) || 90_000;
-      // ① 活跃会话（插件侧：QQ 入站会刷新 record.lastActivity）
-      let best = null;
-      for (const mgr of managersOf()) {
-        let rows = [];
-        try { rows = (mgr && typeof mgr.listSessions === 'function') ? (mgr.listSessions() || []) : []; } catch { rows = []; }
-        for (const r of rows) {
-          if (!r || !r.sessionId) continue;
-          const at = Number(r.lastActivity) || 0;
-          if (!at || Date.now() - at > freshMs) continue;
-          if (!best || at > best.at) best = { sessionId: String(r.sessionId), at, scope: r.scope, peerId: String(r.peerId || '') };
+      if (!event || event.type !== 'assistant/message') return;
+      const sid = String((session && (session.id || session.sessionId)) || '');
+      if (!sid) return;
+      wsBroadcast(sid);
+    } catch { /* 兜底：绝不影响主链 */ }
+  });
+
+  // ★ SSE 端点：绕过 route() helper（它是一次性请求/响应，不适合长连接），直接注册
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: '/api/qqbot-settings/workspace/watch',
+    handler: (req, res) => {
+      try {
+        if (!isTrusted(req)) { res.writeHead(403); res.end(); return; }
+        res.writeHead(200, {
+          'content-type': 'text/event-stream; charset=utf-8',
+          'cache-control': 'no-cache, no-transform',
+          connection: 'keep-alive',
+          'x-accel-buffering': 'no',
+        });
+        res.write(': connected\n\n');   // 立刻 flush，让浏览器认为连上了
+        wsWatchers.add(res);
+        const hb = setInterval(() => {
+          try { res.write(': hb\n\n'); } catch { clearInterval(hb); wsWatchers.delete(res); }
+        }, 25_000);
+        req.on('close', () => { clearInterval(hb); wsWatchers.delete(res); });
+      } catch { try { res.end(); } catch { /* ignore */ } }
+    },
+  }), 'qqbot-settings: workspace/watch');
+
+  // ── 辅助端点（前端收到 SSE 后调一次，拿"各会话最后活动时间"来算 n）──
+  //   ⚠️ 只在这条路径上扫磁盘，且有 5 秒缓存 ⇒ 不再有定时扫描
+  let wsSessionsCache = { at: 0, list: [] };
+  function wsScanSessions() {
+    const now = Date.now();
+    if (now - wsSessionsCache.at < 5000) return wsSessionsCache.list;
+    const out = [];
+    try {
+      const home = process.env.USERPROFILE || process.env.HOME || '';
+      const root = home ? join(home, '.dsh', 'sessions') : '';
+      if (root && existsSync(root)) {
+        for (const wsDir of readdirSync(root)) {
+          const wsPath = join(root, wsDir);
+          let st1 = null;
+          try { st1 = statSync(wsPath); } catch { continue; }
+          if (!st1.isDirectory()) continue;
+          for (const sid of readdirSync(wsPath)) {
+            const sidPath = join(wsPath, sid);
+            let newest = 0;
+            try {
+              for (const fn of readdirSync(sidPath)) {
+                if (!/^session\.v\d+\.jsonl/.test(fn)) continue;
+                try { const st = statSync(join(sidPath, fn)); if (st.mtimeMs > newest) newest = st.mtimeMs; } catch { /* skip */ }
+              }
+            } catch { continue; }
+            if (newest > 0) out.push({ sessionId: sid, at: Math.round(newest) });
+          }
         }
       }
-      // ② 所有 dsh 会话的 { sessionId, at } —— 扫 ~/.dsh/sessions/<ws>/<sid>/session*.zstd 的 mtime
-      //    ⚠️ 启动期（目录还不全/宿主没起来）时 ready=false，前端据此【不排序】
-      const sessions = [];
-      let ready = false;
-      try {
-        const home = process.env.USERPROFILE || process.env.HOME || '';
-        const root = home ? join(home, '.dsh', 'sessions') : '';
-        if (root && existsSync(root)) {
-          for (const wsDir of readdirSync(root)) {
-            const wsPath = join(root, wsDir);
-            let st1 = null;
-            try { st1 = statSync(wsPath); } catch { continue; }
-            if (!st1.isDirectory()) continue;
-            for (const sid of readdirSync(wsPath)) {
-              const sidPath = join(wsPath, sid);
-              let newest = 0;
-              try {
-                for (const fn of readdirSync(sidPath)) {
-                  if (!/^session\.v\d+\.jsonl/.test(fn)) continue;
-                  try { const st = statSync(join(sidPath, fn)); if (st.mtimeMs > newest) newest = st.mtimeMs; } catch { /* 单文件读不到就跳过 */ }
-                }
-              } catch { continue; }
-              if (newest > 0) sessions.push({ sessionId: sid, at: Math.round(newest) });
-            }
-          }
-          ready = sessions.length > 0;
-        }
-      } catch { /* 扫不动就当没就绪 */ }
-      writeJson(res, 200, { ok: true, ready, active: ready ? best : null, sessions, freshMs, at: Date.now() });
+    } catch { /* 扫不动就空表 */ }
+    wsSessionsCache = { at: now, list: out };
+    return out;
+  }
+
+  route(ctx, 'GET', '/api/qqbot-settings/workspace/sessions', async (req, res) => {
+    try {
+      const list = wsScanSessions();
+      writeJson(res, 200, { ok: true, ready: list.length > 0, sessions: list, at: Date.now() });
     } catch (e) {
       writeJson(res, 500, { ok: false, error: String((e && e.message) || e) });
     }
