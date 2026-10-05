@@ -75,11 +75,22 @@ function saveStore(dataRoot: string, store: BroadcastStore): void {
 }
 
 /** 清理过期任务(保留 7 天; 每次 list 时顺手做) */
-function prune(store: BroadcastStore, now = Date.now()): void {
-  if (store.tasks.length <= 50) return; // 任务少时无所谓
+/**
+ * 清理过期任务（保留 7 天）。
+ *
+ * ⚠️ 2026-10-05 修：原来返回 void，而调用它的 listTasks() 无条件存盘 ⇒
+ *   **面板每 2 秒轮询一次 list，就无意义地写一次盘**（内容完全一样）——
+ *   主人发现 broadcast-tasks.json 在没有任何消息入站时时间戳仍每 2 秒变。
+ *   现改为返回"是否真的改动"，让调用方只在改动时落盘。
+ * @returns 是否删掉了东西（true 才需要 save）
+ */
+function prune(store: BroadcastStore, now = Date.now()): boolean {
+  if (store.tasks.length <= 50) return false; // 任务少时无所谓
   const before = store.tasks.length;
   store.tasks = store.tasks.filter((t) => now - (t.done_at ?? t.created_at) < TASK_TTL_MS);
-  if (store.tasks.length !== before) store.tasks.sort((a, b) => b.created_at - a.created_at);
+  if (store.tasks.length === before) return false;
+  store.tasks.sort((a, b) => b.created_at - a.created_at);
+  return true;
 }
 
 export function createTask(dataRoot: string, input: { type: 'text' | 'markdown' | 'card'; content: string; keyboard?: Record<string, unknown>; targets: BroadcastTarget[]; created_by: 'dock' | 'agent' }): BroadcastTask {
@@ -130,8 +141,8 @@ export function cancelTask(dataRoot: string, taskId: string, by = 'dock'): Broad
 
 export function listTasks(dataRoot: string): BroadcastTask[] {
   const store = loadStore(dataRoot);
-  prune(store);
-  saveStore(dataRoot, store);
+  // 只在 prune 真的删了东西时才落盘 —— 否则每次 list（面板每 2s 轮询）都会白写一次盘
+  if (prune(store)) saveStore(dataRoot, store);
   return store.tasks;
 }
 
