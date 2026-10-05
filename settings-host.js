@@ -2878,6 +2878,46 @@ export function apply(ctx) {
   // 「🔄 重载模块」走 reload: 只清插件内存里的模块缓存(下次发卡/点击重新 import),
   //   **不需要重启宿主**, 也不需要重启插件 —— 这是本功能"改完即生效"的关键。
   // 数据源: channel-tools 的 botplayExtStatus/reloadBotplayExt(只有插件侧才拿得到 controller)。
+  // ── web 会话列表自动重排（2026-10-05 主人定）──────────────────────────
+  //   需求：QQ 消息入站到某个 web 会话、且 LLM 真的产出了 ⇒ 把那个 web 会话在
+  //   侧边栏列表里"上浮"：从列表头往下数 n 个仍是"热的"(对话间隔<10min)会话，
+  //   就插到第 n+1 位；若第 1 个就冷掉了(n=0) ⇒ 直接插第 1 位。
+  //   置顶(「进行中」)的会话不参与计数、位置也不动。
+  //
+  //   ⚠️ 分工：本端点只负责"告诉前端【哪个 dsh 会话刚刚活跃了】"——
+  //      排序本身在浏览器端做（列表顺序是 browser-local 的 localStorage 状态，
+  //      服务端改不了；DOM 那边由 client/qqbot-settings.js 改）。
+  // ── web 会话列表自动重排（2026-10-05 主人定）────────────────────────────
+  //   需求：QQ 消息入站到某个 web 会话、且 LLM 真的产出了 ⇒ 让那个 web 会话在
+  //   侧边栏列表里"上浮"：从列表头往下数 n 个仍是"热的"（对话间隔 < 10min）的会话，
+  //   就插到第 n+1 位；若第 1 个就冷掉了（n=0）⇒ 直接插第 1 位。
+  //   置顶（列表里的「进行中」）不参与计数、位置也不动。
+  //
+  //   ⚠️ 分工：本端点只负责"告诉前端【哪个 dsh 会话刚刚活跃了】"。
+  //      排序本身在浏览器端做 —— 列表顺序是 browser-local 的 localStorage 状态
+  //      （dsh.workspace.view.v5），服务端改不了；由 client/qqbot-settings.js 改。
+  route(ctx, 'GET', '/api/qqbot-settings/workspace/active-session', async (req, res) => {
+    try {
+      const freshMs = 90_000; // 90 秒内算"刚刚活跃"（给前端轮询留余量）
+      let best = null;
+      for (const mgr of managersOf()) {
+        let rows = [];
+        try { rows = (mgr && typeof mgr.listSessions === 'function') ? (mgr.listSessions() || []) : []; } catch { rows = []; }
+        for (const r of rows) {
+          if (!r || !r.sessionId) continue;
+          const at = Number(r.lastActivity) || 0;
+          if (!at || Date.now() - at > freshMs) continue;
+          if (!best || at > best.at) {
+            best = { sessionId: String(r.sessionId), at, scope: r.scope, peerId: String(r.peerId || '') };
+          }
+        }
+      }
+      writeJson(res, 200, { ok: true, active: best, freshMs });
+    } catch (e) {
+      writeJson(res, 500, { ok: false, error: String((e && e.message) || e) });
+    }
+  });
+
   route(ctx, 'GET', '/api/qqbot-settings/group/botplay-ext/status', async (req, res) => {
     try {
       const u = new URL(req.url ?? '/', 'http://x');
