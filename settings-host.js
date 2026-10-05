@@ -2924,8 +2924,40 @@ export function apply(ctx) {
   const wsWatchers = new Set();
 
   /** 向所有订阅中的浏览器推一条"某会话刚产出" */
+
+  /** 诊断：最后一次广播（debug 端点用） */
+  let wsLast = { at: 0, sessionId: '' };
+
+  // ★ 测试端点 1：手动触发一次广播（不用等 QQ 消息，专供调试）
+  route(ctx, 'POST', '/api/qqbot-settings/workspace/test-reorder', async (req, res) => {
+    try {
+      let body = {};
+      try { body = await readJsonBody(req); } catch { body = {}; }
+      const sid = body && typeof body.sessionId === 'string' ? body.sessionId : '';
+      wsBroadcast(sid);
+      writeJson(res, 200, { ok: true, watchers: wsWatchers.size, pushed: sid || '(空: 让前端自己挑一个)' });
+    } catch (e) {
+      writeJson(res, 500, { ok: false, error: String((e && e.message) || e) });
+    }
+  });
+
+  // ★ 测试端点 2：一眼看出「有没有浏览器在订阅、最后推了什么」
+  route(ctx, 'GET', '/api/qqbot-settings/workspace/debug', async (req, res) => {
+    try {
+      writeJson(res, 200, { ok: true, watchers: wsWatchers.size, lastBroadcastAt: wsLast.at, lastSessionId: wsLast.sessionId, now: Date.now() });
+    } catch (e) {
+      writeJson(res, 500, { ok: false, error: String((e && e.message) || e) });
+    }
+  });
+
   function wsBroadcast(sessionId) {
-    if (!wsWatchers.size || !sessionId) return;
+    wsLast = { at: Date.now(), sessionId: String(sessionId || '') };   // 诊断用
+    if (!sessionId) {   // 空 id：推一条"你自己挑一个"的测试帧
+      const idle = 'data: ' + JSON.stringify({ sessionId: null, test: true, at: Date.now() }) + '\\n\\n';
+      for (const r2 of [...wsWatchers]) { try { r2.write(idle); } catch { wsWatchers.delete(r2); } }
+      return;
+    }
+    if (!wsWatchers.size) return;
     const payload = 'data: ' + JSON.stringify({ sessionId: String(sessionId), at: Date.now() }) + '\n\n';
     for (const res of [...wsWatchers]) {
       try { res.write(payload); } catch { wsWatchers.delete(res); }

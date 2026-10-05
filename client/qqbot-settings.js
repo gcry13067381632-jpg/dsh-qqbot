@@ -5671,5 +5671,45 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
       setTimeout(connect, 5000);
     };
   }
+  // ★ 手动测试钩子（F12 里可直接调，不用等 QQ 消息）：
+  //     window.__qqbotReorderTest()            → 自己挑一个"最近有活动的非置顶会话"来排
+  //     window.__qqbotReorderTest("<sessionId>") → 指定会话
+  //     window.__qqbotReorderDebug()            → 看当前读到的顺序/置顶集合/时间表
+  try {
+    window.__qqbotReorderTest = function (sid) {
+      try {
+        var target = sid ? String(sid) : "";
+        if (!target) {
+          var raw = localStorage.getItem(LS_KEY);
+          var j = raw ? JSON.parse(raw) : null;
+          var acc = j && j.sessionOrderByAccount ? j.sessionOrderByAccount : {};
+          var keys = Object.keys(acc);
+          var list = keys.length ? acc[keys[0]] : [];
+          target = list.length ? String(list[Math.min(2, list.length - 1)]) : "";
+        }
+        if (!target) return "没有可用的 sessionId";
+        console.log("[qqbot] 手动测试 目标=" + target);
+        onActive(target);
+        return "已触发 " + target + "（看后面的 [qqbot] 日志）";
+      } catch (e) { return "异常: " + (e && e.message); }
+    };
+    window.__qqbotReorderDebug = function () {
+      try {
+        var pinned = readPinnedFromDom();
+        var raw = localStorage.getItem(LS_KEY);
+        var j = raw ? JSON.parse(raw) : null;
+        var acc = j && j.sessionOrderByAccount ? j.sessionOrderByAccount : {};
+        return {
+          orderBy: j && j.orderBy,
+          accounts: Object.keys(acc),
+          firstOrder: (Object.values(acc)[0] || []).slice(0, 10),
+          pinned: Object.keys(pinned),
+          domRows: document.querySelectorAll('[role="treeitem"][data-row-key]').length,
+        };
+      } catch (e) { return "异常: " + (e && e.message); }
+    };
+    console.log("[qqbot] 调试钩子已就绪: __qqbotReorderTest / __qqbotReorderDebug");
+  } catch (e) { /* 挂不上就算了 */ }
+
   connect();
 })();
