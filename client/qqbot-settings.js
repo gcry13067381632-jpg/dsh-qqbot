@@ -5577,6 +5577,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
 // ═══════════════════════════════════════════════════════════════════════════
 (function () {
   var LS_KEY = "dsh.workspace.view.v5";
+  var FLAT_KEY = "__flat_session_order__";
   var HOT_MS = 10 * 60 * 1000;
   var lastSid = "";
   var lastAt = 0;
@@ -5596,6 +5597,23 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
     return pinned;
   }
 
+  /** 读 DOM：sid 所属的 workspace id（treeitem 是平铺的，顺序遍历即可）。
+   *  组折叠/未渲染 ⇒ null（此时不初始化该组，退回旧行为，绝不乱猜）。 */
+  function workspaceOfSession(sid) {
+    try {
+      var rows = document.querySelectorAll('[role="treeitem"][data-row-key]');
+      var cur = null;
+      for (var i = 0; i < rows.length; i++) {
+        var k = rows[i].getAttribute("data-row-key") || "";
+        var mw = /^workspace:(.+)$/.exec(k);
+        if (mw) { cur = mw[1]; continue; }
+        var ms = /^session:(.+)$/.exec(k);
+        if (ms && ms[1] === sid) return cur;
+      }
+    } catch (e) { /* ignore */ }
+    return null;
+  }
+
   function applyOrder(sid, at) {
     if (typeof localStorage === "undefined") return;
     var pinned = readPinnedFromDom();          // 只有它是 DOM 来的
@@ -5607,9 +5625,39 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
 
     var now = Date.now();
     var changed = false;
+    var wsOfSid = workspaceOfSession(sid);
+    // 全量按「最后活动时间」降序 —— 这正是 dsh 在 orderBy:"updated" 下的显示顺序，
+    // 所以拿它当初始值不会改变任何东西的视觉位置。
+    var allIds = Object.keys(at).sort(function (a, b) { return (at[b] || 0) - (at[a] || 0); });
+
+    var acc = j.sessionOrderByAccount;
+    // ★ 2026-10-05 修复：目标没出现在任何一组里 ⇒ 用户从没手动拖过排序
+    //   （这时 sessionOrderByAccount 甚至可能是 {}，一个键都没有 ⇒ 旧版直接跳过、什么都不做）。
+    //   先把「目标所属工作区」和「扁平」两个键立出来（空数组），交给下面的初始化分支。
+    var sidInAny = Object.keys(acc).some(function (k) {
+      return Array.isArray(acc[k]) && acc[k].indexOf(sid) >= 0;
+    });
+    if (!sidInAny) {
+      if (wsOfSid !== null && !Array.isArray(acc[wsOfSid])) acc[wsOfSid] = [];
+      if (!Array.isArray(acc[FLAT_KEY])) acc[FLAT_KEY] = [];
+    }
+
     Object.keys(j.sessionOrderByAccount).forEach(function (key) {
       var order = j.sessionOrderByAccount[key];
-      if (!Array.isArray(order) || order.indexOf(sid) < 0) return;   // 目标不在这组 ⇒ 跳过
+      if (!Array.isArray(order)) return;
+
+      if (order.indexOf(sid) < 0) {
+        // 目标不在这组里。两种情况：
+        //   ① 这组是【空的】且【确实归目标】（扁平键，或 DOM 里目标就在该工作区下）
+        //      ⇒ 用户从没手动排过 ⇒ 先按时间降序建起来，再走正常插入
+        //   ② 组里已经有别的会话 ⇒ 目标本来就不属于这组 ⇒ 跳过（绝不污染别的组）
+        var belongs = (key === FLAT_KEY) || (wsOfSid !== null && key === wsOfSid);
+        if (!belongs || order.length > 0 || !allIds.length) return;
+        order = allIds.slice();
+        j.sessionOrderByAccount[key] = order;
+        changed = true;
+      }
+
       // n = 从头数：置顶算热；其余按 10 分钟内活跃算；遇冷即停
       var n = 0;
       for (var i = 0; i < order.length; i++) {
