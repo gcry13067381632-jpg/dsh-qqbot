@@ -5549,3 +5549,83 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
     return module.exports
   }
 })
+
+// ═══════════════════════════════════════════════════════════════════════════
+// web 会话列表自动重排（WEB_SESSION_REORDER，2026-10-05 主人定）
+//
+//   规则：QQ 消息入站到某个 web 会话、且 LLM 真的产出了
+//         ⇒ 从侧边栏列表头往下数 n 个仍是"热的"（对话间隔 < 10min）的会话，
+//           把目标会话插到第 n+1 位；若第 1 个就冷掉了（n=0）⇒ 直接插第 1 位。
+//         · 置顶（「进行中」）不参与计数、位置也不动。
+//
+//   安全（★ 按主人要求）：
+//     · 服务端 ready=false（dsh 没完全启动 / 会话目录还不全）⇒ 直接跳过，绝不排序
+//     · 读不到 localStorage 或结构异常 ⇒ 跳过；写回前留备份、出错回滚
+//     · 同一个活跃会话只处理一次；不碰 dsh 自己的其它字段
+//
+//   分工：服务端只给数据（哪个会话刚活跃 + 全量 sessionId/时间），
+//         排序全在这里做 —— 列表顺序是 browser-local 状态
+//         （localStorage[dsh.workspace.view.v5]），服务端改不了。
+// ═══════════════════════════════════════════════════════════════════════════
+(function () {
+  var LS_KEY = "dsh.workspace.view.v5";
+  var HOT_MS = 10 * 60 * 1000;
+  var POLL_MS = 3000;
+  var lastSid = "";
+
+  function reorder() {
+    if (typeof localStorage === "undefined") return;
+    fetch("/api/qqbot-settings/workspace/active-session", { credentials: "same-origin" })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d || d.ok !== true || d.ready !== true) return;
+        if (!d.active || !d.active.sessionId) return;
+        var sid = String(d.active.sessionId);
+        if (sid === lastSid) return;
+
+        var at = {};
+        (d.sessions || []).forEach(function (x) { if (x && x.sessionId) at[x.sessionId] = x.at; });
+
+        var raw = localStorage.getItem(LS_KEY);
+        if (!raw) return;
+        var j = null;
+        try { j = JSON.parse(raw); } catch (e) { return; }
+        if (!j || typeof j !== "object" || !j.sessionOrderByAccount || typeof j.sessionOrderByAccount !== "object") return;
+
+        var now = Date.now();
+        var changed = false;
+        Object.keys(j.sessionOrderByAccount).forEach(function (key) {
+          var order = j.sessionOrderByAccount[key];
+          if (!Array.isArray(order) || order.indexOf(sid) < 0) return;
+          var n = 0;
+          for (var i = 0; i < order.length; i++) {
+            if (order[i] === sid) continue;
+            var t = at[order[i]];
+            if (typeof t === "number" && now - t < HOT_MS) { n++; continue; }
+            break;
+          }
+          var next = order.filter(function (x) { return x !== sid; });
+          next.splice(n, 0, sid);
+          var same = next.length === order.length;
+          if (same) { for (var k = 0; k < next.length; k++) { if (next[k] !== order[k]) { same = false; break; } } }
+          if (!same) { j.sessionOrderByAccount[key] = next; changed = true; }
+        });
+
+        if (!changed) { lastSid = sid; return; }
+        j.orderBy = "manual";
+        try {
+          localStorage.setItem(LS_KEY, JSON.stringify(j));
+          if (!localStorage.getItem(LS_KEY)) throw new Error("readback-empty");
+          lastSid = sid;
+          console.log("[qqbot] web 会话列表已重排: " + sid);
+        } catch (e) {
+          try { localStorage.setItem(LS_KEY, raw); } catch (e2) { /* 回滚失败则放弃 */ }
+          console.warn("[qqbot] 会话重排写盘失败，已回滚:", e && e.message);
+        }
+      })
+      .catch(function () { /* 接口未就绪：静默 */ });
+  }
+
+  setInterval(reorder, POLL_MS);
+  setTimeout(reorder, 5000);
+})();

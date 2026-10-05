@@ -2896,9 +2896,23 @@ export function apply(ctx) {
   //   ⚠️ 分工：本端点只负责"告诉前端【哪个 dsh 会话刚刚活跃了】"。
   //      排序本身在浏览器端做 —— 列表顺序是 browser-local 的 localStorage 状态
   //      （dsh.workspace.view.v5），服务端改不了；由 client/qqbot-settings.js 改。
+  // ── web 会话列表自动重排（2026-10-05 主人定）────────────────────────────
+  //   需求：QQ 消息入站到某个 web 会话、且 LLM 真的产出了 ⇒ 让那个 web 会话在
+  //   侧边栏列表里"上浮"：从列表头往下数 n 个仍是"热的"（对话间隔 < 10min）的会话，
+  //   就插到第 n+1 位；若第 1 个就冷掉了（n=0）⇒ 直接插第 1 位。
+  //   置顶（列表里的「进行中」）不参与计数、位置也不动。
+  //
+  //   ⚠️ 分工：侧边栏顺序是 browser-local 的（localStorage["dsh.workspace.view.v5"]），
+  //      服务端改不了 ⇒ 本端点只负责【给数据】：
+  //        · active   —— 哪个 dsh 会话"刚刚"被激活了（插件侧 QQ↔dsh 映射）
+  //        · sessions —— 所有 dsh 会话的 { sessionId, at }（扫磁盘会话文件 mtime）
+  //                     ⚠️ 这样浏览器端不必读 DOM、也不必解析"16小时"这种相对时间
+  //        · ready    —— dsh 是否已就绪（没就绪前端不排序，见下）
   route(ctx, 'GET', '/api/qqbot-settings/workspace/active-session', async (req, res) => {
     try {
-      const freshMs = 90_000; // 90 秒内算"刚刚活跃"（给前端轮询留余量）
+      const u = new URL(req.url ?? '/', 'http://x');
+      const freshMs = Number(u.searchParams.get('freshMs')) || 90_000;
+      // ① 活跃会话（插件侧：QQ 入站会刷新 record.lastActivity）
       let best = null;
       for (const mgr of managersOf()) {
         let rows = [];
@@ -2907,12 +2921,38 @@ export function apply(ctx) {
           if (!r || !r.sessionId) continue;
           const at = Number(r.lastActivity) || 0;
           if (!at || Date.now() - at > freshMs) continue;
-          if (!best || at > best.at) {
-            best = { sessionId: String(r.sessionId), at, scope: r.scope, peerId: String(r.peerId || '') };
-          }
+          if (!best || at > best.at) best = { sessionId: String(r.sessionId), at, scope: r.scope, peerId: String(r.peerId || '') };
         }
       }
-      writeJson(res, 200, { ok: true, active: best, freshMs });
+      // ② 所有 dsh 会话的 { sessionId, at } —— 扫 ~/.dsh/sessions/<ws>/<sid>/session*.zstd 的 mtime
+      //    ⚠️ 启动期（目录还不全/宿主没起来）时 ready=false，前端据此【不排序】
+      const sessions = [];
+      let ready = false;
+      try {
+        const home = process.env.USERPROFILE || process.env.HOME || '';
+        const root = home ? join(home, '.dsh', 'sessions') : '';
+        if (root && existsSync(root)) {
+          for (const wsDir of readdirSync(root)) {
+            const wsPath = join(root, wsDir);
+            let st1 = null;
+            try { st1 = statSync(wsPath); } catch { continue; }
+            if (!st1.isDirectory()) continue;
+            for (const sid of readdirSync(wsPath)) {
+              const sidPath = join(wsPath, sid);
+              let newest = 0;
+              try {
+                for (const fn of readdirSync(sidPath)) {
+                  if (!/^session\.v\d+\.jsonl/.test(fn)) continue;
+                  try { const st = statSync(join(sidPath, fn)); if (st.mtimeMs > newest) newest = st.mtimeMs; } catch { /* 单文件读不到就跳过 */ }
+                }
+              } catch { continue; }
+              if (newest > 0) sessions.push({ sessionId: sid, at: Math.round(newest) });
+            }
+          }
+          ready = sessions.length > 0;
+        }
+      } catch { /* 扫不动就当没就绪 */ }
+      writeJson(res, 200, { ok: true, ready, active: ready ? best : null, sessions, freshMs, at: Date.now() });
     } catch (e) {
       writeJson(res, 500, { ok: false, error: String((e && e.message) || e) });
     }
