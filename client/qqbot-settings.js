@@ -5548,7 +5548,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
     exports.apply = apply
     return module.exports
   }
-})
+});
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ═══════════════════════════════════════════════════════════════════════════
@@ -5576,6 +5576,8 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
 //         读不到 localStorage/结构异常 ⇒ 不改；写回前留备份 + readback 校验 + 失败回滚。
 // ═══════════════════════════════════════════════════════════════════════════
 (function () {
+  // ★ 加载即打印：F12 里若看不到这行 ⇒ 浏览器拿到的还是旧版 client.js（缓存/未重启）
+  try { console.log("[qqbot] 会话重排模块已加载 build=2026-10-05c"); } catch (e) {}
   var LS_KEY = "dsh.workspace.view.v5";
   var FLAT_KEY = "__flat_session_order__";
   var HOT_MS = 10 * 60 * 1000;
@@ -5597,6 +5599,100 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
     return pinned;
   }
 
+  /** ★ 组内"热"判定：置顶一律算热；其余要求 10 分钟内有活动 */
+  function isHot(s, at, pinned) {
+    if (pinned[s]) return true;
+    var t = at[s];
+    return typeof t === "number" && Date.now() - t < HOT_MS;
+  }
+
+  /** 按【显示顺序】收集可见会话行（treeitem 是平铺的：workspace 行 + 其下会话行）。
+   *  只有真渲染出来的行才有 DOM ⇒ 折叠的分组这里看不到，天然不参与。 */
+  function collectRows() {
+    var out = [];
+    var cur = "";
+    try {
+      var items = document.querySelectorAll('[role="treeitem"][data-row-key]');
+      for (var i = 0; i < items.length; i++) {
+        var k = items[i].getAttribute("data-row-key") || "";
+        var mw = /^workspace:(.*)$/.exec(k);
+        if (mw) { cur = mw[1]; continue; }
+        var ms = /^session:(.*)$/.exec(k);
+        if (ms) out.push({ ws: cur, sid: ms[1], el: items[i] });
+      }
+    } catch (e) { /* ignore */ }
+    return out;
+  }
+
+  /** 造一个原生拖拽事件。宿主侧【只认原生 HTML5 拖拽】：
+   *  dragstart(dataTransfer text/plain = sessionId) → dragover(上半="before") → drop → dragend */
+  function fireDrag(type, el, y, sid) {
+    if (!el) return;
+    var dt = null;
+    try { dt = new DataTransfer(); } catch (e) { dt = null; }
+    var ev = null;
+    try {
+      ev = new DragEvent(type, { bubbles: true, cancelable: true, composed: true, dataTransfer: dt, clientX: 0, clientY: y });
+    } catch (e) {
+      try { ev = document.createEvent("Event"); ev.initEvent(type, true, true); } catch (e2) { return; }
+      try { Object.defineProperty(ev, "dataTransfer", { value: dt }); } catch (e2) {}
+      try { Object.defineProperty(ev, "clientY", { value: y }); } catch (e2) {}
+    }
+    if (sid && dt) { try { dt.effectAllowed = "move"; dt.setData("text/plain", sid); } catch (e) {} }
+    el.dispatchEvent(ev);
+  }
+
+  /** ★★ 真正的重排：驱动侧边栏自己的拖拽，让【内存 store】更新 —— 这才会立刻重渲染 + 自动持久化。
+   *  ⚠️ 2026-10-05 关键认知：光写 localStorage 是【绝对没用的】。侧边栏顺序的唯一真源是内存
+   *     store（zustand），持久化是单向的（初始化读一次 + store 变化时往下写，没有 storage
+   *     事件监听）⇒ 我们 setItem 既不重渲染，又会在下一次任何 store action（折叠分组/换排序
+   *     方式/置顶）后被整份覆盖回去。所以必须走用户的真实入口：原生拖拽。
+   *  @returns true = 已处理完（动了 / 判定不该动）；false = 本次没法处理（调用方走兜底） */
+  function reorderByDom(sid, at) {
+    if (typeof document === "undefined") return false;
+    var pinned = readPinnedFromDom();
+    if (pinned[sid]) { console.log("[qqbot] 目标是置顶会话，位置不动: " + sid); return true; }
+    var rows = collectRows();
+    if (!rows.length) return false;
+    var mine = null;
+    for (var i = 0; i < rows.length; i++) if (rows[i].sid === sid) { mine = rows[i]; break; }
+    if (!mine) { console.log("[qqbot] 目标不在可见列表里（分组被折叠?），跳过: " + sid); return true; }
+    var group = [];
+    for (var j = 0; j < rows.length; j++) if (rows[j].ws === mine.ws) group.push(rows[j]);
+
+    // n = 从组头往下数的"热"会话；一碰到目标就停 ⇒ 目标已在热块内，绝不再把它往下挤
+    var n = 0, k = 0;
+    for (; k < group.length; k++) {
+      if (group[k].sid === sid) { console.log("[qqbot] 目标已在热块内，不动: " + sid); return true; }
+      if (isHot(group[k].sid, at, pinned)) { n++; continue; }
+      break;
+    }
+    if (k >= group.length) { console.log("[qqbot] 组内全是热会话，不动: " + sid); return true; }
+    var dest = group[k];
+    if (dest.sid === sid) { console.log("[qqbot] 已在正确位置（冷块第一个），不动: " + sid); return true; }
+    if (pinned[dest.sid]) { console.log("[qqbot] 落点是置顶会话，宿主不允许互落，不动: " + sid); return true; }
+
+    var before = null;
+    try { before = localStorage.getItem(LS_KEY); } catch (e) {}
+    var rect = dest.el.getBoundingClientRect();
+    var y = Math.round(rect.top + Math.min(4, Math.max(1, rect.height / 4)));   // 上半 ⇒ "before"
+    console.log("[qqbot] 重排: " + sid + " → 插到 " + dest.sid + " 之前（n=" + n + "）");
+    fireDrag("dragstart", mine.el, 0, sid);
+    setTimeout(function () {
+      fireDrag("dragover", dest.el, y, null);   // 让宿主登记落点
+      setTimeout(function () {
+        fireDrag("drop", dest.el, y, null);
+        setTimeout(function () { fireDrag("dragend", mine.el, y, null); }, 40);
+        setTimeout(function () {
+          var after = null;
+          try { after = localStorage.getItem(LS_KEY); } catch (e) {}
+          console.log(after !== before ? "[qqbot] ✅ store 顺序已更新（持久层已同步）" : "[qqbot] ❌ store 顺序未变（拖拽未被宿主接受）");
+        }, 600);
+      }, 40);
+    }, 80);
+    return true;
+  }
+
   /** 读 DOM：sid 所属的 workspace id（treeitem 是平铺的，顺序遍历即可）。
    *  组折叠/未渲染 ⇒ null（此时不初始化该组，退回旧行为，绝不乱猜）。 */
   function workspaceOfSession(sid) {
@@ -5615,6 +5711,13 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
   }
 
   function applyOrder(sid, at) {
+    if (reorderByDom(sid, at)) return;        // ★ 首选：原生拖拽，改内存 store（会立刻重渲染）
+    persistOnlyOrder(sid, at);                // 兜底：DOM 不可用时至少写持久层（刷新后才生效）
+  }
+
+  /** 兜底实现：只写 localStorage 持久层。⚠️ 不重渲染、且会被下一次 store action 覆盖，
+   *  仅在 DOM 拖拽不可用（列表未渲染等）时使用。 */
+  function persistOnlyOrder(sid, at) {
     if (typeof localStorage === "undefined") return;
     var pinned = readPinnedFromDom();          // 只有它是 DOM 来的
     var raw = localStorage.getItem(LS_KEY);
@@ -5705,7 +5808,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
   function connect() {
     if (typeof EventSource === "undefined") return;
     var es;
-    try { es = new EventSource("/api/qqbot-settings/workspace/watch"); } catch (e) { return; }
+    try { es = new EventSource("/api/qqbot-settings/workspace/watch"); } catch (e) { console.warn("[qqbot] EventSource 构造失败:", e); return; }
     es.onopen = function () { console.log("[qqbot] workspace/watch 已连接（SSE）"); };
     es.onmessage = function (ev) {
       try {

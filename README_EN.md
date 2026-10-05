@@ -27,6 +27,11 @@ The little ball at the corner of the settings panel opens a whole control deck: 
 
 **🛡️ Group-admin helper** — join approval + mute management over official APIs, with human-readable errors (not an admin / cannot mute the owner…).
 
+**🔝 A QQ message brings her session back to the top** (v1.6.8)
+The web-sidebar session you are actually talking to should not be buried. As soon as a QQ message lands in one of her web sessions **and she really replies**, that session is moved to just after the still-"hot" ones (anything active within 10 minutes counts as hot; **pinned sessions never move**), so it leapfrogs whatever has gone cold. Fully event-driven, no polling — and nothing happens when the chat page is closed or the host is not up yet.
+
+![Sidebar auto-reorder: the just-active session jumps to the top of its workspace, leapfrogging the 12-hour / 1-day-old ones](docs/screenshots/session-reorder.png)
+
 **🖥️ No config-file surgery** — reply pacing, sticker gates, scheduled wake-ups, outbound mode and per-bot personas are all in the panel; saving applies live (only adding/removing bots needs a restart). There is even a ✏️ persona editor to tweak her "personality file" right in the browser.
 
 **📦 Clean & lean** — drive image sending / recall from plain text (`[MEDIA:image|path]` / `[RECALL]`); the repo contains no bot credentials or private data.

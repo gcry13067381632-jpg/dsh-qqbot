@@ -308,6 +308,37 @@ function route(ctx, method, path, handler) {
   for (const m of methods) reg.handlers.set(m, handler);
 }
 
+// ── workspace 会话重排：SSE 中枢（全进程单例）──────────────────────────────
+//   ⚠️ 2026-10-05 修复「watchers 恒为 0、前端永远收不到推送」：
+//   该 SSE 端点原先写在 apply() 内、用裸 ctx.webServer.register 注册；而 route() 的按 path
+//   去重是**模块级**的 ⇒ 多 bot 实例（im-qqbot-2 / im-qqbot-3 各 apply 一次）时，SSE handler
+//   与 debug / test-reorder 的 handler 会落在**不同实例的闭包**里：浏览器把连接加进 A 实例的
+//   Set，debug 端点读的却是 B 实例的 Set ⇒ 永远 watchers:0，推送也发给了空集合。
+//   实测铁证：curl 订阅 SSE 已收到 ': connected'，同一时刻 debug 仍报 watchers:0。
+//   改法：订阅集合/状态/注册全部收敛到 globalThis 单例 —— 无论模块被求值几次、apply 几次，
+//   全进程只有一份，谁注册的 handler 都读写同一份。
+const WS_HUB = (globalThis.__qqbotWorkspaceWatchHub || (globalThis.__qqbotWorkspaceWatchHub = {
+  watchers: new Set(),
+  last: { at: 0, sessionId: '' },
+  registered: false,
+  bound: false,
+}));
+
+/** 向所有订阅中的浏览器推一条"某会话刚产出"（空 sessionId = 测试帧，让前端自己挑） */
+function wsBroadcast(sessionId) {
+  WS_HUB.last = { at: Date.now(), sessionId: String(sessionId || '') };
+  const frames = [...WS_HUB.watchers];
+  if (!frames.length) return;
+  const isTest = !sessionId;
+  for (const r of frames) {
+    try {
+      r.write(isTest
+        ? 'data: ' + JSON.stringify({ sessionId: null, test: true, at: Date.now() }) + '\n\n'
+        : 'data: ' + JSON.stringify({ sessionId: String(sessionId), at: Date.now() }) + '\n\n');
+    } catch { WS_HUB.watchers.delete(r); }
+  }
+}
+
 export function apply(ctx) {
   // ── 桥装载诊断(2026-09-10 排查路由全 404): 落 ~/.dsh/qqbot-bridge-diag.log ──
   // 用途: 宿主重启后可确认 apply 是否真的被 cordis 调用(以及当时 ctx 上有哪些服务)。
@@ -2921,12 +2952,8 @@ export function apply(ctx) {
   //
   //   分工：侧边栏顺序是 browser-local 的 localStorage["dsh.workspace.view.v5"]，
   //         服务端改不了 ⇒ 这里只"通知"，排序在 client/qqbot-settings.js 里做。
-  const wsWatchers = new Set();
-
-  /** 向所有订阅中的浏览器推一条"某会话刚产出" */
-
-  /** 诊断：最后一次广播（debug 端点用） */
-  let wsLast = { at: 0, sessionId: '' };
+  // ★ 全部走模块级单例 WS_HUB —— 跨 bot 实例共享（见文件顶部说明）
+  const wsWatchers = WS_HUB.watchers;
 
   // ★ 测试端点 1：手动触发一次广播（不用等 QQ 消息，专供调试）
   route(ctx, 'POST', '/api/qqbot-settings/workspace/test-reorder', async (req, res) => {
@@ -2944,58 +2971,53 @@ export function apply(ctx) {
   // ★ 测试端点 2：一眼看出「有没有浏览器在订阅、最后推了什么」
   route(ctx, 'GET', '/api/qqbot-settings/workspace/debug', async (req, res) => {
     try {
-      writeJson(res, 200, { ok: true, watchers: wsWatchers.size, lastBroadcastAt: wsLast.at, lastSessionId: wsLast.sessionId, now: Date.now() });
+      writeJson(res, 200, { ok: true, watchers: WS_HUB.watchers.size, lastBroadcastAt: WS_HUB.last.at, lastSessionId: WS_HUB.last.sessionId, now: Date.now() });
     } catch (e) {
       writeJson(res, 500, { ok: false, error: String((e && e.message) || e) });
     }
   });
 
-  function wsBroadcast(sessionId) {
-    wsLast = { at: Date.now(), sessionId: String(sessionId || '') };   // 诊断用
-    if (!sessionId) {   // 空 id：推一条"你自己挑一个"的测试帧
-      const idle = 'data: ' + JSON.stringify({ sessionId: null, test: true, at: Date.now() }) + '\\n\\n';
-      for (const r2 of [...wsWatchers]) { try { r2.write(idle); } catch { wsWatchers.delete(r2); } }
-      return;
-    }
-    if (!wsWatchers.size) return;
-    const payload = 'data: ' + JSON.stringify({ sessionId: String(sessionId), at: Date.now() }) + '\n\n';
-    for (const res of [...wsWatchers]) {
-      try { res.write(payload); } catch { wsWatchers.delete(res); }
-    }
+  // 订阅宿主会话事件：assistant/message = 这一轮 AI 真的说话了（判据见上）
+  //   ⚠️ 只绑一次（全局单例），否则两个 bot 实例会各推一帧、前端重复处理
+  if (!WS_HUB.bound) {
+    WS_HUB.bound = true;
+    ctx.on('session/event', (session, event) => {
+      try {
+        if (!event || event.type !== 'assistant/message') return;
+        const sid = String((session && (session.id || session.sessionId)) || '');
+        if (!sid) return;
+        wsBroadcast(sid);
+      } catch { /* 兜底：绝不影响主链 */ }
+    });
   }
 
-  // 订阅宿主会话事件：assistant/message = 这一轮 AI 真的说话了（判据见上）
-  ctx.on('session/event', (session, event) => {
-    try {
-      if (!event || event.type !== 'assistant/message') return;
-      const sid = String((session && (session.id || session.sessionId)) || '');
-      if (!sid) return;
-      wsBroadcast(sid);
-    } catch { /* 兜底：绝不影响主链 */ }
-  });
-
   // ★ SSE 端点：绕过 route() helper（它是一次性请求/响应，不适合长连接），直接注册
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'exact',
-    path: '/api/qqbot-settings/workspace/watch',
-    handler: (req, res) => {
-      try {
-        if (!isTrusted(req)) { res.writeHead(403); res.end(); return; }
-        res.writeHead(200, {
-          'content-type': 'text/event-stream; charset=utf-8',
-          'cache-control': 'no-cache, no-transform',
-          connection: 'keep-alive',
-          'x-accel-buffering': 'no',
-        });
-        res.write(': connected\n\n');   // 立刻 flush，让浏览器认为连上了
-        wsWatchers.add(res);
-        const hb = setInterval(() => {
-          try { res.write(': hb\n\n'); } catch { clearInterval(hb); wsWatchers.delete(res); }
-        }, 25_000);
-        req.on('close', () => { clearInterval(hb); wsWatchers.delete(res); });
-      } catch { try { res.end(); } catch { /* ignore */ } }
-    },
-  }), 'qqbot-settings: workspace/watch');
+  //   ⚠️ 只注册一次（全局单例）—— 同 path 被两个 bot 实例各注册一次会互相覆盖，
+  //      且 route() 的模块级去重管不到裸 register，正是 watchers 恒为 0 的根因。
+  if (!WS_HUB.registered) {
+    WS_HUB.registered = true;
+    ctx.effect(() => ctx.webServer.register({
+      kind: 'exact',
+      path: '/api/qqbot-settings/workspace/watch',
+      handler: (req, res) => {
+        try {
+          if (!isTrusted(req)) { res.writeHead(403); res.end(); return; }
+          res.writeHead(200, {
+            'content-type': 'text/event-stream; charset=utf-8',
+            'cache-control': 'no-cache, no-transform',
+            connection: 'keep-alive',
+            'x-accel-buffering': 'no',
+          });
+          res.write(': connected\n\n');   // 立刻 flush，让浏览器认为连上了
+          WS_HUB.watchers.add(res);
+          const hb = setInterval(() => {
+            try { res.write(': hb\n\n'); } catch { clearInterval(hb); WS_HUB.watchers.delete(res); }
+          }, 25_000);
+          req.on('close', () => { clearInterval(hb); WS_HUB.watchers.delete(res); });
+        } catch { try { res.end(); } catch { /* ignore */ } }
+      },
+    }), 'qqbot-settings: workspace/watch');
+  }
 
   // ── 辅助端点（前端收到 SSE 后调一次，拿"各会话最后活动时间"来算 n）──
   //   ⚠️ 只在这条路径上扫磁盘，且有 5 秒缓存 ⇒ 不再有定时扫描
