@@ -5552,24 +5552,28 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ═══════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
 // web 会话列表自动重排（WEB_SESSION_REORDER，2026-10-05 主人定）
 //
 //   规则：QQ 消息入站 + AI 真的产出了
-//         ⇒ 从侧边栏列表头往下数 n 个仍"热的"（对话间隔 < 10min）会话，
+//         ⇒ 从列表头往下数 n 个仍"热的"（对话间隔 < 10min）会话，
 //           把目标会话插到第 n+1 位；若第 1 个就冷掉（n=0）⇒ 直接插第 1 位。
-//         · 置顶（📌「已置顶」）一律算"热"（它们本来就被 dsh 排在最前），位置也不动。
+//         · 置顶（📌「已置顶」）一律算"热"，位置也不动。
 //
-//   ★ 事件驱动，无轮询（2026-10-05 主人要求）——
-//      服务端订阅宿主 session/event，命中 assistant/message 就推一条 SSE；
-//      这里用 EventSource 收，收到才干活。没开页面 ⇒ 服务端零开销。
+//   ★ 事件驱动，无轮询：服务端订阅宿主 session/event，命中 assistant/message
+//      就推一条 SSE；这里用 EventSource 收，收到才干活。没开页面 ⇒ 服务端零开销。
 //
-//   ★ 置顶怎么判（2026-10-05 实测拿到）：
-//      dsh 侧边栏每行是 <div role="treeitem" data-row-key="session:<sessionId>">，
-//      置顶那行多一个 <span aria-label="已置顶" title="已置顶">（图标）。
-//      ⇒ sessionId 从 data-row-key 读；置顶从 [aria-label="已置顶"] 判。
-//      ⚠️ 这是 DOM 约定，dsh 改版可能失效 ⇒ 全程 try/catch，读不到就退回"不改"。
+//   ★ 两个数据源，各管一摊（2026-10-05 实测后定）：
+//     · DOM   → 只用来读【谁是置顶的】
+//         <div role="treeitem" data-row-key="session:<sid>"> …
+//         <span aria-label="已置顶" title="已置顶">📌</span>
+//     · localStorage["dsh.workspace.view.v5"].sessionOrderByAccount[accountKey]
+//         → 完整的顺序数组（★ 不能只靠 DOM：侧边栏是分组+折叠的，
+//           不在当前展开组里的会话 DOM 里根本没有 ⇒ 之前那版因此漏判、什么都没做）
+//     · /workspace/sessions 端点 → 各会话最后活动时间（算"热不热"）
 //
-//   安全：宿主没起来 ⇒ SSE 连不上 ⇒ 天然不排序；写回前留备份 + readback 校验 + 失败回滚。
+//   安全：宿主没起来 ⇒ SSE 连不上 ⇒ 天然不排序；读不到 DOM ⇒ 置顶当空集（仍能排）；
+//         读不到 localStorage/结构异常 ⇒ 不改；写回前留备份 + readback 校验 + 失败回滚。
 // ═══════════════════════════════════════════════════════════════════════════
 (function () {
   var LS_KEY = "dsh.workspace.view.v5";
@@ -5577,74 +5581,57 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
   var lastSid = "";
   var lastAt = 0;
 
-  /** 从 DOM 读当前渲染顺序 + 置顶集合（⚠️ dsh 改版可能失效，读不到返回 null） */
-  function readDomOrder() {
+  /** 只读【置顶集合】：DOM 里带 aria-label="已置顶" 的行的 sessionId（读不到返回空对象） */
+  function readPinnedFromDom() {
+    var pinned = {};
     try {
       var rows = document.querySelectorAll('[role="treeitem"][data-row-key]');
-      if (!rows || !rows.length) return null;
-      var order = [];
-      var pinned = {};
       for (var i = 0; i < rows.length; i++) {
         var key = rows[i].getAttribute("data-row-key") || "";
         var m = /^session:(.+)$/.exec(key);
         if (!m) continue;
-        var sid = m[1];
-        if (order.indexOf(sid) >= 0) continue;
-        order.push(sid);
-        try {
-          if (rows[i].querySelector('[aria-label="已置顶"], .YDXeBa_pinIndicator')) pinned[sid] = true;
-        } catch (e) { /* 单行读不到就当他没置顶 */ }
+        if (rows[i].querySelector('[aria-label="已置顶"], .YDXeBa_pinIndicator')) pinned[m[1]] = true;
       }
-      return order.length ? { order: order, pinned: pinned } : null;
-    } catch (e) { return null; }
+    } catch (e) { /* 读不到就当没有置顶 */ }
+    return pinned;
   }
 
   function applyOrder(sid, at) {
     if (typeof localStorage === "undefined") return;
-    var dom = readDomOrder();
-    if (!dom) return;                       // ★ 读不到 DOM（dsh 没渲染好/改版）⇒ 不改，安全
-    if (dom.order.indexOf(sid) < 0) return; // 目标不在当前列表里
-
-    var now = Date.now();
-    var rest = dom.order.filter(function (x) { return x !== sid; });
-    // 数 n：按【渲染顺序】，置顶一律算热；其余按 10 分钟判
-    var n = 0;
-    for (var i = 0; i < rest.length; i++) {
-      var id = rest[i];
-      if (dom.pinned[id]) { n++; continue; }
-      var t = at[id];
-      if (typeof t === "number" && now - t < HOT_MS) { n++; continue; }
-      break;
-    }
-    var anchor = rest[n];                   // 插到它前面；undefined ⇒ 排到最后
-    var want = rest.filter(function (x) { return x !== anchor; });
-    if (anchor !== undefined) want.splice(n, 0, sid); else want.push(sid);
-
+    var pinned = readPinnedFromDom();          // 只有它是 DOM 来的
     var raw = localStorage.getItem(LS_KEY);
     if (!raw) return;
     var j = null;
     try { j = JSON.parse(raw); } catch (e) { return; }
     if (!j || typeof j !== "object" || !j.sessionOrderByAccount || typeof j.sessionOrderByAccount !== "object") return;
 
+    var now = Date.now();
     var changed = false;
     Object.keys(j.sessionOrderByAccount).forEach(function (key) {
       var order = j.sessionOrderByAccount[key];
-      if (!Array.isArray(order) || order.indexOf(sid) < 0) return;
-      // 用"DOM 里非置顶的相对顺序"重写这一组，再把 sid 插到目标位
-      var next = want.filter(function (x) { return order.indexOf(x) >= 0 || x === sid; });
-      // 补上 DOM 里没有但数组里有的（比如折叠未展开的），保持它们在末尾
-      order.forEach(function (x) { if (next.indexOf(x) < 0) next.push(x); });
+      if (!Array.isArray(order) || order.indexOf(sid) < 0) return;   // 目标不在这组 ⇒ 跳过
+      // n = 从头数：置顶算热；其余按 10 分钟内活跃算；遇冷即停
+      var n = 0;
+      for (var i = 0; i < order.length; i++) {
+        if (order[i] === sid) continue;
+        if (pinned[order[i]]) { n++; continue; }
+        var t = at[order[i]];
+        if (typeof t === "number" && now - t < HOT_MS) { n++; continue; }
+        break;
+      }
+      var next = order.filter(function (x) { return x !== sid; });
+      next.splice(n, 0, sid);
       var same = next.length === order.length;
       if (same) { for (var k = 0; k < next.length; k++) { if (next[k] !== order[k]) { same = false; break; } } }
       if (!same) { j.sessionOrderByAccount[key] = next; changed = true; }
     });
 
-    if (!changed) return;
+    if (!changed) { console.log("[qqbot] 顺序无需变化: " + sid); return; }
     j.orderBy = "manual";
     try {
       localStorage.setItem(LS_KEY, JSON.stringify(j));
       if (!localStorage.getItem(LS_KEY)) throw new Error("readback-empty");
-      console.log("[qqbot] web 会话列表已重排: " + sid + " → 第 " + (n + 1) + " 位（n=" + n + "）");
+      console.log("[qqbot] web 会话列表已重排: " + sid);
     } catch (e) {
       try { localStorage.setItem(LS_KEY, raw); } catch (e2) { /* 回滚失败则放弃 */ }
       console.warn("[qqbot] 会话重排写盘失败，已回滚:", e && e.message);
@@ -5658,18 +5645,20 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
     fetch("/api/qqbot-settings/workspace/sessions", { credentials: "same-origin" })
       .then(function (r) { return r.json(); })
       .then(function (d) {
-        if (!d || d.ok !== true) return;
+        if (!d || d.ok !== true) { console.warn("[qqbot] /workspace/sessions 不可用:", d && d.error); return; }
         var at = {};
         (d.sessions || []).forEach(function (x) { if (x && x.sessionId) at[x.sessionId] = x.at; });
+        console.log("[qqbot] 收到活跃会话 " + sid + "，时间表 " + Object.keys(at).length + " 条");
         applyOrder(sid, at);
       })
-      .catch(function () { /* 静默 */ });
+      .catch(function (e) { console.warn("[qqbot] 拉时间表失败:", e && e.message); });
   }
 
   function connect() {
     if (typeof EventSource === "undefined") return;
     var es;
     try { es = new EventSource("/api/qqbot-settings/workspace/watch"); } catch (e) { return; }
+    es.onopen = function () { console.log("[qqbot] workspace/watch 已连接（SSE）"); };
     es.onmessage = function (ev) {
       try {
         var d = JSON.parse(ev.data);
@@ -5677,6 +5666,7 @@ var QQS_CSS = ".qqs-btn{font:inherit;color:#333;background:linear-gradient(180de
       } catch (e) { /* 忽略非 JSON 帧 */ }
     };
     es.onerror = function () {
+      console.warn("[qqbot] workspace/watch 断开，5 秒后重连");
       try { es.close(); } catch (e) {}
       setTimeout(connect, 5000);
     };
