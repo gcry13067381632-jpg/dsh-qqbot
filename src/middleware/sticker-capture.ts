@@ -33,6 +33,13 @@ const MAX_INFLIGHT = 3;
 const MAX_CANDIDATES = 500;
 
 /** 单条消息里最多顺手收几张图 */
+/**
+ * 回收站条数上限（2026-10-05 主人要求）：trash 层超过它就按"进回收站时间"从旧到新真删。
+ * 之前回收站无上限，一路涨到 4000 张 —— 它是"软删除的缓冲"，不该当永久仓库。
+ * 想保留更多就调大这个数；想更狠就调小。
+ */
+const MAX_TRASH = 800;
+
 const MAX_PER_MSG = 3;
 
 /** 图片 URL 是否可收藏（仅 https + 看似 QQ 图片下载链接） */
@@ -95,6 +102,7 @@ async function captureOne(
     logger.debug(`[sticker] captured #${resolved.id} → ${localPath ?? '(path?)'}`);
     // 候选区软上限 + 回收站物理清理（纯本地操作，同步做完很快）
     try { store.cleanupCandidates(MAX_CANDIDATES); } catch { /* ignore */ }
+try { store.cleanupTrash(MAX_TRASH); } catch { /* ignore */ }   // 回收站超限 → 旧的物理删
     try { store.purgeTrashed(); } catch { /* ignore */ }
     // 后台自动打标(可配视觉CLI 生成 tags+desc; 无可用引擎则保持 needsDescribe 待 agent 视觉补)
     if (localPath && config.sticker.autoTagEnabled !== false) {

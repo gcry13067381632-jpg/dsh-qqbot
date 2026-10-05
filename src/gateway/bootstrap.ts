@@ -80,6 +80,11 @@ export async function bootstrapGateway(
   // 启动维护: 清理损坏/空文件 + 物理清除超30天回收站条目
   try {
     const broken = stickerStore.cleanupBroken();
+    // 回收站上限（2026-10-05）：启动时顺手清一次，把历史堆积的旧 trash 收口
+    try {
+      const trashed = stickerStore.cleanupTrash(800);
+      if (trashed > 0) logger.info?.(`[sticker] 回收站超限，已物理清理 ${trashed} 张旧图`);
+    } catch { /* ignore */ }
     const purged = stickerStore.purgeTrashed();
     if (broken > 0 || purged > 0) logger.info(`[sticker] 启动维护: 清损坏${broken} 清回收站${purged}`);
   } catch { /* ignore */ }

@@ -644,6 +644,31 @@ export class StickerStore {
     return excess.length;
   }
 
+  /**
+   * 回收站物理清理：trash 层超过 maxItems 时，按"进回收站的时间"从旧到新**真删文件**。
+   *
+   * ⚠️ 2026-10-05 主人要求：回收站必须有上限，超过的旧图自动删。
+   *   之前只有 markTrash（把候选区挤下来的旧图滚进回收站）而**从不物理删**，
+   *   于是回收站一路涨到 4000 张。
+   * 说明：只动 trash 层 —— candidate/library/negative 不受影响；
+   *   没记 trashedAt 的老条目按 0 处理（视为最旧，优先清）。
+   * @returns 实际物理删除的条数
+   */
+  cleanupTrash(maxItems: number): number {
+    const tr = [...this.items.values()].filter(it => it.layer === 'trash');
+    if (tr.length <= maxItems) return 0;
+    const sorted = tr.sort((a, b) => (a.trashedAt ?? 0) - (b.trashedAt ?? 0)); // 最旧在前
+    const excess = sorted.slice(0, tr.length - maxItems);
+    let n = 0;
+    for (const it of excess) {
+      this.deleteFile(it);   // 物理删文件
+      this.items.delete(it.id);
+      n += 1;
+    }
+    if (n > 0) this.save();
+    return n;
+  }
+
   /** 清理损坏/空文件条目(文件缺失或 0 字节) */
   cleanupBroken(): number {
     let n = 0;
