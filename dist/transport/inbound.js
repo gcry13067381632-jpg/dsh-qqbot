@@ -1,6 +1,7 @@
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
+import { skipSilentAppend } from '../session/surface-guard.js';
 import { clearGroupHistory } from '../features/history-store.js';
 import { traceContextless } from '../features/contextless-store.js';
 import { applyInjectRules } from './inject-rules.js';
@@ -731,7 +732,9 @@ export async function handleInbound(rawMsg, manager, config, logger, state) {
                         const ag = record.agent;
                         const sess = ag?.session;
                         let appended = false;
-                        if (sess && typeof sess.append === 'function') {
+                        // ★ 2026-10-06: 人设未落盘的新会话【绝不能】静默 append（会把会话日志写废，
+                        //   见 session/surface-guard.ts）。跳过即可：内容不丢，下次唤醒由 [历史] 段带入。
+                        if (sess && typeof sess.append === 'function' && !skipSilentAppend(ag, logger, '价值评分')) {
                             if (typeof ag?.whenIdle === 'function') {
                                 try {
                                     await Promise.race([ag.whenIdle(), new Promise((r) => setTimeout(r, 60_000))]);
@@ -793,6 +796,13 @@ export async function handleInbound(rawMsg, manager, config, logger, state) {
         const a = record.agent;
         const sess = a?.session;
         if (sess && typeof sess.append === 'function') {
+            // ★ 2026-10-06: 人设未落盘 ⇒ 绝不能静默 append（会把会话日志写废，见 surface-guard.ts）。
+            //   nothink 的语义是「不唤醒」，所以这里保持不唤醒并直接返回：消息不丢 ——
+            //   它还在群历史里，下次真人消息唤醒时由 [历史] 段带入正文。
+            if (skipSilentAppend(a, logger, 'nothink')) {
+                record.lastInboundAt = Date.now();
+                return;
+            }
             try {
                 // 🔒 等 LLM 回合结束再 append(主人硬约束 2026-09-09): 回合活跃时严禁 append(拆散 tool_calls 坏记录)
                 if (typeof a.whenIdle === 'function') {

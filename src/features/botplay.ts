@@ -34,6 +34,7 @@ import { statSync } from 'node:fs';
 import type { ReplyTarget } from '@tencent-connect/qqbot-nodejs';
 import type { QQBotSender } from '../transport/outbound-buffer.js';
 import type { SessionManager } from '../session/index.js';
+import { skipSilentAppend } from '../session/surface-guard.js';
 import type { Logger } from '../types.js';
 import type { BotplayButtonConfig, BotplayEventConfig } from '../config.js';
 import { readGroupMembers, readLedger } from './chat-ledger.js';
@@ -1060,6 +1061,8 @@ export class BotplayController {
       } | undefined;
       const sess = a?.session;
       if (!sess || typeof sess.append !== 'function') return;
+      // ★ 2026-10-06: 人设未落盘 ⇒ 绝不能静默 append（会把会话日志写废，见 session/surface-guard.ts）
+      if (skipSilentAppend(a, this.logger, 'botplay')) return;
       try {
         // 等回合结束(空闲立即返回; 活跃时宿主等 turn/end; 超时 60s 放弃, 不硬塞坏记录)
         if (typeof a.whenIdle === 'function') {

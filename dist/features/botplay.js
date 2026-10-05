@@ -18,6 +18,7 @@
  */
 import { join } from 'node:path';
 import { statSync } from 'node:fs';
+import { skipSilentAppend } from '../session/surface-guard.js';
 import { readGroupMembers, readLedger } from './chat-ledger.js';
 import { botplayExtDir, makeExtContext, appendExtDiag, } from './botplay-ext.js';
 import { loadBotplayExtensionModule, safeBotplayFileName } from './extension-store.js';
@@ -1068,6 +1069,9 @@ export class BotplayController {
             const a = record.agent;
             const sess = a?.session;
             if (!sess || typeof sess.append !== 'function')
+                return;
+            // ★ 2026-10-06: 人设未落盘 ⇒ 绝不能静默 append（会把会话日志写废，见 session/surface-guard.ts）
+            if (skipSilentAppend(a, this.logger, 'botplay'))
                 return;
             try {
                 // 等回合结束(空闲立即返回; 活跃时宿主等 turn/end; 超时 60s 放弃, 不硬塞坏记录)

@@ -15,6 +15,7 @@ import type { SlashCommand } from '@tencent-connect/qqbot-nodejs';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import type { CommandDeps } from './types.js';
 import { getScopePeer } from '../shared/index.js';
+import { skipSilentAppend } from '../session/surface-guard.js';
 
 /** 等回合空闲的最长等待(ms): 空闲立即返回; 超时降级 inject 排队 */
 const INJECT_IDLE_WAIT_MS = 8_000;
@@ -64,6 +65,11 @@ export function injectCommand({ manager }: CommandDeps): SlashCommand {
             }
             return '⏳ 回合正忙且无法排队注入, 请稍后再试';
           }
+        }
+        // ★ 2026-10-06: 人设未落盘的会话不能静默 append（会把会话日志写废）——
+        //   如实告诉主人，别假装注入成功（见 session/surface-guard.ts）。
+        if (agent.session && skipSilentAppend(agent, undefined, 'inject')) {
+          return '⚠️ 这条会话还没跑过回合(人设尚未落盘), 现在追加会写坏日志 —— 已跳过。等它被唤醒一次后再注入即可。';
         }
         try {
           agent.session.append('user/message', msg, { surfaceOp: 'append' });

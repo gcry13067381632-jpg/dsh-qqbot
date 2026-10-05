@@ -23,6 +23,7 @@ import type { CommandDeps } from './types.js';
 import { normalizeOutboundMode, switchOutboundMode } from '../features/outbound-mode-switch.js';
 import type { ImQQBotConfig } from '../config.js';
 import { getScopePeer } from '../shared/index.js';
+import { skipSilentAppend } from '../session/surface-guard.js';
 
 const LABEL: Record<string, string> = {
   adaptive: '适配主动(默认): 收到真人消息前5条带引用回你, 之后自动转独立消息',
@@ -58,7 +59,8 @@ async function noteModeChange(manager: CommandDeps['manager'], cmdCtx: unknown, 
         return;
       }
       const sess = agent.session;
-      if (sess && typeof sess.append === 'function') {
+      // ★ 2026-10-06: 人设未落盘 ⇒ 不能静默 append（会把会话日志写废，见 session/surface-guard.ts）
+      if (sess && typeof sess.append === 'function' && !skipSilentAppend(agent, undefined, 'outmode')) {
         sess.append('user/message', msg, { surfaceOp: 'append' });
       }
     };

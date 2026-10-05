@@ -1,6 +1,7 @@
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { normalizeOutboundMode, switchOutboundMode } from '../features/outbound-mode-switch.js';
 import { getScopePeer } from '../shared/index.js';
+import { skipSilentAppend } from '../session/surface-guard.js';
 const LABEL = {
     adaptive: '适配主动(默认): 收到真人消息前5条带引用回你, 之后自动转独立消息',
     detail: '详细主动(2026-09-11 新增): 和适配主动一样聊天, 但额外把 AI 的工具调用/工具结果也推到 QQ(能看进度, 消息会变多)',
@@ -30,7 +31,8 @@ async function noteModeChange(manager, cmdCtx, mode) {
                 return;
             }
             const sess = agent.session;
-            if (sess && typeof sess.append === 'function') {
+            // ★ 2026-10-06: 人设未落盘 ⇒ 不能静默 append（会把会话日志写废，见 session/surface-guard.ts）
+            if (sess && typeof sess.append === 'function' && !skipSilentAppend(agent, undefined, 'outmode')) {
                 sess.append('user/message', msg, { surfaceOp: 'append' });
             }
         };

@@ -1,3 +1,31 @@
+## [1.6.9] - 2026-10-06
+
+> **修一个会「写废整份会话日志」的事故** —— 静默入库（不唤醒 AI 的那几条路径）
+> 遇到**全新会话**时，会把 `user/message` 写成 surface 的第一个节点，人设从此再也补不进去。
+
+### 🐛 修复
+
+- **静默 append 会写废新会话的日志**（严重；实测已废掉 13 个会话，且当天仍在新增）：
+  dsh 的 v4 会话格式要求 `system/message`（人设）**必须是 surface 的第一个节点**
+  —— 只有"追加时 surface 还空着"的那一次才会被记为 `protectedHead`。
+  而本插件的「静默入库」路径**不唤醒 AI** ⇒ 会话里还没有任何回合 ⇒ 人设还没落。
+  此时把 `user/message` 追加进去，它就占了头把交椅；**之后**这条会话第一次被真正唤醒、
+  dsh 补写人设时当场抛 `system/message requires a protected first surface head`
+  ⇒ **整份日志报废**（用户看到「历史加载失败 / stored log is corrupt」），
+  而且该会话连**工作区也挂不上**（读不出 Header）⇒ 侧边栏落「未分组」。
+  - **新增 `src/session/surface-guard.ts`**：`canSilentlyAppend(session)` ——
+    **只有当 surface 的第一个节点是 `system/message` 时才允许静默 append**。
+    两条判据：① `session.surface.nodes`（最权威）② 回落扫 `session.log` 找第一个 surface 类型事件。
+    **fail-closed**：拿不准就不写。
+  - **接入全部静默入口**：价值评分拦截（`transport/inbound.ts`）、`nothink`（同文件）、
+    群事件汇总（`features/group-hub.ts`）、卡片 `append_silent`（`features/botplay.ts`）、
+    `/inject`（`commands/inject.ts`）、`/outmode`（`commands/outmode.ts`）。
+  - **跳过时内容不丢**：下次真人消息唤醒时由 `[历史]` 段带入正文；
+    `group-hub` 则自动落到宿主 `agent.inject()`（回合内安全排队、不唤醒）。
+  - **验证**：拿 466 个真实会话日志回放守卫 —— **13/13 已废档全部拦住、0 漏放**；
+    被拦的都是「人设尚未落盘」的会话（含从未跑过回合的新档）。
+  - 存量的 13 个已废会话**不修**（主人 2026-10-06 定），只堵源头。
+
 ## [1.6.8] - 2026-10-05
 
 > 这一版是 **Web 侧边栏的「会话自动重排」**：QQ 里一有动静，对应会话自己爬到最上面 ——

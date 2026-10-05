@@ -24,6 +24,7 @@ import { dataRootOf } from '../gateway/data-root.js';
 import type { ImQQBotConfig } from '../config.js';
 import type { Logger } from '../types.js';
 import type { SessionManager } from '../session/index.js';
+import { skipSilentAppend } from '../session/surface-guard.js';
 import { appendGroupMember, appendLedger } from './chat-ledger.js';
 
 /** 等待回合空闲的最长时间(宿主 whenIdle 正常秒回; 超时按 busy 放弃, 防止事件处理挂起) */
@@ -72,7 +73,10 @@ export async function safeAppendUserMessage(
     return 'fail';
   }
   // ① 等回合空闲再 append(主人硬约束: 回合中 append 坏记录)
-  if (a.session && typeof a.session.append === 'function') {
+  // ★ 2026-10-06: 人设未落盘的会话【不能】静默 append（会报废整份会话日志，见
+  //   session/surface-guard.ts）。跳过时自然落到下面 ② 的宿主 inject 排队路径 ——
+  //   那是回合内安全的，而且不唤醒。
+  if (a.session && typeof a.session.append === 'function' && !skipSilentAppend(a, logger, 'group-hub')) {
     if (typeof a.whenIdle === 'function') {
       let idle = false;
       try {
