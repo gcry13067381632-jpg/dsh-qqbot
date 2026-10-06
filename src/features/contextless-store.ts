@@ -14,6 +14,7 @@
  *   ⚠️ 只放"开关 + 条数"，不放任何消息内容 —— 群消息内容由既有的 mediaHistoryBuffer 管。
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { diagWrite } from '../shared/diag.js';
 import { join, dirname } from 'node:path';
 
 /** 单个会话的无上下文设置 */
@@ -144,38 +145,13 @@ function persist(): void {
  * 一出问题先看这个文件，别再猜。
  */
 export function traceContextless(line: string): void {
-  const stamp = new Date().toISOString();
-  const row = stamp + '  ' + line;
-
-  // ① 终端（最可靠：dsh 控制台一定能看到；不影响协议输出，用 stderr）
-  try { console.error('[contextless-trace] ' + row); } catch { /* ignore */ }
-
-  // ② + ③ 两个文件路径都试，任何一个成功即可（不再依赖 storePath 是否已绑定）
-  const targets: string[] = [];
-  try {
-    const home = (process.env.DSH_HOME && process.env.DSH_HOME.trim())
-      || join(process.env.USERPROFILE || process.env.HOME || '.', '.dsh');
-    targets.push(join(home, 'contextless-trace.log'));
-  } catch { /* ignore */ }
-  try { targets.push(join(temporaryDirectory(), 'contextless-trace.log')); } catch { /* ignore */ }
-  if (storePath) { try { targets.push(join(dirname(storePath), 'contextless-trace.log')); } catch { /* ignore */ } }
-
-  for (const file of targets) {
-    try {
-      try { mkdirSync(dirname(file), { recursive: true }); } catch { /* ignore */ }
-      writeFileSync(file, row + '\n', { flag: 'a' });
-    } catch { /* 单路失败继续下一路 */ }
-  }
+  // ★ 2026-10-06 还债：收口到统一诊断底座（默认关 / 2MB 上限 / 自动轮转 / 只写一个位置）。
+  //   以前这里**没有任何上限**（实测一路涨到 25 MB），同一条内容还往三个地方各写一份，
+  //   并且每行都往终端 console.error 刷屏。要排查时开配置项 `diagLog`
+  //   （或 `set DSH_QQBOT_DIAG=1` 重启）即可。
+  diagWrite('contextless-trace', line);
 }
 
-/** 临时目录（os.tmpdir 的极简封装，避免额外 import 名称冲突） */
-function temporaryDirectory(): string {
-  try {
-    const t = process.env.TEMP || process.env.TMP || '';
-    if (t) return t;
-  } catch { /* ignore */ }
-  return '.';
-}
 
 /** 诊断：当前绑定的文件路径（trace 用） */
 export function describeStorePath(): string {

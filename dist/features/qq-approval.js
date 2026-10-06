@@ -1,4 +1,4 @@
-import { appendFileSync } from 'node:fs';
+import { diagWrite } from '../shared/diag.js';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 /** 只解析显式审批命令; 普通聊天消息原样放行给 agent */
 export function parseApprovalCommand(content) {
@@ -325,12 +325,8 @@ export function setApprovalDispatch(ns, fn) {
         approvalDispatches.delete(ns);
 }
 /** 审批诊断落盘(排查 QQ 通道未接管): ~/.dsh/qq-approval-diag.log */
-const DIAG_FILE = (typeof process !== 'undefined' ? ((process.env.USERPROFILE || process.env.HOME || '') + '/.dsh/qq-approval-diag.log') : '').replace(/\\/g, '/');
 function diagApprov(line) {
-    try {
-        appendFileSync(DIAG_FILE, '[' + new Date().toISOString() + '] ' + line + '\n');
-    }
-    catch { /* 忽略 */ }
+    diagWrite('qq-approval-diag', line); // ★ 收口到统一诊断底座（默认关）
 }
 // ── 按实例(ns)注册的审批控制器注册表 —— Web 审批浮层(settings-host 同源路由)经此读写 ──
 const approvalControllers = new Map();

@@ -5,6 +5,7 @@ import { SessionManager } from '../session/index.js';
 import { handleInbound, createOutboundHandler } from '../transport/index.js';
 import { buildUserAgent } from '../shared/index.js';
 import { setupMiddlewares } from './middleware-setup.js';
+import { configureDiag, diagWrite } from '../shared/diag.js';
 import { dataRootOf, migrateLegacyData, stickerDirOf } from './data-root.js';
 import { configureStickerStore } from '../features/sticker-store.js';
 import { initStickerGate, bindStickerGates, flushStickerGate, getStickerGate, StickerGateDenied } from '../features/sticker-gate.js';
@@ -38,6 +39,13 @@ export async function bootstrapGateway(ctx, agents, config, logger) {
     const manager = new SessionManager(ctx, agents, config, logger);
     // 实例标识(settingsNs), 全 bootstrap 共用: 注册表按 ns 隔离(B类修复 2026-09-11)
     const myNs = config.settingsNs?.trim() || 'im-qqbot';
+    // ★ 2026-10-06 诊断日志总开关（默认关）：开了才写 {DSH_HOME|~/.dsh}/*.log。
+    //   以前各功能各写各的、零上限（contextless-trace 涨到 25MB），现在统一走 shared/diag.ts。
+    //   也可用环境变量 DSH_QQBOT_DIAG=1 临时打开。
+    try {
+        configureDiag({ enabled: config.diagLog === true });
+    }
+    catch { /* ignore */ }
     // ── dataRoot 启动迁移: 若配置了 dataRoot(如 cwd/dshqqbot), 先把 cwd 下的旧数据目录
     //    搬进去(幂等, 不覆盖); 必须在任何数据目录初始化/写入之前执行。──
     migrateLegacyData(config, logger);
@@ -530,10 +538,8 @@ export async function bootstrapGateway(ctx, agents, config, logger) {
             const ev = event;
             // 诊断落盘(排查按钮回调是否到达; ~/.dsh/botplay-diag.log)
             try {
-                const { appendFileSync } = await import('node:fs');
-                const diagFile = String(process.env.USERPROFILE || process.env.HOME || '') + '/.dsh/botplay-diag.log';
                 const line = `[${new Date().toISOString()}] interaction id=${ev?.id ?? '?'} type=${ev?.data?.type ?? '?'} btn=${ev?.data?.resolved?.button_data ?? '(none)'} group_member=${event.group_member_openid ?? ''} user=${event.user_openid ?? ''}`;
-                appendFileSync(diagFile, line + '\n');
+                diagWrite('botplay-diag', line);
             }
             catch { /* 诊断失败忽略 */ }
             if (ev?.data?.type !== 11)

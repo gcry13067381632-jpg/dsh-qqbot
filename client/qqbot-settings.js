@@ -219,6 +219,7 @@ window.__ModuleLoader__.load({
               injectRules: Array.isArray(v.injectRules) ? v.injectRules : [],
               imageHint: typeof v.imageHint === 'boolean' ? v.imageHint : undefined,
               messageReference: v.messageReference !== false,
+              diagLog: v.diagLog === true,
               schedule: v.schedule && Array.isArray(v.schedule.targets) ? v.schedule : { targets: [] },
               // groupPrompt 必须读回来, 否则每次保存都会把它清空成 ''
               // undefined(从未设置)→ 显示默认守则; ''(用户明确清空)→ 保持空(无守则)
@@ -272,6 +273,7 @@ window.__ModuleLoader__.load({
           // 2026-09-30 修: 这两个开关原来漏写进 patch → 面板勾了/取消了都存不下去(读得到、写不回)
           imageHint: cfg.imageHint !== false,
           messageReference: cfg.messageReference !== false,
+              diagLog: cfg.diagLog === true,
           // 定时唤醒(④)已并入「定时任务」页编辑; 这里原样带过不丢即可
           schedule: cfg.schedule && Array.isArray(cfg.schedule.targets) ? cfg.schedule : { targets: [] },
           groupPrompt: typeof gpOverride === 'string' ? gpOverride : (typeof cfg.groupPrompt === 'string' ? cfg.groupPrompt : ''),
@@ -291,6 +293,7 @@ window.__ModuleLoader__.load({
               injectRules: Array.isArray(v2.injectRules) ? v2.injectRules : [],
               imageHint: typeof v2.imageHint === 'boolean' ? v2.imageHint : undefined,
               messageReference: v2.messageReference !== false,
+              diagLog: v2.diagLog === true,
               schedule: v2.schedule && Array.isArray(v2.schedule.targets) ? v2.schedule : { targets: [] },
               groupPrompt: typeof v2.groupPrompt === 'string' ? v2.groupPrompt : (typeof cfg.groupPrompt === 'string' ? cfg.groupPrompt : DEFAULT_GROUP_PROMPT),
               enableApprovals: v2.enableApprovals === true,
@@ -361,7 +364,10 @@ window.__ModuleLoader__.load({
           BoolRow({ label: '图片消息自动提示 AI 看图(内置兜底; 不勾=不再注入「请把URL传给识图工具」那条)', value: cfg.imageHint !== false, onChange: function (v) { setCfg(function (c) { return { ...c, imageHint: v } }) } }),
           BoolRow({ label: '引用消息(默认开): 入站消息带短消息号(本地台账索引,省token) + 引用消息附原文; AI 用 [rf:短号] 引用对方消息', value: cfg.messageReference !== false, onChange: function (v) { setCfg(function (c) { return { ...c, messageReference: v } }) } })),
 
-        h('div', { style: sectionTitle }, '④ 定时唤醒'),
+        h('div', { style: sectionTitle }, '③.5 诊断日志(排查用)'),
+          h('p', { style: { fontSize: 12, color: '#888' } }, '默认关。开了才会把排查用的诊断日志写进 {DSH_HOME|~/.dsh} 下的 *.log（单文件 2MB 自动轮转，只留 1 份旧档）。平时别开——它会持续占盘；出问题时再开，排查完可以关掉、并把那些 .log 删掉。'),
+          BoolRow({ label: '诊断日志落盘(默认关): 写 ~/.dsh/*.log 便于离线排查', value: cfg.diagLog === true, onChange: function (v) { setCfg(function (c) { return Object.assign({}, c, { diagLog: v }) }) } }),
+          h('div', { style: sectionTitle }, '④ 定时唤醒'),
         h('p', { style: { fontSize: 12, color: '#888' } }, '已合并到「定时任务」页(顶部 tab)一起编辑——到点主动开口的群/人分组,与她答应你的定时提醒,都在那边管理。'),
 
         h('div', { style: sectionTitle }, '⑤ QQ 远程审批(在 QQ 里放行 dsh 权限申请)'),
@@ -974,6 +980,7 @@ window.__ModuleLoader__.load({
           injectRules: Array.isArray(v.injectRules) ? v.injectRules : [],
           imageHint: typeof v.imageHint === 'boolean' ? v.imageHint : undefined,
           messageReference: v.messageReference !== false,
+              diagLog: v.diagLog === true,
           schedule: { targets: targets() },
           groupPrompt: typeof v.groupPrompt === 'string' ? v.groupPrompt : DEFAULT_GROUP_PROMPT,
         }

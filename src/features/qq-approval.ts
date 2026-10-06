@@ -20,7 +20,7 @@
  *       只授权当前这一次操作; 群聊里其他成员看到 CODE 也无法批准(senderId 校验)。
  */
 import type { ReplyTarget } from '@tencent-connect/qqbot-nodejs';
-import { appendFileSync } from 'node:fs';
+import { diagWrite } from '../shared/diag.js';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import type { QQBotSender } from '../transport/outbound-buffer.js';
 import type { SessionManager } from '../session/index.js';
@@ -408,9 +408,8 @@ export function setApprovalDispatch(ns: string, fn: ApprovalDispatch | undefined
 }
 
 /** 审批诊断落盘(排查 QQ 通道未接管): ~/.dsh/qq-approval-diag.log */
-const DIAG_FILE = (typeof process !== 'undefined' ? ((process.env.USERPROFILE || process.env.HOME || '') + '/.dsh/qq-approval-diag.log') : '').replace(/\\/g, '/');
 function diagApprov(line: string): void {
-  try { appendFileSync(DIAG_FILE, '[' + new Date().toISOString() + '] ' + line + '\n'); } catch { /* 忽略 */ }
+  diagWrite('qq-approval-diag', line);   // ★ 收口到统一诊断底座（默认关）
 }
 
 // ── 按实例(ns)注册的审批控制器注册表 —— Web 审批浮层(settings-host 同源路由)经此读写 ──

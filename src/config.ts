@@ -702,6 +702,12 @@ export interface ImQQBotConfig {
   showToolResults: boolean;
   /** 调试模式 */
   debug: boolean;
+  /**
+   * 诊断日志落盘总开关（2026-10-06 加；**默认关**）。
+   * 开了才写 `{DSH_HOME|~/.dsh}/<名字>.log`（单文件 2MB 自动轮转、只留 1 份旧档）；
+   * 关着时所有诊断写入**零 I/O**。也可用环境变量 `DSH_QQBOT_DIAG=1` 临时打开。
+   */
+  diagLog: boolean;
   /** 通过 QQ 接收并处理 dsh 的一次性权限申请(远程审批; 思路来源见 features/qq-approval.ts 头注) */
   enableApprovals: boolean;
   /** QQ 权限申请等待时长(ms), 超时自动拒绝 */
@@ -782,6 +788,7 @@ const ConfigSchemaRaw: Schema<ImQQBotConfig> = Schema.object({
   groupAdmin: groupAdminSchema,
   showToolResults: Schema.boolean().default(false).description('是否展示工具调用成功结果（工具错误始终展示）'),
   debug: Schema.boolean().default(false),
+  diagLog: Schema.boolean().default(false).description('诊断日志落盘(默认关): 开=把排查用的诊断日志写进 {DSH_HOME|~/.dsh}/*.log, 单文件 2MB 自动轮转(只留 1 份旧档); 平时别开, 会持续占盘'),
   enableApprovals: Schema.boolean().default(false).description('通过 QQ 接收并处理 dsh 一次性权限申请(远程审批: 发起者用 /approve CODE 放行)'),
   approvalTimeoutMs: Schema.number().default(120000).description('QQ 权限申请超时(ms), 超时自动拒绝'),
   outboundMode: Schema.union(['adaptive', 'detail', 'active', 'passive', 'silent', 'nothink']).default('adaptive').description('出站模式: 适配主动(默认)=收到新消息后前5次带msg_id被动回复, 超出/无新消息自动转主动(连发不受限); 详细主动=同适配主动 + 额外推送工具调用/工具结果到QQ(看进度, 消息更多); 被动=携带msg_id回复(连发受QQ回复同一消息上限); 完全不出站=思考但不发(静默); 完全不思考=QQ入站不唤醒LLM, 仅记录上下文(仅设置页可配, 防机器人自锁)'),

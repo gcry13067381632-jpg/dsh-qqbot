@@ -40,17 +40,11 @@
  *
  * ⚠️ 本地手改功能(fork 新增): 维护清单见工作区根《dsh-qqbot-开发维护手册.md》。
  */
-import { appendFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { diagWrite } from '../shared/diag.js';
 const REGISTRY_SERVICE = 'workspaceRegistry';
 /** 反归档诊断(离线可查: 写 ~/.dsh/qqbot-archive.log) */
-const DIAG_FILE = join(homedir(), '.dsh', 'qqbot-archive.log');
 function diag(line) {
-    try {
-        appendFileSync(DIAG_FILE, `${new Date().toISOString()} ${line}\n`, 'utf8');
-    }
-    catch { /* 诊断写失败忽略 */ }
+    diagWrite('qqbot-archive', line); // ★ 收口到统一诊断底座（默认关）
 }
 /** 反归档统计(供 /api/qqbot-settings/_debug 与排障查看) */
 const stats = { unarchived: 0, lastUnarchivedId: '', lastUnarchivedAt: 0, lastError: '' };

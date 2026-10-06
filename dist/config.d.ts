@@ -401,6 +401,12 @@ export interface ImQQBotConfig {
     showToolResults: boolean;
     /** 调试模式 */
     debug: boolean;
+    /**
+     * 诊断日志落盘总开关（2026-10-06 加；**默认关**）。
+     * 开了才写 `{DSH_HOME|~/.dsh}/<名字>.log`（单文件 2MB 自动轮转、只留 1 份旧档）；
+     * 关着时所有诊断写入**零 I/O**。也可用环境变量 `DSH_QQBOT_DIAG=1` 临时打开。
+     */
+    diagLog: boolean;
     /** 通过 QQ 接收并处理 dsh 的一次性权限申请(远程审批; 思路来源见 features/qq-approval.ts 头注) */
     enableApprovals: boolean;
     /** QQ 权限申请等待时长(ms), 超时自动拒绝 */

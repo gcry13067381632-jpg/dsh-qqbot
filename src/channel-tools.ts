@@ -19,6 +19,7 @@ import { isStickerGateDenied } from './features/sticker-gate.js';
 import { getScheduleStore } from './features/schedule-store.js';
 import { switchOutboundMode } from './features/outbound-mode-switch.js';
 import { loadExtensionTools } from './features/extension-store.js';
+import { diagWrite } from './shared/diag.js';
 import { makeExtCaps } from './features/ext-capabilities.js';
 import { verifyHuman, groupRegistryPath } from './api/group-admin.js';
 import { readGroupMembers } from './features/chat-ledger.js';
@@ -99,18 +100,8 @@ function diag(line: string): void {
  *   现在超过 2 MB 就先截断、只留尾部 512 KB 再追加：诊断还在，垃圾没了。
  */
 function extDiag(line: string): void {
-  try {
-    const home = process.env.USERPROFILE || process.env.HOME || '';
-    if (!home) return;
-    const file = join(home, '.dsh', 'qqbot-ext-diag.log');
-    try {
-      if (statSync(file).size > 2 * 1024 * 1024) {
-        const buf = readFileSync(file);
-        writeFileSync(file, buf.subarray(Math.max(0, buf.length - 512 * 1024)));
-      }
-    } catch { /* 文件还不存在 / 读不了：直接追加即可 */ }
-    appendFileSync(file, `[${new Date().toISOString()}] ${line}\n`);
-  } catch { /* ignore */ }
+  // ★ 2026-10-06 收口：改走统一诊断底座（默认关 / 2MB 上限 / 自动轮转）。
+  diagWrite('qqbot-ext-diag', line);
 }
 
 /** qqChannel service 形状：由 dsh-qqbot 在 QQ 会话 ctx 上 provide */
@@ -2708,7 +2699,7 @@ function traceToolReg(line: string): void {
   try {
     const home = process.env['HOME'] || process.env['USERPROFILE'] || '';
     if (!home) return;
-    appendFileSync(join(home, '.dsh', 'contextless-trace.log'), `[${new Date().toISOString()}]  ${line}\n`);
+    diagWrite('contextless-trace', line);   // ★ 收口：与 contextless-store 共用同一个底座，不再各写各的
   } catch { /* ignore */ }
 }
 
