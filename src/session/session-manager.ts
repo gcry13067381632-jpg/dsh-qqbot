@@ -47,7 +47,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { appendFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { attachSessionToWorkspace, unarchiveSession } from './workspace-attach.js';
+import { attachSessionToWorkspaceWithRetry, unarchiveSession } from './workspace-attach.js';
 
 /** 通道工具注册诊断: 默认关闭; 设环境变量 QQBOT_DIAG_FILE 启用 */
 const SM_DIAG_FILE = process.env.QQBOT_DIAG_FILE || '';
@@ -773,7 +773,7 @@ export class SessionManager {
 
     // 修复侧边栏归属(上游 PR #21 移植): 创建/恢复会话后挂到 cwd 对应工作区分组,
     // 防刷新后落 Ungrouped。幂等 + fail-soft(内部全吞), fire-and-forget 不阻塞主链。
-    void attachSessionToWorkspace(this.ctx, this.config.cwd, sessionId, this.logger);
+    void attachSessionToWorkspaceWithRetry(this.ctx, this.config.cwd, sessionId, this.logger);
 
     return record;
   }

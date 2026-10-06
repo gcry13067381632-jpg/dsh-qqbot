@@ -169,15 +169,17 @@ export async function attachSessionToWorkspace(
   cwd: string | undefined,
   sessionId: string,
   logger: Logger,
-): Promise<void> {
+): Promise<boolean> {
   const registry = getRegistry(ctx);
-  if (!registry) return; // workspaceRegistry 未挂载(如 headless profile) → 静默跳过
+  if (!registry) return false; // workspaceRegistry 未挂载(如 headless profile) → 静默跳过
+  let ok = false;
   if (cwd) {
     try {
       if (typeof registry.create === 'function') {
         const workspace = await registry.create(cwd);
         if (workspace?.attachSession) {
           await workspace.attachSession(sessionId);
+          ok = true;
           logger.info(`[workspace-attach] session ${sessionId} → workspace ${cwd}`);
         }
       }
@@ -188,4 +190,47 @@ export async function attachSessionToWorkspace(
   }
   // 顺带把误归档的会话拉回可见(归档与工作区归属无关, 故不依赖 cwd)
   await unarchiveSession(ctx, sessionId, logger);
+  return ok;
+}
+
+
+/**
+ * ★ 2026-10-06 修「新会话落在未分组」的竞态：**带退避重试**地挂工作区。
+ *
+ * 根因（实测）：宿主的 attachSession **不信任调用方传的 cwd**，它自己去
+ * `host.readSessionHeader(sessionId)` 读**磁盘上的会话头**校验
+ * （dsh-workspace/lib/index.js:111-129，先活会话→缓存→扫存储），都没有就抛
+ * `session persistence holds no such session`。而我们在 agents.create() 之后**立刻**调用，
+ * 那一刻会话头还没落盘 ⇒ 抛错被吞 ⇒ 会话不在任何工作区 ⇒ 侧边栏落「未分组」，
+ * 要等下次被消息触发（resume 路径）才补挂上。
+ *
+ * 实测证据：同一段代码**有的挂上有的没挂**（466 个会话里 67bec37c 挂了、
+ * 3baae867 / 5f4ad7c2 / 920d0e2c 没挂）。
+ *
+ * 做法：0 / 300 / 900 / 2000 / 5000 ms 五次，**成功即停**；全程 fail-soft，
+ * 最终失败只留一行 warn + 一条诊断（开 diagLog 后见 qqbot-archive.log）。幂等安全。
+ */
+const ATTACH_RETRY_DELAYS = [0, 300, 900, 2000, 5000];
+
+export function attachSessionToWorkspaceWithRetry(
+  ctx: Context,
+  cwd: string | undefined,
+  sessionId: string,
+  logger: Logger,
+): void {
+  if (!getRegistry(ctx)) return;   // headless：没 registry 就别白跑五轮
+  void (async () => {
+    for (let i = 0; i < ATTACH_RETRY_DELAYS.length; i++) {
+      const wait = ATTACH_RETRY_DELAYS[i]!;
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      try {
+        if (await attachSessionToWorkspace(ctx, cwd, sessionId, logger)) {
+          if (i > 0) diag(`attach-ok-after-retry ${sessionId} attempt=${i + 1} cwd=${cwd ?? ''}`);
+          return;
+        }
+      } catch { /* 单轮失败继续下一轮(fail-soft) */ }
+    }
+    diag(`attach-failed ${sessionId} cwd=${cwd ?? ''} (重试 ${ATTACH_RETRY_DELAYS.length} 次)`);
+    logger.warn?.(`[workspace-attach] 挂工作区失败(已重试 ${ATTACH_RETRY_DELAYS.length} 次, 会话仍可用): session=${sessionId} cwd=${cwd ?? ''}`);
+  })();
 }

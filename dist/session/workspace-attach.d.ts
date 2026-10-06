@@ -17,5 +17,6 @@ export declare function workspaceAttachState(): {
  * 会话可用性总入口: 挂到工作区 + 保证不在归档里(两者都幂等 + fail-soft)。
  * SessionManager.getOrCreate **创建/恢复**会话后调用, fire-and-forget 不阻塞主链。
  */
-export declare function attachSessionToWorkspace(ctx: Context, cwd: string | undefined, sessionId: string, logger: Logger): Promise<void>;
+export declare function attachSessionToWorkspace(ctx: Context, cwd: string | undefined, sessionId: string, logger: Logger): Promise<boolean>;
+export declare function attachSessionToWorkspaceWithRetry(ctx: Context, cwd: string | undefined, sessionId: string, logger: Logger): void;
 //# sourceMappingURL=workspace-attach.d.ts.map
