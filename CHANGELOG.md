@@ -1,3 +1,37 @@
+## [1.7.2] - 2026-10-06
+
+> 补齐 1.7.1 的**两处打包缺陷**，再给写扩展的人配一个**能直接跑的示例**。
+
+### ✨ 新功能
+
+- **自带 botplay 示例模块**：`examples/botplay/checkin-stats.mjs`（+ `README.md`）——
+  复制到 `{数据根}/.qqbot-extensions/botplay/` 就能跑。它演示四个最容易踩的坑：
+  1. ★ **按钮级权限只能自己在 `onClick` 里判** —— 事件 `perm` 是**整张卡片**一个，
+     做不到"按钮 1 谁都能点、按钮 2 只有主人能点"
+  2. **别动不动重发整张卡**（刷屏 + 撞 QQ 发卡限频）；只有真要刷新按钮状态才 `card().dirty = true`
+  3. **状态要按 `ctx.cardId` 分轮存** —— 同一个模块实例被多张卡片共享，不按轮存会串名单
+  4. **`ctx.appendWake` 要用在刀刃上**（烧 token），只在真正出结果的那一刻调
+  已随包分发（见 `files`）。
+
+### 🐛 修复
+
+- **`docs/host-services.md` 没被打进 npm 包**（严重）：`package.json` 的 `files` 是 npm 的**白名单**，
+  漏列 ⇒ **1.7.1 的 npm 包里其实没有这份《宿主服务清单》**；而《用户手册》里又引用了它
+  ⇒ 装包用户会点到**死链**。现已把 `docs/host-services.md` 与 `examples` 一并补入 `files`。
+- **`docs/botplay-contract.md` 尾部混进了 4 行 HTTP 响应头**
+  （`content-type` / `content-length` / `cache-controlno-store` / `accept-rangesbytes`）——
+  每次点面板「🤖 让 AI 写」都会把它拼进提示词发给 AI。已删。
+
+### 📖 文档
+
+- botplay 契约文本新增：指向 `examples/botplay/` 的说明 + 上面那三个坑的提醒。
+
+### ✅ 验证
+
+- `tsc` 零错误 + `check-package` 通过；
+- **`npm pack --dry-run` 复核**：`docs/host-services.md`（5.0 kB）与 `examples/botplay/*`
+  两个文件**均已在包内**（共 457 files）。
+
 ## [1.7.1] - 2026-10-06
 
 > 1.7.0 把三套扩展的**成品能力**拉平了；这一版补上**"遥控器"**和一把**说明书**。
