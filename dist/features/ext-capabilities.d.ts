@@ -54,6 +54,16 @@ export interface ExtCapsDeps {
     selfName?: string;
     /** 扩展种类：tools / commands（决定 store 落在哪个子目录） */
     kind?: string;
+    /**
+     * ★ 插件 ctx（"遥控器"）—— 见 {@link ExtCapabilities.kernel}。
+     * 由调用方把插件的 cordis Context 原样传进来；不传 = 没有这个能力。
+     */
+    kernel?: unknown;
+    /**
+     * 自重启实现（仅供测试注入；生产走内置 `selfRestart`）。
+     * ⚠️ 真跑它会 spawn 一个助手去 kill 宿主进程 —— 测试里**必须**用这个接缝替换。
+     */
+    restartImpl?: (delayMs?: number) => boolean;
 }
 /** 能力包对外形状（写扩展时看到的就是这个） */
 export interface ExtCapabilities {
@@ -91,6 +101,45 @@ export interface ExtCapabilities {
         peerId: string;
     };
     log(...args: unknown[]): void;
+    /**
+     * ★ **内核句柄（"遥控器"）**= 本插件自己的 cordis Context（`ctx`）。
+     *
+     * 拿到它就能做**受控能力包做不到的事**：
+     * ```js
+     * const ctx = env.kernel;
+     * ctx.get('sessions')                 // 读/建会话
+     * ctx.get('tools')                    // 工具注册表
+     * ctx.compaction.compactNow(a, s, id) // 调宿主的上下文压缩
+     * ctx.on('session/event', fn)         // 订阅宿主事件
+     * ctx.webServer.register({ path, handler })  // 开一个 HTTP 路由
+     * ```
+     *
+     * ⚠️ **三条代价（用之前先读）**：
+     * 1. **跟随宿主版本**：`ctx` 的形状由 dsh 决定，宿主升级可能让这段代码失效 ——
+     *    所以「成品能力」才是主路，`kernel` 是**逃生舱**。
+     * 2. **注册要自己收尾**：`ctx.tools.register()` / `ctx.on()` / `ctx.webServer.register()`
+     *    都返回 disposer；不 dispose 的话，热重载会**不断累积**（本插件自己也踩过这个坑，
+     *    见维护手册铁律 8：disposer 要存到跨模块实例可见的地方）。
+     * 3. **全权限**：它等价于"把遥控器交出去"。这是**你自己机器上、你自己写的代码**，
+     *    所以本来就是你的权利 —— 但别把它转手给不信任的代码。
+     */
+    kernel: unknown;
+    /**
+     * 触发宿主自重启（等价于内置的 `/bot-restart`）。
+     *
+     * 实现直接复用插件自己的 `selfRestart()` —— 它已经填平了所有坑
+     * （动态识别启动命令、**强制补 `--no-open`**、助手写系统 tmpdir 避开中文路径、
+     * detached+unref 保证宿主被杀后照样能拉起）。**别自己 spawn，很容易写错。**
+     *
+     * @param opts.requireOwner - 默认 `true`：只有主人（`env.user.isOwner`）触发才生效，
+     *   防止 AI 被群友一句话钓去重启机器人。**你自己的场景要谁都能重启，就传 `false`。**
+     * @param opts.delayMs - 延迟多久开始（默认 1600ms，给回执留时间）
+     * @returns 是否已触发（不代表重启成功，只代表助手已脱手启动）
+     */
+    restart(opts?: {
+        requireOwner?: boolean;
+        delayMs?: number;
+    }): boolean;
 }
 /**
  * 造一份扩展能力包。**永远不会抛**：拿不到的依赖 → 对应能力返回 false / 空值。

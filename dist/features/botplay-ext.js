@@ -174,6 +174,7 @@ export function makeExtContext(deps, ev, cardId, clicker) {
         file: (source) => (typeof deps.media === 'function' ? deps.media('file', source) : Promise.resolve(false)),
         markdownCard: (c, kb) => (typeof deps.markdownCard === 'function' ? deps.markdownCard(String(c ?? ''), kb) : Promise.resolve(false)),
         at: (id) => `<@${String(id ?? '')}>`,
+        kernel: deps.kernel,
         getMember: (id) => {
             const nm = deps.memberName(String(id ?? ''));
             return { openid: String(id ?? ''), name: nm, pureName: nm };

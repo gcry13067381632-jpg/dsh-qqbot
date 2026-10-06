@@ -127,7 +127,7 @@ export async function bootstrapGateway(ctx, agents, config, logger) {
     });
     logger.info(`QQBot SDK initialized (UA: ${userAgent})${watchJoinRequests ? ' [watchJoinRequests: GROUP_MEMBER_EVENT 已订阅]' : ''}`);
     // ── 中间件链 ──
-    await setupMiddlewares(bot, config, manager, logger);
+    await setupMiddlewares(bot, config, manager, logger, ctx);
     // ── 入站：经过中间件链后的消息交给 dsh agent ──
     bot.on('message', async (mCtx) => {
         const msg = mCtx.message;
@@ -466,6 +466,8 @@ export async function bootstrapGateway(ctx, agents, config, logger) {
     // ⚠️ 必须与事件文件同源(dataRootOf), 否则面板报的路径与实际加载的不是一处, 主人改错文件还找不到原因
     () => dataRootOf(config));
     registerBotplayController(myNs, botplayController);
+    // ★ 内核句柄：把插件 ctx 交给 botplay（卡片 ctx.kernel / 与扩展工具·命令对齐）
+    botplayController.setKernel(ctx);
     // 昵称兜底(2026-10-05 主人定: "兜底的时候用 api，其余的时候用台账"):
     //   台账/会话壳都查不到时, 后台调官方「获取群成员信息」接口拿 username。
     //   ⚠️ 该接口官方标注「内邀接入中」(11253=无权限) ⇒ 失败静默、只记一行日志。

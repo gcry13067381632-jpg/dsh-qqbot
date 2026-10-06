@@ -538,6 +538,8 @@ export default {
    | 进上下文(唤醒) | `await env.appendWake('...')` | 落上下文**并唤醒一轮 AI**(耗 token) |
    | 身份 | `env.user.openid/name/isOwner`、`env.owners`、`env.peer.scope/peerId` | |
    | 日志 | `env.log(...)` | 落插件 logger |
+   | **内核句柄（遥控器）** | `env.kernel`（工具侧也叫 `env.ctx`） | ★ **全权限**：`ctx.get('服务名')` / `ctx.on(...)` / `ctx.tools.register(...)` / `ctx.webServer.register(...)`。**能拿到哪些服务见 [宿主服务清单](./host-services.md)**。⚠️ 形状跟随 dsh 版本（升级可能失效，成品能力才是主路）；`register` 返回的 disposer **要自己收尾**，否则热重载会累积 |
+   | **宿主自重启** | `await env.restart()` | 等价内置 `/bot-restart` —— 直接复用它的实现（自动识别启动命令、**强制补 `--no-open`**、助手写系统 tmpdir 避中文路径、detached 保证宿主被杀也能拉起）。**别自己 spawn，很容易写错**。默认**仅主人**可触发（免得 AI 被群友一句话钓去重启）；要放开就写 `env.restart({ requireOwner: false })` |
 
    - ⚠️ **`appendSilent` 的安全红线**：dsh 的会话格式要求「人设」是会话上下文的**第一个节点**。
      全新会话(还没跑过任何回合)里人设尚未落盘, 此时静默追加会**把整份会话日志写废**

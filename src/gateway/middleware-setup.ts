@@ -39,6 +39,8 @@ export async function setupMiddlewares(
   config: ImQQBotConfig,
   manager: SessionManager,
   logger: Logger,
+  /** ★ 插件的 cordis ctx —— 传给自定义命令当"内核句柄"（env.ctx），见 ext-capabilities.ts */
+  pluginCtx?: unknown,
 ): Promise<void> {
   // 0. 用户扩展命令(P4.1): 加载插件包外扩展目录的命令, 并入下方 cmdList/slash,
   //    群聊前置解析 cmdMap 与 SDK slash 双通道自然覆盖 → /扩展命令 重启后即用。
@@ -260,6 +262,8 @@ export async function setupMiddlewares(
             : undefined,
           selfName: name,
           kind: 'commands',
+          // ★ 内核句柄（遥控器）：与扩展工具对齐 —— 命令也能 ctx.get/ctx.on/ctx.tools.register
+          kernel: pluginCtx,
         });
       } catch { return undefined; }
     })();

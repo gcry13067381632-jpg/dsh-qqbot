@@ -8,5 +8,7 @@ import type { QQBot } from '@tencent-connect/qqbot-nodejs';
 import type { ImQQBotConfig } from '../config.js';
 import type { SessionManager } from '../session/index.js';
 import type { Logger } from '../types.js';
-export declare function setupMiddlewares(bot: QQBot, config: ImQQBotConfig, manager: SessionManager, logger: Logger): Promise<void>;
+export declare function setupMiddlewares(bot: QQBot, config: ImQQBotConfig, manager: SessionManager, logger: Logger, 
+/** ★ 插件的 cordis ctx —— 传给自定义命令当"内核句柄"（env.ctx），见 ext-capabilities.ts */
+pluginCtx?: unknown): Promise<void>;
 //# sourceMappingURL=middleware-setup.d.ts.map

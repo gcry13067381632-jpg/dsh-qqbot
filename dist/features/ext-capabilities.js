@@ -42,6 +42,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { canSilentlyAppend } from '../session/surface-guard.js';
+import { selfRestart } from '../commands/exit.js';
 // ── 自带 token 管理（不依赖 groupAdmin 开关，第三方用户也能用）──────────────
 //   key = appId；value = { token, expireAt }。token 官方有效期 ~7200s，这里按 60s 余量提前过期。
 const tokenCache = new Map();
@@ -282,6 +283,25 @@ export function makeExtCaps(deps) {
                 logger?.info?.(`[ext:${self}] ${args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ')}`);
             }
             catch { /* ignore */ }
+        },
+        // ── 内核句柄（遥控器）────────────────────────────────────────────
+        kernel: deps.kernel,
+        // ── 宿主自重启（复用内置 /bot-restart 的实现，别自己 spawn）──────
+        restart: (opts) => {
+            const requireOwner = opts?.requireOwner !== false; // 默认：仅主人
+            const isOwner = actorOpenid !== '' && owners.includes(actorOpenid);
+            if (requireOwner && !isOwner) {
+                try {
+                    logger?.warn?.(`[ext-caps] ${self} restart 被拒：仅主人可触发（想放开就传 { requireOwner: false }）`);
+                }
+                catch { /* ignore */ }
+                return false;
+            }
+            try {
+                logger?.warn?.(`[ext-caps] ${self} 触发了宿主自重启（owner=${isOwner} actor=${actorOpenid || '(未知)'}）`);
+            }
+            catch { /* ignore */ }
+            return (deps.restartImpl ?? selfRestart)(opts?.delayMs);
         },
     };
 }

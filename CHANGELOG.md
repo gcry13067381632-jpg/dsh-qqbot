@@ -1,3 +1,42 @@
+## [1.7.1] - 2026-10-06
+
+> 1.7.0 把三套扩展的**成品能力**拉平了；这一版补上**"遥控器"**和一把**说明书**。
+
+### ✨ 新功能
+
+- **`kernel`（内核句柄 = 插件自己的 cordis `ctx`）三套齐**：
+  - 扩展工具 `tools/` → `env.ctx`（本来就有）
+  - **自定义命令 `commands/` → `env.ctx`（新增）**
+  - **botplay 卡片 `botplay/` → `ctx.kernel`（新增）**
+    —— 命名区别的原因：卡片那个对象自己就叫 `ctx`，所以遥控器放 `ctx.kernel` 上（避免 `ctx.ctx`）。
+
+  拿到它就能做**成品能力做不到的事**：`ctx.get('sessions')` 读/建会话、`ctx.tools.register()`
+  给 AI 加工具、`ctx.webServer.register()` 开 HTTP 路由、`ctx.on('session/event')` 订阅宿主事件、
+  `ctx.compaction.compactNow()` 压缩上下文……
+
+- **`env.restart()` —— 宿主自重启**：直接**复用内置 `/bot-restart` 的实现**（`selfRestart()`），
+  它已经填平了所有坑：自动识别启动命令、**强制补 `--no-open`**（不然每次重启都弹浏览器）、
+  重启助手写系统 tmpdir（避开中文路径）、detached+unref（宿主被杀照样能拉起）。
+  - **默认仅主人可触发**（`requireOwner: true`）—— 防止 AI 被群友一句话钓去重启机器人；
+  - **要放开一行就行**：`env.restart({ requireOwner: false })`（你的机器你做主）；
+  - 每次触发都**留痕**（谁触发的、是不是主人），出问题能查。
+
+### 📖 文档
+
+- **新增 [`docs/host-services.md`](./docs/host-services.md)：宿主服务清单** ——
+  **59 个真实服务名**（从 dsh 源码里 harvest 的 `ctx.get("…")`，不是猜的），
+  按用途分类 + 上手例子 + 「成品能力 vs 遥控器」的选择建议。
+  ⇒ 光给遥控器不给说明书等于没给，这是这一版的重点之一。
+- 《用户手册》能力表补 `kernel` / `restart` 两行 + 指向服务清单。
+
+### ✅ 验证
+
+- `tsc` 零错误 + 包自检通过；
+- **能力包冒烟测试 50/50 通过**（新增 kernel 透传、restart 的**主人放行 / 群友拒绝 /
+  拒绝时不调用实现 / `requireOwner:false` 放开 / 无身份拒绝**）。
+  ⚠️ `restart` 的"放行"分支用**注入接缝**验证 —— 真跑它会 spawn 助手去 kill 宿主进程，
+  测试里绝不能真调。
+
 ## [1.7.0] - 2026-10-06
 
 > 这一版是**给写扩展的人用的**：把「三套用户扩展」的能力面拉平，

@@ -223,6 +223,19 @@ export interface BotplayExtContext {
   reloadSelf(): Promise<{ ok: boolean; msg: string }>;
   /** 模块日志(落插件 logger) */
   log(...args: unknown[]): void;
+  /**
+   * ★ **内核句柄（"遥控器"）**= 插件自己的 cordis Context —— 与扩展工具/命令的 `env.ctx` 是同一个东西。
+   *
+   * 注意到命名差异：**这个对象本身就叫 `ctx`，所以遥控器放在 `ctx.kernel` 上**（避免 `ctx.ctx`）。
+   *
+   * 拿到它能做受控能力做不到的事：`ctx.get('sessions')` / `ctx.compaction.compactNow(...)` /
+   * `ctx.on('session/event', fn)` / `ctx.webServer.register(...)` / `ctx.tools.register(...)`。
+   *
+   * ⚠️ 三条代价：① 形状跟随 dsh 版本（升级可能失效，成品能力才是主路）
+   * ② `register`/`on` 返回的 disposer **要自己收尾**，否则热重载会累积
+   * ③ 全权限 —— 这是你自己机器上自己写的代码，权利归你；但别转手给不信任的代码。
+   */
+  kernel: unknown;
 }
 
 /** 自定义事件模块导出形状(全部钩子可选, 但至少要有一个才认) */
@@ -291,6 +304,8 @@ export interface BotplayExtCtxDeps {
   clickCount(buttonId?: string): number;
   /** 诊断日志落盘(可选; 面板可看) */
   diag?: (line: string) => void;
+  /** ★ 插件 ctx（"遥控器"）：与扩展工具/命令对齐，卡片也能拿到全权限 */
+  kernel?: unknown;
 }
 
 /** 构造一个卡片实例的 ctx(每次 resolveCard / onClick 都 new 一个, 保证 user 是最新的点击人) */
@@ -410,6 +425,7 @@ export function makeExtContext(
     file: (source) => (typeof deps.media === 'function' ? deps.media('file', source) : Promise.resolve(false)),
     markdownCard: (c: string, kb?: unknown) => (typeof deps.markdownCard === 'function' ? deps.markdownCard(String(c ?? ''), kb) : Promise.resolve(false)),
     at: (id: string) => `<@${String(id ?? '')}>`,
+    kernel: deps.kernel,
     getMember: (id: string) => {
       const nm = deps.memberName(String(id ?? ''));
       return { openid: String(id ?? ''), name: nm, pureName: nm };

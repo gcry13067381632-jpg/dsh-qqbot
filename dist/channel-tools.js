@@ -2394,6 +2394,8 @@ export async function apply(ctx) {
                                     : undefined,
                                 selfName: def.name,
                                 kind: 'tools',
+                                // ★ 内核句柄：把插件的 cordis ctx 原样交给扩展（"遥控器"）
+                                kernel: ctx,
                             });
                             for (const [k, v] of Object.entries(caps))
                                 if (!(k in env))

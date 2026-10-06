@@ -557,6 +557,8 @@ export class BotplayController {
             dataRoot,
             logger: this.logger,
             owners: this.ownersGetter(),
+            // ★ 内核句柄：与扩展工具/命令对齐（卡片 ctx.kernel = 插件 cordis ctx）
+            kernel: this._kernel,
             // 卡片 = 代码：直接把 bot 凭证给它，让它自己换 token 调官方 API（不经宿主/插件包能力）
             credentialsGetter: () => {
                 try {
@@ -1086,6 +1088,9 @@ export class BotplayController {
      * ⚠️ 会话不在内存(重启后未恢复/被 idle 回收)→ getOrCreate 恢复/重建(不触发回合),
      *    保证 append/injectToPeer 有 record 可挂 —— 这是"点击没反应"的常见根因。
      */
+    /** ★ 内核句柄（遥控器）：bootstrap 构造本控制器后注入；卡片 ctx.kernel 就是它 */
+    _kernel;
+    setKernel(kernel) { this._kernel = kernel; }
     async applyEffect(mode, target, text, presser) {
         let record = this.manager.findByPeer(target.scope, target.targetId);
         if (!record) {

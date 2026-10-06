@@ -207,6 +207,9 @@ export declare class BotplayController {
      * ⚠️ 会话不在内存(重启后未恢复/被 idle 回收)→ getOrCreate 恢复/重建(不触发回合),
      *    保证 append/injectToPeer 有 record 可挂 —— 这是"点击没反应"的常见根因。
      */
+    /** ★ 内核句柄（遥控器）：bootstrap 构造本控制器后注入；卡片 ctx.kernel 就是它 */
+    private _kernel?;
+    setKernel(kernel: unknown): void;
     private applyEffect;
     private safeReply;
     /**
