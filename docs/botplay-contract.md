@@ -86,7 +86,8 @@ appSecret: ${hasSecret ? '已配置（位置：设置 → QQ 机器人）' : '�
 ── 要求 ──
 请按上面的契约写一个可直接用的自定义事件模块（写进 ${extDir || '{{EXT_DIR}}'}），并在 botplay-events.json 里登记对应事件（id/name/file）。
 写完自己核对一遍语法；可以用 /botplay 事件id 在群里发卡试一下, 或让主人去面板点「🔄 重载模块」后再发卡。
-content-type
-content-length
-cache-controlno-store
-accept-rangesbytes
+另: 插件包里自带一个**可直接跑的示例** —— examples/botplay/checkin-stats.mjs（同目录 README 有用法和说明）。
+   想照猫画虎就抄它: 它演示了三个最容易踩的坑 ——
+   ① 按钮级权限只能自己在 onClick 里判(卡片级 perm 做不到按按钮区分)
+   ② 别动不动重发整张卡(刷屏 + 撞发卡限频); 只有真要刷新按钮状态才 card().dirty = true
+   ③ 状态要按 ctx.cardId 分轮存, 否则多张卡片会串上一轮的名单

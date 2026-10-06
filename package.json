@@ -59,6 +59,8 @@
     "dist",
     "docs/USER-GUIDE.md",
     "docs/botplay-contract.md",
+    "docs/host-services.md",
+    "examples",
     "client",
     "cordis.patch.yml",
     "settings-host.js",
