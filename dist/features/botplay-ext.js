@@ -167,6 +167,12 @@ export function makeExtContext(deps, ev, cardId, clicker) {
         },
         markdown: (content) => deps.markdown(String(content ?? '')),
         image: (source) => deps.image(source),
+        text: (t) => (typeof deps.text === 'function' ? deps.text(String(t ?? '')) : Promise.resolve(false)),
+        media: (kind, source) => (typeof deps.media === 'function' ? deps.media(kind, source) : Promise.resolve(false)),
+        voice: (source) => (typeof deps.media === 'function' ? deps.media('voice', source) : Promise.resolve(false)),
+        video: (source) => (typeof deps.media === 'function' ? deps.media('video', source) : Promise.resolve(false)),
+        file: (source) => (typeof deps.media === 'function' ? deps.media('file', source) : Promise.resolve(false)),
+        markdownCard: (c, kb) => (typeof deps.markdownCard === 'function' ? deps.markdownCard(String(c ?? ''), kb) : Promise.resolve(false)),
         at: (id) => `<@${String(id ?? '')}>`,
         getMember: (id) => {
             const nm = deps.memberName(String(id ?? ''));

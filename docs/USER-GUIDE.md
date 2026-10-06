@@ -512,12 +512,39 @@ export default {
 1. 命令/工具文件都放**账号数据目录**的 `.qqbot-extensions/` 下(dataRoot 优先, 无则 cwd), 别放插件包内。
    → **升级/重装插件(换 node_modules)只动插件本体, 不会覆盖扩展目录**, 用户的扩展永久保留。
 2. 工具入参 schema 用 JSON Schema 风格; **可选参数不带 required 字段**。
-3. `run(args, env)` 的 `env = { cwd, manager, sender, replyTarget, exec, ctx, logger }`:
+3. `run(args, env)` 的 `env = { cwd, manager, sender, replyTarget, exec, ctx, logger } + ★统一能力包`:
    - `sender` + `replyTarget` 就是内置 `send_media` 用的发送器 → **工具可以自己发 markdown 卡片 / 图片 / 语音 / 文件**, 不用把内容再交回 AI。
    - `ctx` 是**宿主的插件上下文**(与内置工具同源, 1.5.30 起提供) → 扩展工具能自助调用宿主能力, 例如
      `ctx.compaction.compactNow(agent, exec.signal, id)` 压缩上下文、`ctx.get('服务名')` 探测可选服务; `logger` 是对应日志器。
      ⚠️ 权限与内置工具**同级** —— 只适合**你自己写在 dataRoot 里的**扩展, 别把 `ctx` 转手给不可信代码。
    - 工具返回 `{ ok, msg }`(msg 作为工具结果回给 AI); 命令返回纯文本。
+### ★ 统一能力包（v1.7.0+）：三套扩展能力面对齐
+
+自定义命令 / 扩展工具 / botplay 卡片**三套扩展现在能力面一致** ——
+   写扩展时不用再自己接生。以下成员**平铺在 `env` 上**(命令侧在 handler 的 ctx 上), 也可以走 `env.caps` 命名空间:
+
+   | 能力 | 用法 | 说明 |
+   |---|---|---|
+   | 发纯文本 | `await env.text('hi')` | |
+   | 发 markdown | `await env.markdown('# 标题')` | 富文本卡片通道 |
+   | 发 markdown+按钮 | `await env.markdownCard(md, keyboard)` | 自己拼 keyboard(≤5 行) |
+   | 发图/语音/视频/文件 | `await env.image(src)` / `env.voice(src)` / `env.video(src)` / `env.file(src)` | `src` 可传 URL 字符串或 `{url}`/`{localPath}` |
+   | 任意媒体 | `await env.media('file', src)` | kind = image/voice/video/file |
+   | @人 | `env.at(openid)` | 返回 `<@openid>` 片段, 拼进文本 |
+   | **官方 API** | `await env.api('/v2/users/@me')` | ★ **自带 token 与 2h 缓存**, 不用管 appId/secret；返回 `{ok,data}` 或 `{ok:false,err:{code,human}}` |
+   | **钥匙** | `env.appId` / `env.appSecret` | 想自己换 token 调任意接口时用 |
+   | 持久化 | `env.store.load()` / `env.store.save(obj)` | ★ 落 `{数据根}/.qqbot-extensions/{tools\|commands}/data/<你的文件名>.json`, **升级插件不丢** |
+   | 进上下文(静默) | `await env.appendSilent('...')` | 只落上下文**不唤醒**；⚠️ 见下方安全说明 |
+   | 进上下文(唤醒) | `await env.appendWake('...')` | 落上下文**并唤醒一轮 AI**(耗 token) |
+   | 身份 | `env.user.openid/name/isOwner`、`env.owners`、`env.peer.scope/peerId` | |
+   | 日志 | `env.log(...)` | 落插件 logger |
+
+   - ⚠️ **`appendSilent` 的安全红线**：dsh 的会话格式要求「人设」是会话上下文的**第一个节点**。
+     全新会话(还没跑过任何回合)里人设尚未落盘, 此时静默追加会**把整份会话日志写废**
+     (用户会看到「历史加载失败」)。所以本能力**内置守卫**: 不安全时**直接返回 false**、
+     **绝不写入**。想在这种会话里送内容进去, 用 `env.appendWake`(走正常回合, 天然安全)。
+   - ⚠️ 所有能力都**优雅降级**: 拿不到依赖时返回 `false` / 结构化错误, **不会抛错**打断你的扩展。
+   - ⚠️ 只有 `env.ctx` 是「全权限」的, 别把 `ctx` 转手给不可信代码; 其余能力都是受控封装。
 4. 卡片正文由**你(AI)直接写 markdown**(标题/加粗/`![说明](url)`/代码块), **本插件没有模板引擎, 不需要也不会用配置型模板**。
 5. 生效方式: 工具发 `/tools-reload` 或调 `tools_reload` —— 新工具即时生效; **同名工具改内容会被工具注册表跳过(`already registered`) → 换名或重启宿主**; 命令一律需重启宿主(`/bot-restart`)。
 6. 能力边界: **扩展工具无法注册"按钮点击回调"** —— 按钮回调只能由 host 侧的 botplay 事件 / dock 卡片编辑器注册。纯扩展方案的交互范式 = "卡片 + 用户回个编号", 由 AI 当状态机再调一次工具。

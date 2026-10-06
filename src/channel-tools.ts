@@ -19,6 +19,7 @@ import { isStickerGateDenied } from './features/sticker-gate.js';
 import { getScheduleStore } from './features/schedule-store.js';
 import { switchOutboundMode } from './features/outbound-mode-switch.js';
 import { loadExtensionTools } from './features/extension-store.js';
+import { makeExtCaps } from './features/ext-capabilities.js';
 import { verifyHuman, groupRegistryPath } from './api/group-admin.js';
 import { readGroupMembers } from './features/chat-ledger.js';
 import * as broadcastQueue from './features/broadcast.js';
@@ -2182,6 +2183,42 @@ const toolDefs: Array<{ name: string; tool: unknown }> = [
               ctx,
               logger: (ctx as { logger?: unknown }).logger,
             };
+            // ★ 2026-10-06 统一能力包（见 features/ext-capabilities.ts）：
+            //   把「发消息 / 官方 API / 持久化 / 上下文 / 身份」这套**成品能力**也交给扩展工具，
+            //   免得作者为了发一张 markdown 还得专门写一个工具（历史上的 send_md.mjs 就是这个）。
+            //   ⚠️ 只补不覆盖：cwd/manager/sender/replyTarget/exec/ctx/logger 保持原样。
+            try {
+              const mgr = (sess?.ch.manager ?? qqCh?.manager ?? bridgeCh?.manager) as unknown as {
+                config?: { appId?: string; appSecret?: string; owners?: string[] };
+                groupAdmin?: { apiCall?: (m: 'GET' | 'POST' | 'PATCH' | 'DELETE', p: string, b?: unknown) => Promise<unknown> };
+              } | undefined;
+              const recAny = sess?.rec as unknown as {
+                scope?: string; peerId?: string; senderId?: string; agent?: unknown; replyTarget?: unknown;
+              } | undefined;
+              const ga = mgr?.groupAdmin;
+              const caps = makeExtCaps({
+                dataRoot: extRoot,
+                logger: (ctx as { logger?: unknown }).logger as never,
+                appId: mgr?.config?.appId,
+                appSecret: mgr?.config?.appSecret,
+                owners: mgr?.config?.owners,
+                sender: sess?.ch.sender as never,
+                replyTarget: (recAny?.replyTarget ?? sess?.rec.replyTarget),
+                agent: recAny?.agent as never,
+                scope: recAny?.scope,
+                peerId: recAny?.peerId,
+                actorOpenid: recAny?.senderId,
+                apiCall: typeof ga?.apiCall === 'function'
+                  ? ((mm: 'GET' | 'POST' | 'PATCH' | 'DELETE', p: string, b?: unknown) => ga.apiCall!(mm, p, b)) as never
+                  : undefined,
+                selfName: def.name,
+                kind: 'tools',
+              });
+              for (const [k, v] of Object.entries(caps)) if (!(k in env)) env[k] = v;
+              env.caps = caps;
+            } catch (err) {
+              extDiag(`能力包构造失败(不影响工具本身): ${err instanceof Error ? err.message : String(err)}`);
+            }
             try {
               const r = await def.run(args as Record<string, unknown>, env) as { ok?: boolean; msg?: string } | string | undefined | null;
               if (r && typeof r === 'object') return { ok: r.ok === true, msg: String(r.msg ?? 'done') };

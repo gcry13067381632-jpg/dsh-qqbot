@@ -178,6 +178,18 @@ export interface BotplayExtContext {
   markdown(content: string): Promise<boolean>;
   /** 发图(网络图 url / 本地文件 localPath) */
   image(source: { url?: string; localPath?: string }): Promise<boolean>;
+  /** 发纯文本(与 markdown 分开: 纯文本不走卡片通道) */
+  text(text: string): Promise<boolean>;
+  /** 发任意媒体: kind = image / voice / video / file */
+  media(kind: 'image' | 'voice' | 'video' | 'file', source: { url?: string; localPath?: string }): Promise<boolean>;
+  /** 发语音 */
+  voice(source: { url?: string; localPath?: string }): Promise<boolean>;
+  /** 发视频 */
+  video(source: { url?: string; localPath?: string }): Promise<boolean>;
+  /** 发文件 */
+  file(source: { url?: string; localPath?: string }): Promise<boolean>;
+  /** 发 markdown + 按钮键盘(button 卡片正文那种) */
+  markdownCard(content: string, keyboard?: unknown): Promise<boolean>;
   /**
    * 静默进入 AI 上下文：作为一条 user/message 追加进会话，**不唤醒** AI。
    *   AI 下一轮自然能看到（复用框架 llmEffect 的 append_silent 档）。
@@ -253,6 +265,12 @@ export interface BotplayExtCtxDeps {
   markdown(content: string): Promise<boolean>;
   /** 发图 */
   image(source: { url?: string; localPath?: string }): Promise<boolean>;
+  /** 发纯文本（可选；缺省 = 该能力返回 false） */
+  text?(text: string): Promise<boolean>;
+  /** 发任意媒体（可选）：kind = image / voice / video / file */
+  media?(kind: 'image' | 'voice' | 'video' | 'file', source: { url?: string; localPath?: string }): Promise<boolean>;
+  /** 发 markdown + 按钮键盘（可选） */
+  markdownCard?(content: string, keyboard?: unknown): Promise<boolean>;
   /** 昵称反查(台账/会话; 返回纯昵称, 查不到回落 openid) */
   memberName(openid: string): string;
   /**
@@ -385,6 +403,12 @@ export function makeExtContext(
     },
     markdown: (content: string): Promise<boolean> => deps.markdown(String(content ?? '')),
     image: (source) => deps.image(source),
+    text: (t: string) => (typeof deps.text === 'function' ? deps.text(String(t ?? '')) : Promise.resolve(false)),
+    media: (kind, source) => (typeof deps.media === 'function' ? deps.media(kind, source) : Promise.resolve(false)),
+    voice: (source) => (typeof deps.media === 'function' ? deps.media('voice', source) : Promise.resolve(false)),
+    video: (source) => (typeof deps.media === 'function' ? deps.media('video', source) : Promise.resolve(false)),
+    file: (source) => (typeof deps.media === 'function' ? deps.media('file', source) : Promise.resolve(false)),
+    markdownCard: (c: string, kb?: unknown) => (typeof deps.markdownCard === 'function' ? deps.markdownCard(String(c ?? ''), kb) : Promise.resolve(false)),
     at: (id: string) => `<@${String(id ?? '')}>`,
     getMember: (id: string) => {
       const nm = deps.memberName(String(id ?? ''));

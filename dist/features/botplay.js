@@ -597,6 +597,41 @@ export class BotplayController {
                     return false;
                 }
             },
+            // ★ 2026-10-06 补齐：与扩展工具/命令统一的发送能力
+            //   （text / 任意媒体 / 带键盘的 markdown）—— 三套扩展的能力面从此对齐。
+            text: async (t) => {
+                const s = this.sender;
+                if (typeof s.sendText !== 'function')
+                    return false;
+                try {
+                    await s.sendText(target, t);
+                    return true;
+                }
+                catch (err) {
+                    this.logger.warn?.(`[botplay] ${extFile} text 失败: ${err instanceof Error ? err.message : String(err)}`);
+                    return false;
+                }
+            },
+            media: async (kind, source) => {
+                try {
+                    await this.sender.sendMedia(target, kind, source);
+                    return true;
+                }
+                catch (err) {
+                    this.logger.warn?.(`[botplay] ${extFile} media(${kind}) 失败: ${err instanceof Error ? err.message : String(err)}`);
+                    return false;
+                }
+            },
+            markdownCard: async (content, keyboard) => {
+                try {
+                    await this.sender.sendMarkdownWithKeyboard(target, content, keyboard);
+                    return true;
+                }
+                catch (err) {
+                    this.logger.warn?.(`[botplay] ${extFile} markdownCard 失败: ${err instanceof Error ? err.message : String(err)}`);
+                    return false;
+                }
+            },
             memberName: (openid) => this.memberName(target, openid),
             clickCount: (buttonId) => {
                 if (buttonId)

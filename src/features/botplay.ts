@@ -614,6 +614,22 @@ export class BotplayController {
           try { await this.sender.sendMedia(target, 'image', source); return true; }
           catch (err) { this.logger.warn?.(`[botplay] ${extFile} image 失败: ${err instanceof Error ? err.message : String(err)}`); return false; }
         },
+        // ★ 2026-10-06 补齐：与扩展工具/命令统一的发送能力
+        //   （text / 任意媒体 / 带键盘的 markdown）—— 三套扩展的能力面从此对齐。
+        text: async (t: string): Promise<boolean> => {
+          const s = this.sender as unknown as { sendText?: (tg: unknown, text: string) => Promise<unknown> };
+          if (typeof s.sendText !== 'function') return false;
+          try { await s.sendText(target, t); return true; }
+          catch (err) { this.logger.warn?.(`[botplay] ${extFile} text 失败: ${err instanceof Error ? err.message : String(err)}`); return false; }
+        },
+        media: async (kind: 'image' | 'voice' | 'video' | 'file', source: { url?: string; localPath?: string }): Promise<boolean> => {
+          try { await this.sender.sendMedia(target, kind, source); return true; }
+          catch (err) { this.logger.warn?.(`[botplay] ${extFile} media(${kind}) 失败: ${err instanceof Error ? err.message : String(err)}`); return false; }
+        },
+        markdownCard: async (content: string, keyboard?: unknown): Promise<boolean> => {
+          try { await this.sender.sendMarkdownWithKeyboard(target, content, keyboard as never); return true; }
+          catch (err) { this.logger.warn?.(`[botplay] ${extFile} markdownCard 失败: ${err instanceof Error ? err.message : String(err)}`); return false; }
+        },
         memberName: (openid: string) => this.memberName(target, openid),
         clickCount: (buttonId?: string) => {
           if (buttonId) return this.extClicks.get(`${cardId}|${buttonId}`) ?? 0;

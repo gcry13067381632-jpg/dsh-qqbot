@@ -1,3 +1,48 @@
+## [1.7.0] - 2026-10-06
+
+> 这一版是**给写扩展的人用的**：把「三套用户扩展」的能力面拉平，
+> 以后别人给你的鲸鱼写扩展，不用再自己接生。
+
+### ✨ 新功能
+
+- **统一扩展能力包 `env`（`src/features/ext-capabilities.ts`）**：
+  `commands/`（自定义斜杠命令）、`tools/`（自定义 QQ 工具）、`botplay/`（卡片事件模块）
+  **三套扩展现在拿到同一套成品能力**（此前严重不均：卡片是精装版，工具只有裸 sender，
+  命令只有一个消息 ctx —— 以至于为发一张 markdown 就得专门写个工具）。
+  平铺在 `env` 上（也在 `env.caps` 命名空间里）：
+
+  | 能力 | 用法 |
+  |---|---|
+  | 发文本 / markdown / 带按钮 markdown | `env.text()` / `env.markdown()` / `env.markdownCard(md, kb)` |
+  | 发图 / 语音 / 视频 / 文件 / 任意媒体 | `env.image(src)` / `env.voice()` / `env.video()` / `env.file()` / `env.media(kind, src)` |
+  | @人 | `env.at(openid)` |
+  | **官方 API 调用** | `env.api(path, {method, body})` —— ★ **自带 token 与 2h 缓存，不依赖 `groupAdmin` 开关** |
+  | **钥匙** | `env.appId` / `env.appSecret`（想自己换 token 调任意接口时用） |
+  | **持久化** | `env.store.load()` / `env.store.save(obj)` —— 落 `{数据根}/.qqbot-extensions/{tools\|commands}/data/`，**升级插件不丢** |
+  | 进上下文 | `env.appendSilent(text)` / `env.appendWake(text)` |
+  | 身份 | `env.user.openid/name/isOwner`、`env.owners`、`env.peer` |
+  | 日志 | `env.log(...)` |
+
+- **botplay 卡片 ctx 补齐**：`text` / `media` / `voice` / `video` / `file` / `markdownCard`
+  （此前只有 `emit`/`markdown`/`image`）—— 三套扩展的发送能力从此一致。
+
+### 🛡️ 安全
+
+- **`appendSilent` 内置表面守卫**：全新会话（还没跑过任何回合、人设尚未落盘）里静默追加
+  会**写废整份会话日志**（见 1.6.9 的事故）。所以这条能力**不安全时直接返回 `false`、绝不写入**；
+  想往这种会话里送内容请用 `appendWake`（走正常回合，dsh 会先补人设，天然安全）。
+- **全部能力优雅降级**：拿不到依赖时返回 `false` / 结构化错误，**绝不抛错**打断用户的扩展。
+
+### ✅ 验证
+
+- `tsc` 零错误 + 包自检通过。
+- **能力包冒烟测试 40/40 通过**（发送路由 / @人 / 持久化落盘回读 / API 注入与无凭证报错 /
+  上下文守卫（新会话必拒、老会话放行）/ 全量优雅降级）。
+
+### 📖 文档
+
+- 《用户手册》新增「★ 统一能力包（v1.7.0+）」小节（含能力表与 `appendSilent` 安全红线）。
+
 ## [1.6.9] - 2026-10-06
 
 > **修一个会「写废整份会话日志」的事故** —— 静默入库（不唤醒 AI 的那几条路径）

@@ -28,6 +28,7 @@ import { prefetchQuoteImages } from '../transport/quote-images.js';
 import { stickerCapture } from '../middleware/sticker-capture.js';
 import { getHistoryStore, historyGroupKey } from '../features/history-store.js';
 import { loadExtensionCommands } from '../features/extension-store.js';
+import { makeExtCaps } from '../features/ext-capabilities.js';
 import { stickerActivityRecorder } from '../features/sticker-gate.js';
 import { chatLedgerRecorder } from '../features/chat-ledger.js';
 import { debounceLayer, injectSynthetic } from './debounce.js';
@@ -229,8 +230,46 @@ export async function setupMiddlewares(
     if (!cmd) return next(); // 未知命令放行
     const parsed = { name, args: m[2] ? String(m[2]).split(/\s+/) : [], raw: m[2] ?? '' };
     if (ctx.state) ctx.state.command = parsed;
+    // ★ 2026-10-06 统一能力包（见 features/ext-capabilities.ts）：
+    //   自定义命令以前**能力面最窄**（只有一个消息 ctx），现在补上「发消息 / 官方 API /
+    //   持久化 / 上下文 / 身份」。只补不覆盖；构造失败不影响命令本身的执行。
+    const capsForCmd = (() => {
+      try {
+        const mc = ctx.message as { kind?: string; groupOpenid?: string; senderId?: string } | undefined;
+        const isG = mc?.kind === 'group';
+        const sc = isG ? 'group' : 'c2c';
+        const pid = String((isG ? mc?.groupOpenid : mc?.senderId) ?? '');
+        const rec = pid ? manager.findByPeer(sc as never, pid) : undefined;
+        const ga = manager.groupAdmin;
+        return makeExtCaps({
+          dataRoot: dataRootOf(config),
+          logger,
+          appId: (config as { appId?: string }).appId,
+          appSecret: (config as { appSecret?: string }).appSecret,
+          owners: (config as { owners?: string[] }).owners,
+          // 命令侧能拿到的发送器就是中间件 ctx 上的 bot（至少有 sendText / sendMarkdown）；
+          // 缺什么能力，对应的 env.xxx 会优雅地返回 false，而不是抛错。
+          sender: (ctx as { bot?: unknown }).bot as never,
+          replyTarget: (ctx as { replyTarget?: unknown }).replyTarget,
+          agent: (rec as { agent?: unknown } | undefined)?.agent as never,
+          scope: sc,
+          peerId: pid,
+          actorOpenid: String(mc?.senderId ?? ''),
+          apiCall: ga && typeof ga.apiCall === 'function'
+            ? ((mm: 'GET' | 'POST' | 'PATCH' | 'DELETE', p: string, b?: unknown) => ga.apiCall(mm, p, b)) as never
+            : undefined,
+          selfName: name,
+          kind: 'commands',
+        });
+      } catch { return undefined; }
+    })();
+    const handlerArg: Record<string, unknown> = { ...ctx, command: parsed };
+    if (capsForCmd) {
+      for (const [k, v] of Object.entries(capsForCmd)) if (!(k in handlerArg)) handlerArg[k] = v;
+      handlerArg.caps = capsForCmd;
+    }
     try {
-      const result = await cmd.handler({ ...ctx, command: parsed });
+      const result = await cmd.handler(handlerArg as never);
       // 扩展命令可返回 { wake: { content, senderName? } } → 请把一条合成消息交给聚合层唤醒 AI
       // (2026-09-12: /资源 未命中用; 与真人消息同窗口聚合, 人多不会各开一回合)
       try {
