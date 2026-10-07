@@ -72,11 +72,13 @@ const debounceSchema = Schema.object({
     silenceSec: Schema.number().min(0).default(3).description('最近说话者停止发言几秒后开口(默认3; 0=不停顿)'),
     maxMsgs: Schema.number().min(1).default(10).description('窗口攒满几条立即开口(默认10), 不等对方停'),
     mentionDelayed: Schema.boolean().default(true).description('@bot 消息是否也走延迟(默认是; 不勾=@到秒回)'),
+    busySendMode: Schema.union(['queue', 'interject']).default('queue').description('回合进行中(她正在思考/输出)群友新消息怎么办: 排队=攒着等这轮回完再整批看(默认, 现状); 插话=照样先聚合, 但不等回合结束, 直接在回合内的轮次之间插进去(每次插话都带一句"先做完当前任务"的轻提示)'),
 }).default({
     enabled: true,
     silenceSec: 3,
     maxMsgs: 10,
     mentionDelayed: true,
+    busySendMode: 'queue',
 }).description('延迟聚合(独立于冷却的另一套机制)');
 const behaviorSchema = Schema.object({
     freeIntervalSec: Schema.number().min(0).default(60).description('群普通消息回复间隔(秒),0=不限制'),
@@ -92,6 +94,7 @@ const behaviorSchema = Schema.object({
         silenceSec: 3,
         maxMsgs: 10,
         mentionDelayed: true,
+        busySendMode: 'queue',
     },
 }).description('回复调度');
 const stickerGatesSchema = Schema.object({
@@ -363,6 +366,7 @@ const ConfigSchemaRaw = Schema.object({
     diagLog: Schema.boolean().default(false).description('诊断日志落盘(默认关): 开=把排查用的诊断日志写进 {DSH_HOME|~/.dsh}/*.log, 单文件 2MB 自动轮转(只留 1 份旧档); 平时别开, 会持续占盘'),
     enableApprovals: Schema.boolean().default(false).description('通过 QQ 接收并处理 dsh 一次性权限申请(远程审批: 发起者用 /approve CODE 放行)'),
     approvalTimeoutMs: Schema.number().default(120000).description('QQ 权限申请超时(ms), 超时自动拒绝'),
+    questionsMode: Schema.union(['async', 'blocking']).default('async').description('提问卡片怎么等答案: 后台(async, 默认)=卡片发出后工具立刻返回, 她能继续聊天/干活, 对方答完的答案会自动作为一条回执消息送回来(她忙就插进当前回合、空闲就唤醒她处理); 阻塞(blocking)=旧行为, 工具一直挂到对方作答或超时才继续(期间她动不了)'),
     outboundMode: Schema.union(['adaptive', 'detail', 'active', 'passive', 'silent', 'nothink']).default('adaptive').description('出站模式: 适配主动(默认)=收到新消息后前5次带msg_id被动回复, 超出/无新消息自动转主动(连发不受限); 详细主动=同适配主动 + 额外推送工具调用/工具结果到QQ(看进度, 消息更多); 被动=携带msg_id回复(连发受QQ回复同一消息上限); 完全不出站=思考但不发(静默); 完全不思考=QQ入站不唤醒LLM, 仅记录上下文(仅设置页可配, 防机器人自锁)'),
     botplayEvents: Schema.array(botplayEventSchema).default(DEMO_BOTPLAY_EVENTS).description('botplay 互动事件(装配器编辑; /botplay 触发发卡)'),
 });

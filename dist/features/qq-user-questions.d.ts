@@ -64,7 +64,7 @@ interface PendingItem {
     total: number;
     deadlineAt: number;
 }
-/** 一批提问(一次 ask_user_question 的全部问题) —— 全部答完/超时后统一 resolve 宿主 */
+/** 一批提问(一次 ask_user_question 的全部问题) —— 全部答完/超时后统一 resolve 宿主(阻塞档)或投递回会话(后台档) */
 interface PendingGroup {
     /** 该批问题的 qid 顺序(resolve 时按此顺序出答案) */
     qids: string[];
@@ -79,6 +79,19 @@ interface PendingGroup {
     keys: string[];
     signal?: AbortSignal;
     onAbort?: () => void;
+    /** 该批的问题项(后台档组装回执文案要 question/header) */
+    items?: PendingItem[];
+    /**
+     * 发起该批提问的会话记录(结构化类型, 后台档事后投递用)。
+     * agent.inject = 回合内安全插入; agent.followup = 唤醒新回合。
+     */
+    record?: {
+        agent?: unknown;
+        turnActive?: boolean;
+        lastInboundAt?: number;
+    };
+    /** true = 后台档(async): 不 resolve 宿主, 答案改了投递回会话 */
+    isAsync?: boolean;
 }
 /** Web 浮层看到的待办提问(去敏) */
 export interface WebPendingQuestion {
@@ -124,8 +137,18 @@ export declare class QqUserQuestionsController {
     private readonly sender;
     private readonly logger;
     private readonly timeoutMsProvider;
+    /**
+     * 提问工作方式(现读, live 热更): 'async'=后台提问(默认, 不卡回合) / 'blocking'=旧行为(工具阻塞等答案)。
+     * 见 config.questionsMode 与 docs §11.29。
+     */
+    private readonly modeProvider;
     private readonly pending;
-    constructor(manager: SessionManager, sender: QQBotSender, logger: Logger, timeoutMsProvider: () => number);
+    constructor(manager: SessionManager, sender: QQBotSender, logger: Logger, timeoutMsProvider: () => number, 
+    /**
+     * 提问工作方式(现读, live 热更): 'async'=后台提问(默认, 不卡回合) / 'blocking'=旧行为(工具阻塞等答案)。
+     * 见 config.questionsMode 与 docs §11.29。
+     */
+    modeProvider?: () => 'async' | 'blocking');
     /**
      * 群成员昵称 → openid 解析器(2026-09-24 主人需求: 提问卡片支持"昵称匹配"指定收件人)。
      * 数据源 = 本地群成员台账 `{dataRoot}/表情包/group-members.jsonl`(在群里发过言/申请过入群的人);
@@ -184,6 +207,15 @@ export declare class QqUserQuestionsController {
      * 超时/取消时未答的问题给空答案(selected: []) —— 与宿主原语义一致。
      */
     private finishGroup;
+    /**
+     * 后台提问的答案投递(2026-10-07 主人定: "ai 可以等 qq 返回结果，期间还可以继续和群友对话"):
+     *   把答案组装成一条 "[提问卡片·回执]" 消息送回她的会话 ——
+     *     · 她还在回合里(忙) → `agent.inject`(不唤醒, 排到下个轮次边界, 与 debounce 插话同款通道);
+     *     · 她已经空闲/回合结束 → `agent.followup` **唤醒**她接着处理(主人原话: "忙时插话、空闲唤醒")。
+     *   投递后刷新 `lastInboundAt` 并置 `turnActive`(与真人消息同语义, "适配主动"据此判断最近有人在说话)。
+     * 投递失败只记日志, 不影响 QQ 侧回执与结算(答案不会丢在磁盘上, 但也不会重投 —— 保留 pending 语义)。
+     */
+    private deliverAnswers;
     /** Web 浮层拉取待办问题列表 */
     listPendingForWeb(): WebPendingQuestion[];
     /** Web 浮层点选项: key + 选项下标 → 与 QQ 按钮同源结算(先到先得) */

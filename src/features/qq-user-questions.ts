@@ -28,6 +28,7 @@
  *   解析不到就沿用老逻辑(最近被 @ 的人 → 消息发送者壳 → 会话发起者)。
  */
 import type { ReplyTarget } from '@tencent-connect/qqbot-nodejs';
+import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { join } from 'node:path';
 import type { QQBotSender } from '../transport/outbound-buffer.js';
 import type { SessionManager } from '../session/index.js';
@@ -78,7 +79,7 @@ interface PendingItem {
   deadlineAt: number;
 }
 
-/** 一批提问(一次 ask_user_question 的全部问题) —— 全部答完/超时后统一 resolve 宿主 */
+/** 一批提问(一次 ask_user_question 的全部问题) —— 全部答完/超时后统一 resolve 宿主(阻塞档)或投递回会话(后台档) */
 interface PendingGroup {
   /** 该批问题的 qid 顺序(resolve 时按此顺序出答案) */
   qids: string[];
@@ -90,6 +91,19 @@ interface PendingGroup {
   keys: string[];
   signal?: AbortSignal;
   onAbort?: () => void;
+  /** 该批的问题项(后台档组装回执文案要 question/header) */
+  items?: PendingItem[];
+  /**
+   * 发起该批提问的会话记录(结构化类型, 后台档事后投递用)。
+   * agent.inject = 回合内安全插入; agent.followup = 唤醒新回合。
+   */
+  record?: {
+    agent?: unknown;
+    turnActive?: boolean;
+    lastInboundAt?: number;
+  };
+  /** true = 后台档(async): 不 resolve 宿主, 答案改了投递回会话 */
+  isAsync?: boolean;
 }
 
 /** Web 浮层看到的待办提问(去敏) */
@@ -317,6 +331,11 @@ export class QqUserQuestionsController {
     private readonly sender: QQBotSender,
     private readonly logger: Logger,
     private readonly timeoutMsProvider: () => number,
+    /**
+     * 提问工作方式(现读, live 热更): 'async'=后台提问(默认, 不卡回合) / 'blocking'=旧行为(工具阻塞等答案)。
+     * 见 config.questionsMode 与 docs §11.29。
+     */
+    private readonly modeProvider: () => 'async' | 'blocking' = () => 'async',
   ) {}
 
   /**
@@ -398,6 +417,9 @@ export class QqUserQuestionsController {
     const owner = resolveCardOwner(record, parsed.map((q) => `${q.header} ${q.question}`).join(' '), this.ownerResolverFor(record));
     this.logger.info(`QQ question owner resolved: ${owner ? owner.slice(0, 8) + '…' : '(全员可点)'}`);
 
+    // ★ 2026-10-07 主人定: 默认走"后台提问"(async) —— 卡片发出即把占位答案交回宿主, 她的回合不被卡住;
+    //   真正的答案回来后由 deliverAnswers 当"回执消息"投递回会话(她忙插话 / 空闲唤醒)。'blocking'=旧行为。
+    const isAsync = this.modeProvider() === 'async';
     // 先注册 pending(防按钮回调/文字回复先于 Promise 建立到达)
     let resolver: (v: unknown) => void = () => undefined;
     const answer = new Promise<unknown>((resolve) => { resolver = resolve; });
@@ -408,6 +430,8 @@ export class QqUserQuestionsController {
       timer: setTimeout(() => this.finishGroup(group), timeoutMs),
       keys: [],
       signal: req.signal,
+      isAsync,
+      record: record as unknown as PendingGroup['record'],
     };
     if (req.signal) {
       group.onAbort = () => this.finishGroup(group);
@@ -433,6 +457,7 @@ export class QqUserQuestionsController {
       this.pending.set(key, item);
       return item;
     });
+    group.items = items; // 后台档组装回执文案要用(question/header)
 
     // 依次发卡(多问题 = 多张卡, 各自带序号与字母表)
     for (const item of items) {
@@ -449,6 +474,19 @@ export class QqUserQuestionsController {
           this.logger.error(`QQ question fallback text failed: ${err2 instanceof Error ? err2.message : String(err2)} (qid=${item.qid}, web 浮层可兜底)`);
         }
       }
+    }
+    if (isAsync) {
+      // 后台提问: 立刻把"占位答案"交回宿主 —— 宿主 ask_user_question 工具随即返回,
+      //   她的回合不被挂住, 可以继续和群友聊天/干活。
+      // ⚠️ 占位文案必须写明"答案稍后自动送达 + 别重复发问", 否则她可能以为没人理而反复发卡。
+      this.logger.info(`QQ question sent(后台 async): qids=${items.map((i) => i.qid).join(',')} 等待 ${Math.round(timeoutMs / 1000)}s`);
+      return {
+        answers: parsed.map((q) => ({
+          id: q.qid,
+          selected: [] as string[],
+          custom: '（已发出提问卡片，正在等对方作答；答案稍后会自动送回来，你可以先继续手上的事，不要重复发问）',
+        })),
+      };
     }
     return answer;
   }
@@ -680,6 +718,11 @@ export class QqUserQuestionsController {
     for (const [k, v] of [...this.pending]) {
       if (v.group === group) this.pending.delete(k);
     }
+    if (group.isAsync) {
+      // 后台档: 宿主早就拿着占位答案往下走了 → 这里不再 resolve, 改成把真答案投递回会话
+      this.deliverAnswers(group);
+      return;
+    }
     const answers = group.qids.map((qid) => {
       const a = group.answers.get(qid);
       if (!a) return { id: qid, selected: [] };
@@ -688,6 +731,68 @@ export class QqUserQuestionsController {
         : { id: qid, selected: a.selected, custom: a.custom };
     });
     group.resolve({ answers });
+  }
+
+  /**
+   * 后台提问的答案投递(2026-10-07 主人定: "ai 可以等 qq 返回结果，期间还可以继续和群友对话"):
+   *   把答案组装成一条 "[提问卡片·回执]" 消息送回她的会话 ——
+   *     · 她还在回合里(忙) → `agent.inject`(不唤醒, 排到下个轮次边界, 与 debounce 插话同款通道);
+   *     · 她已经空闲/回合结束 → `agent.followup` **唤醒**她接着处理(主人原话: "忙时插话、空闲唤醒")。
+   *   投递后刷新 `lastInboundAt` 并置 `turnActive`(与真人消息同语义, "适配主动"据此判断最近有人在说话)。
+   * 投递失败只记日志, 不影响 QQ 侧回执与结算(答案不会丢在磁盘上, 但也不会重投 —— 保留 pending 语义)。
+   */
+  private deliverAnswers(group: PendingGroup): void {
+    const rec = group.record;
+    if (!rec) return;
+    const qOf = (qid: string, i: number): string => {
+      const it = (group.items ?? []).find((x) => x.qid === qid);
+      return String(it?.header || it?.question || `问题${i + 1}`);
+    };
+    const lines = group.qids.map((qid, i) => {
+      const a = group.answers.get(qid);
+      const shown = !a
+        ? '超时未答'
+        : (a.custom !== undefined && a.custom !== ''
+          ? a.custom
+          : (a.selected.length > 0 ? a.selected.join(' / ') : '未选'));
+      return `「${qOf(qid, i)}」→ ${shown}`;
+    });
+    const text = `[提问卡片·回执] 你之前发出的提问有结果了(后台送达)：\n${lines.join('\n')}`;
+    const agent = rec.agent as { inject?: (m: unknown) => void; followup?: (m: unknown) => void } | undefined;
+    if (!agent) {
+      this.logger.warn('[qq-questions] 答案投递失败: 该会话 agent 已不可用');
+      return;
+    }
+    let msg: unknown;
+    try {
+      msg = createUserMessage({ content: [{ type: 'text' as const, text }], source: { kind: 'user' as const } });
+    } catch (err) {
+      this.logger.warn(`[qq-questions] 回执消息构造失败: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    try {
+      if (rec.turnActive === true && typeof agent.inject === 'function') {
+        agent.inject(msg);
+        this.logger.info('[qq-questions] 答案已投递(她正忙 → 插进当前回合)');
+        return;
+      }
+      if (typeof agent.followup === 'function') {
+        // 唤醒路径: 与真人入站同款(置 turnActive + 刷 lastInboundAt), outbound 的 turn/end 会复位
+        rec.lastInboundAt = Date.now();
+        rec.turnActive = true;
+        agent.followup(msg);
+        this.logger.info('[qq-questions] 答案已投递(她空闲 → 唤醒处理)');
+        return;
+      }
+      if (typeof agent.inject === 'function') {
+        agent.inject(msg);
+        this.logger.info('[qq-questions] 答案已投递(inject 兜底, 不唤醒)');
+        return;
+      }
+      this.logger.warn('[qq-questions] 答案投递失败: agent 既无 inject 也无 followup');
+    } catch (err) {
+      this.logger.warn(`[qq-questions] 答案投递异常: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   /** Web 浮层拉取待办问题列表 */
@@ -718,6 +823,14 @@ export class QqUserQuestionsController {
 
   dispose(): void {
     for (const group of new Set([...this.pending.values()].map((p) => p.group))) {
+      if (group.isAsync) {
+        // 后台档: 占位答案早已交回宿主 → 卸载/热重载时只需清 pending, 不再往会话里投递(agent 可能已在销毁)
+        clearTimeout(group.timer);
+        for (const [k, v] of [...this.pending]) {
+          if (v.group === group) this.pending.delete(k);
+        }
+        continue;
+      }
       this.finishGroup(group);
     }
   }

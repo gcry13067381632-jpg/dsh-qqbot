@@ -26,12 +26,14 @@
  * ⚠️ 本地手改功能: 同步纪律同 middleware-setup.ts 内群冷却中间件(改完保持 src 与部署 dist 一致)。
  */
 import type { Middleware, MiddlewareContext, HistoryEntry } from '@tencent-connect/qqbot-nodejs';
+import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import type { ImQQBotConfig } from '../config.js';
 import { dataRootOf } from './data-root.js';
 import type { SessionManager } from '../session/index.js';
 import type { Logger } from '../types.js';
 import { handleInbound } from '../transport/inbound.js';
-import { getHistoryStore, historyGroupKey } from '../features/history-store.js';
+import { getHistoryStore, historyGroupKey, clearGroupHistory } from '../features/history-store.js';
+import { lookupImagePath } from '../features/image-path-cache.js';
 import { appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -41,9 +43,17 @@ interface DebounceCfg {
   silenceSec?: number;
   maxMsgs?: number;
   mentionDelayed?: boolean;
+  /** 2026-10-07 主人定: 回合(LLM 正在思考/输出)中新消息走 queue=排队(默认) 还是 interject=插话 */
+  busySendMode?: 'queue' | 'interject';
 }
 
-const DEFAULTS: Required<DebounceCfg> = { enabled: true, silenceSec: 3, maxMsgs: 10, mentionDelayed: true };
+const DEFAULTS: Required<DebounceCfg> = {
+  enabled: true,
+  silenceSec: 3,
+  maxMsgs: 10,
+  mentionDelayed: true,
+  busySendMode: 'queue',
+};
 
 /** 窗口内单条消息的最小形状(展开拷贝, 不持有中间件 ctx 引用) */
 interface DebounceEntry {
@@ -51,6 +61,8 @@ interface DebounceEntry {
   wasMentioned: boolean;
   /** QQ 服务器下发时间戳(ms)。QQ 官方事件推送可能乱序, 窗口排序/计时一律以此为准 */
   ts: number;
+  /** 中间件处理结果(语音转写等)。插话只有文本通道, 要靠它把 [语音] 的转写文本带出去 */
+  processed?: unknown;
 }
 
 interface DebounceWindow {
@@ -97,6 +109,103 @@ function msgTs(msg: Record<string, unknown>): number {
 function num(v: unknown, d: number): number {
   const n = Number(v);
   return Number.isFinite(n) ? n : d;
+}
+
+// ══════════════════════════════════════════════════════════════
+// 插话模式(2026-10-07 主人定) —— 回合进行中不等 turn/end, 直接插到下个轮次边界
+// ══════════════════════════════════════════════════════════════
+
+/** 插话目标: 只要宿主 agent 有 inject 能力就行(结构化类型, 不绑具体 record 类型) */
+interface InterjectTarget {
+  agent?: unknown;
+}
+
+/** 现读设置(live 热更): 回合中消息策略。缺省/未知值一律当 queue(排队=现状, 最安全) */
+function busySendModeOf(config: ImQQBotConfig): 'queue' | 'interject' {
+  const raw = (config.behavior as { debounce?: { busySendMode?: unknown } } | undefined)?.debounce?.busySendMode;
+  return raw === 'interject' ? 'interject' : 'queue';
+}
+
+/**
+ * 插话提示 —— **每次插话都带**(主人 2026-10-07 定: "还是每句都提示(插话, 不要轻易改变当前任务)"),
+ * 但**必须极短**(主人同日追加: "系统提示太长了, 浪费 token"): 这条提示每次插话都占上下文,
+ * 所以只留两个不可省的语义 —— ①这是她输出期间群友**新插进来**的(不是对她上一条的回应);
+ * ②**先把当前任务做完**(防她被带偏)。⛔ 别再往这条里加解释性长句。
+ */
+const INTERJECT_NOTE = '[插话] 你思考/输出期间群友新发的消息(非对你的回应): 先做完当前任务, 再按需回应。';
+
+function shortSender(v: unknown): string {
+  const s = String(v ?? '').trim();
+  if (!s) return '群友';
+  return s.length > 8 ? '…' + s.slice(-6) : s;
+}
+
+/** 从中间件处理结果里取语音转写(插话走纯文本通道, 语音必须转成字才看得到) */
+function voiceTextOf(processed: unknown): string {
+  if (!Array.isArray(processed)) return '';
+  const parts: string[] = [];
+  for (const pa of processed) {
+    const o = pa as { type?: unknown; voiceText?: unknown };
+    if (String(o?.type ?? '') === 'voice' && typeof o.voiceText === 'string' && o.voiceText.trim()) {
+      parts.push(o.voiceText.trim());
+    }
+  }
+  return parts.join(' / ');
+}
+
+/** 附件摘要: 图片优先给本地路径(收藏中间件已落盘, 省 token 且 AI 能直接读盘) */
+function attachmentNote(atts: unknown, processed: unknown): string {
+  if (!Array.isArray(atts) || atts.length === 0) return '';
+  const out: string[] = [];
+  for (const raw of atts) {
+    const a = raw as { type?: unknown; url?: unknown; filename?: unknown };
+    const t = String(a?.type ?? '');
+    const url = String(a?.url ?? '');
+    if (t.includes('image')) {
+      const local = url ? lookupImagePath(url) : undefined;
+      out.push(`[图片: ${local ?? url}]`);
+    } else if (t === 'voice' || t === 'audio') {
+      const vt = voiceTextOf(processed);
+      out.push(vt ? `[语音] ${vt}` : '[语音]');
+    } else if (t === 'video') out.push('[视频]');
+    else if (t === 'file') out.push(`[文件: ${String(a?.filename ?? '') || '未知'}]`);
+  }
+  return out.join(' ');
+}
+
+/** 把窗口这批消息拼成一条插话文本(带发送者标签; 当时 @ 过她的补 (@you), 与正常派发同款事实标注) */
+function buildInterjectText(entries: DebounceEntry[]): string {
+  const lines: string[] = [];
+  for (const e of entries) {
+    const m = e.msg as { content?: unknown; senderName?: unknown; senderId?: unknown; attachments?: unknown };
+    const atts = attachmentNote(m.attachments, e.processed);
+    const body = [String(m.content ?? '').trim(), atts].filter(Boolean).join(' ') || '(无文字内容)';
+    lines.push(`[${shortSender(m.senderName ?? m.senderId)}] ${body}${e.wasMentioned ? ' (@you)' : ''}`);
+  }
+  if (lines.length === 0) return '';
+  return `${INTERJECT_NOTE}\n${lines.join('\n')}`;
+}
+
+/**
+ * 插话注入: agent.inject = dsh 底层 `send(msg,'next-step',wakeup:false)`
+ * (不唤醒、不拆 tool_calls → 宿主在下个 step 组包时带上, 她本轮就读到了)。
+ * @returns true=已插进去(调用方清窗口); false=没有注入能力 / 注入抛错(调用方回落原排队逻辑, 消息不丢)
+ */
+function interjectBatch(rec: InterjectTarget, entries: DebounceEntry[], logger: Logger): boolean {
+  const a = rec.agent as { inject?: (m: unknown) => void } | undefined;
+  if (!a || typeof a.inject !== 'function') return false;
+  const text = buildInterjectText(entries);
+  if (!text) return false;
+  try {
+    a.inject(createUserMessage({
+      content: [{ type: 'text' as const, text }],
+      source: { kind: 'user' as const },
+    }));
+    return true;
+  } catch (err) {
+    logger.warn?.(`[debounce] 插话注入失败(回落排队): ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
 }
 
 /**
@@ -191,6 +300,30 @@ export function debounceLayer(
       if (recPeer) {
         const busyRec = manager.findByPeer(fKind === 'group' ? 'group' : 'c2c', recPeer);
         if (busyRec?.turnActive) {
+          // ★★ 插话模式(2026-10-07 主人定, 设置项 behavior.debounce.busySendMode) ——
+          //   排队(默认/现状) vs 插话。插话 = 消息**照样先聚合**(静默秒数/条数上限都不变),
+          //   但不等这轮回合结束 —— 聚合好就经 agent.inject 塞进当前回合的**下一个轮次边界**
+          //   (宿主 send(msg,'next-step',wakeup:false): 不唤醒、不拆 tool_calls), 她本轮就能读到。
+          //   即宿主「繁忙时的发送行为 → 插话发送」的插件版。
+          //   ⚠️ 语义边界: 若她这一步是纯文字收尾(后面没有 step), 注入会留在队列里等下次唤醒才被消费,
+          //      效果等同排队 —— 这是宿主 inject 的固有语义, 不是 bug。
+          //   ⚠️ 插话是"即时补料"不是"派发回复": 不唤醒 ⇒ 不消耗群冷却, 也不在这里走冷却判断。
+          if (busySendModeOf(config) === 'interject') {
+            if (interjectBatch(busyRec as InterjectTarget, pre, logger)) {
+              clearTimer(w);
+              windows.delete(key);
+              // 与正常派发同款: 清群历史缓存 —— 免得这批消息这轮插过、下轮又被当 [历史] 打包一遍
+              if (fKind === 'group') {
+                try {
+                  clearGroupHistory(config.appId, String(f0.msg.groupOpenid ?? f0.msg.senderId ?? ''));
+                } catch { /* ignore */ }
+              }
+              logger.debug(`[debounce] 插话成功(回合中, 不等 turn/end) key=${key} n=${pre.length}`);
+              dbg(`flush 插话 inject(回合中) key=${key} n=${pre.length}`);
+              return; // 已插进当前回合, 窗口清空
+            }
+            dbg(`flush 插话不可用(无 inject 能力) → 回落排队 key=${key} n=${pre.length}`);
+          }
           // 回合忙：本来"一直等到 turn/end"。2026-09-15 起加**超时兜底** ——
           //   卡死的回合会把该会话的消息通道永久堵住（主人实测"发完语音后消息全不进"），
           //   超过 BUSY_MAX_WAIT_MS 就强制放行（warn 留痕），宁可挤一点也不能哑掉。
@@ -512,7 +645,11 @@ export function debounceLayer(
       if (e && e.ts > maxTs) maxTs = e.ts;
     }
     const isNewer = ts >= maxTs;
-    w.entries.push({ msg: { ...msg }, wasMentioned, ts });
+    w.entries.push({
+      msg: { ...msg }, wasMentioned, ts,
+      // 2026-10-07: 插话只有文本通道 → 把中间件处理结果(语音转写)一起存着, 拼插话文本时用
+      processed: (ctx.state as { processed?: unknown } | undefined)?.processed,
+    });
     // 2026-10-01: 把上游 quoteRef 解析好的引用存到窗口上（flush 时用）
     const _q = (ctx.state as { quote?: unknown }).quote;
     if (_q) {

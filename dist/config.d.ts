@@ -27,6 +27,13 @@ export interface DebounceConfig {
     maxMsgs: number;
     /** @bot 消息是否也走延迟(默认true)。false=@到秒回(不聚合) */
     mentionDelayed: boolean;
+    /**
+     * 回合(LLM 正在思考/输出)中群友新消息怎么处理(2026-10-07 主人定):
+     *   'queue'     = 排队(默认/现状): 攒在窗口里等这轮回合结束(turn/end)再整批送入;
+     *   'interject' = 插话: 照样先聚合(静默/条数), 但不等回合结束 —— 聚合好就 inject 到
+     *                 当前回合的**下一个轮次边界**(宿主 next-step 队列), AI 本轮就能读到。
+     */
+    busySendMode: 'queue' | 'interject';
 }
 /** 回复调度(冷却)配置 */
 export interface BehaviorConfig {
@@ -413,6 +420,13 @@ export interface ImQQBotConfig {
     approvalTimeoutMs: number;
     /** QQ 远程提问(ask_user_question → QQ 按钮卡片), 默认开; false=交回 Web UI */
     enableUserQuestions?: boolean;
+    /**
+     * 提问卡片工作方式(2026-10-07 主人定, 默认 async):
+     *   'async'    = 后台提问: 卡片发出即把"占位答案"交回宿主, 她的回合**不被卡住** —— 可以继续和群友聊天/干活;
+     *                对方答完后, 答案当作一条"回执消息"投递回会话(她忙 → 插进当前回合; 空闲 → 唤醒她处理);
+     *   'blocking' = 旧行为: 工具挂起等对方作答(或超时)才继续 —— 期间她动不了。
+     */
+    questionsMode?: 'async' | 'blocking';
     /** 出站模式: adaptive=适配主动(默认) / detail=详细主动(adaptive + 工具调用/结果推送) / active=旧全主动(兼容) / passive=全被动回复 / silent=完全不出站 / nothink=完全不思考(仅设置页可配) */
     outboundMode?: 'adaptive' | 'active' | 'passive' | 'detail' | 'silent' | 'nothink';
     /** botplay 互动事件列表(运行时 live, 与 settings 同源) */

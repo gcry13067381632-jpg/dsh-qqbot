@@ -29,6 +29,13 @@ export interface DebounceConfig {
   maxMsgs: number;
   /** @bot 消息是否也走延迟(默认true)。false=@到秒回(不聚合) */
   mentionDelayed: boolean;
+  /**
+   * 回合(LLM 正在思考/输出)中群友新消息怎么处理(2026-10-07 主人定):
+   *   'queue'     = 排队(默认/现状): 攒在窗口里等这轮回合结束(turn/end)再整批送入;
+   *   'interject' = 插话: 照样先聚合(静默/条数), 但不等回合结束 —— 聚合好就 inject 到
+   *                 当前回合的**下一个轮次边界**(宿主 next-step 队列), AI 本轮就能读到。
+   */
+  busySendMode: 'queue' | 'interject';
 }
 
 /** 回复调度(冷却)配置 */
@@ -365,11 +372,13 @@ const debounceSchema = Schema.object({
   silenceSec: Schema.number().min(0).default(3).description('最近说话者停止发言几秒后开口(默认3; 0=不停顿)'),
   maxMsgs: Schema.number().min(1).default(10).description('窗口攒满几条立即开口(默认10), 不等对方停'),
   mentionDelayed: Schema.boolean().default(true).description('@bot 消息是否也走延迟(默认是; 不勾=@到秒回)'),
+  busySendMode: Schema.union(['queue', 'interject']).default('queue').description('回合进行中(她正在思考/输出)群友新消息怎么办: 排队=攒着等这轮回完再整批看(默认, 现状); 插话=照样先聚合, 但不等回合结束, 直接在回合内的轮次之间插进去(每次插话都带一句"先做完当前任务"的轻提示)'),
 }).default({
   enabled: true,
   silenceSec: 3,
   maxMsgs: 10,
   mentionDelayed: true,
+  busySendMode: 'queue',
 }).description('延迟聚合(独立于冷却的另一套机制)');
 
 const behaviorSchema = Schema.object({
@@ -386,6 +395,7 @@ const behaviorSchema = Schema.object({
     silenceSec: 3,
     maxMsgs: 10,
     mentionDelayed: true,
+    busySendMode: 'queue',
   },
 }).description('回复调度');
 
@@ -714,6 +724,13 @@ export interface ImQQBotConfig {
   approvalTimeoutMs: number;
   /** QQ 远程提问(ask_user_question → QQ 按钮卡片), 默认开; false=交回 Web UI */
   enableUserQuestions?: boolean;
+  /**
+   * 提问卡片工作方式(2026-10-07 主人定, 默认 async):
+   *   'async'    = 后台提问: 卡片发出即把"占位答案"交回宿主, 她的回合**不被卡住** —— 可以继续和群友聊天/干活;
+   *                对方答完后, 答案当作一条"回执消息"投递回会话(她忙 → 插进当前回合; 空闲 → 唤醒她处理);
+   *   'blocking' = 旧行为: 工具挂起等对方作答(或超时)才继续 —— 期间她动不了。
+   */
+  questionsMode?: 'async' | 'blocking';
   /** 出站模式: adaptive=适配主动(默认) / detail=详细主动(adaptive + 工具调用/结果推送) / active=旧全主动(兼容) / passive=全被动回复 / silent=完全不出站 / nothink=完全不思考(仅设置页可配) */
   outboundMode?: 'adaptive' | 'active' | 'passive' | 'detail' | 'silent' | 'nothink';
   /** botplay 互动事件列表(运行时 live, 与 settings 同源) */
@@ -791,6 +808,7 @@ const ConfigSchemaRaw: Schema<ImQQBotConfig> = Schema.object({
   diagLog: Schema.boolean().default(false).description('诊断日志落盘(默认关): 开=把排查用的诊断日志写进 {DSH_HOME|~/.dsh}/*.log, 单文件 2MB 自动轮转(只留 1 份旧档); 平时别开, 会持续占盘'),
   enableApprovals: Schema.boolean().default(false).description('通过 QQ 接收并处理 dsh 一次性权限申请(远程审批: 发起者用 /approve CODE 放行)'),
   approvalTimeoutMs: Schema.number().default(120000).description('QQ 权限申请超时(ms), 超时自动拒绝'),
+  questionsMode: Schema.union(['async', 'blocking']).default('async').description('提问卡片怎么等答案: 后台(async, 默认)=卡片发出后工具立刻返回, 她能继续聊天/干活, 对方答完的答案会自动作为一条回执消息送回来(她忙就插进当前回合、空闲就唤醒她处理); 阻塞(blocking)=旧行为, 工具一直挂到对方作答或超时才继续(期间她动不了)'),
   outboundMode: Schema.union(['adaptive', 'detail', 'active', 'passive', 'silent', 'nothink']).default('adaptive').description('出站模式: 适配主动(默认)=收到新消息后前5次带msg_id被动回复, 超出/无新消息自动转主动(连发不受限); 详细主动=同适配主动 + 额外推送工具调用/工具结果到QQ(看进度, 消息更多); 被动=携带msg_id回复(连发受QQ回复同一消息上限); 完全不出站=思考但不发(静默); 完全不思考=QQ入站不唤醒LLM, 仅记录上下文(仅设置页可配, 防机器人自锁)'),
   botplayEvents: Schema.array(botplayEventSchema).default(DEMO_BOTPLAY_EVENTS as never).description('botplay 互动事件(装配器编辑; /botplay 触发发卡)'),
 });

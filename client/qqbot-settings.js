@@ -336,7 +336,16 @@ window.__ModuleLoader__.load({
           BoolRow({ label: '开启延迟聚合(不勾=回到来一条回一条)', value: dbc.enabled !== false, onChange: function (v) { setBehavior({ debounce: { ...dbc, enabled: v } }) } }),
           NumRow({ label: '对方停口几秒后她才开口(默认3;0=不停顿)', value: dbc.silenceSec != null ? dbc.silenceSec : 3, onChange: function (v) { setBehavior({ debounce: { ...dbc, silenceSec: v } }) } }),
           NumRow({ label: '攒满几条立即开口,不等对方停(默认10)', value: dbc.maxMsgs != null ? dbc.maxMsgs : 10, onChange: function (v) { setBehavior({ debounce: { ...dbc, maxMsgs: v } }) } }),
-          BoolRow({ label: '有人 @ 她时也走延迟(不勾=@到秒回)', value: dbc.mentionDelayed !== false, onChange: function (v) { setBehavior({ debounce: { ...dbc, mentionDelayed: v } }) } })),
+          BoolRow({ label: '有人 @ 她时也走延迟(不勾=@到秒回)', value: dbc.mentionDelayed !== false, onChange: function (v) { setBehavior({ debounce: { ...dbc, mentionDelayed: v } }) } }),
+          h('div', { style: { fontSize: 12, color: '#666', margin: '10px 0 2px' } }, '她正在思考/输出时, 群里又来了新消息怎么办(同宿主「繁忙时的发送行为」那两项):'),
+          h('div', { style: { display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' } },
+            ['queue', 'interject'].map(function (m) {
+              var cur = dbc.busySendMode === 'interject' ? 'interject' : 'queue'
+              return h('label', { style: { display: 'inline-flex', gap: 5, alignItems: 'center', fontSize: 12, color: '#333', cursor: 'pointer' } },
+                h('input', { type: 'radio', name: 'qqs-busy', checked: cur === m, onChange: function () { setBehavior({ debounce: { ...dbc, busySendMode: m } }) } }),
+                m === 'queue' ? '排队发送(默认: 攒着, 等这轮回完再一起看)' : '插话发送(在这回的轮次之间立刻插进去)')
+            })),
+          h('div', { style: { fontSize: 12, color: '#888' } }, '排队=她正忙时消息攒在窗口里, 等这轮回合结束才整批送进去(带"上次回复前群友所发"的提示)。插话=照样先聚合(静默秒数/条数上限都不变, 不会一条条吵醒她), 但不等回合结束, 直接在回合内的轮次之间插进去 —— 每次插话都带一句"先做完当前任务、别被带偏"的轻提示。注意: 若她这一步是纯文字收尾(后面没有工具轮次), 插话会留到下次唤醒才被读到, 效果和排队一样(宿主 inject 的固有语义)。保存即热更新, 不用重启。')),
 
         h('div', { style: sectionTitle }, '② 发表情包的限制(全默认不限制)'),
         h('p', { style: { fontSize: 12, color: '#888' } }, '防止她聊天时表情包刷屏;下面两项是"她主动发图"时才用——群里很热闹才发,冷清就憋着。不想管就保持全 0,也别勾总开关。'),
@@ -375,6 +384,16 @@ window.__ModuleLoader__.load({
         h('div', { style: boxStyle },
           BoolRow({ label: '开启 QQ 远程审批(不勾=保持默认审批方式)', value: cfg.enableApprovals === true, onChange: function (v) { setCfg(function (c) { return { ...c, enableApprovals: v } }) } }),
           NumRow({ label: '审批等待秒数(超时自动拒绝;默认120)', value: Math.round((cfg.approvalTimeoutMs || 120000) / 1000), onChange: function (v) { setCfg(function (c) { return { ...c, approvalTimeoutMs: v * 1000 } }) } })),
+
+        h('div', { style: sectionTitle }, '⑥ 提问卡片(她问人时要不要在旁边干等)'),
+        h('p', { style: { fontSize: 12, color: '#888' } }, '她调用 ask_user_question 问你或群友时怎么等答案。后台提问=卡片发出去她就能接着聊天/干活, 对方答完之后答案会作为一条"提问卡片·回执"自动送回她的会话(她正忙→插进当前回合不打断; 她闲着→叫醒她接着处理), 超时没答也会收到一条"超时未答"的回执。阻塞等待=旧行为, 她的这一回合一直挂到对方作答或超时, 期间收不了新消息。'),
+        h('div', { style: boxStyle },
+          ['async', 'blocking'].map(function (m) {
+            var cur = cfg.questionsMode === 'blocking' ? 'blocking' : 'async'
+            return h('label', { style: { display: 'inline-flex', gap: 5, alignItems: 'center', fontSize: 12, color: '#333', cursor: 'pointer', marginRight: 16 } },
+              h('input', { type: 'radio', name: 'qqs-qmode', checked: cur === m, onChange: function () { setCfg(function (c) { return { ...c, questionsMode: m } }) } }),
+              m === 'async' ? '后台提问(推荐默认: 不卡她)' : '阻塞等待(旧行为: 她会卡住)')
+          })),
 
         h('div', { style: { ...card, margin: '10px 0', padding: '12px 16px' } },
           h('div', { style: { fontWeight: 700, fontSize: 13, marginBottom: 2 } }, '⚙ 群管理基础设置'),

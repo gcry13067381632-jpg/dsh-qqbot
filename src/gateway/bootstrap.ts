@@ -436,7 +436,12 @@ export async function bootstrapGateway(
   // 宿主 user-questions/request 是 Agent 作用域 waterfall(同 approval), Web UI 答案器
   // 在宿主引导期注册 → 本监听同样 {prepend:true} 抢链首。enableQuestions 默认开(与审批独立开关)。
   const enableUserQuestions = config.enableUserQuestions !== false;
-  questionController = new QqUserQuestionsController(manager, sender, logger, () => config.approvalTimeoutMs || 120000);
+  questionController = new QqUserQuestionsController(
+    manager, sender, logger,
+    () => config.approvalTimeoutMs || 120000,
+    // 提问工作方式(现读/live 热更): 'async'=后台(默认, 卡片发出即返回, 不卡回合) / 'blocking'=旧行为
+    () => (config.questionsMode === 'blocking' ? 'blocking' : 'async'),
+  );
   registerQuestionController(myNs, questionController);
   (ctx as unknown as {
     on(event: string, handler: (...args: unknown[]) => unknown, config?: { prepend?: boolean }): void;
