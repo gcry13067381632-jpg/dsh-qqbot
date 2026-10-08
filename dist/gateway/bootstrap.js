@@ -271,10 +271,33 @@ export async function bootstrapGateway(ctx, agents, config, logger) {
                 return resp;
             }
             catch (err) {
-                // ── 主动推送被拒降级链(M3 定时等无 msgId 场景; 被动回复原样抛错) ──
-                // 平台限制: markdown 主动消息常需专门权限; c2c 主动需 48h 互动窗, 窗口外拒收。
-                // 降级顺序: sendMarkdown → sendText(纯文本主动) → c2c sendWakeup(is_wakeup 召回, 30天窗)。
-                if (!target.msgId) {
+                const firstErr = err instanceof Error ? err.message : String(err);
+                // 出站失败落盘（2026-10-08 加）：以后"某个会话发不出消息"能直接查这条日志，不用靠猜。
+                diagWrite('qqbot-send-diag', `[${new Date().toISOString()}] sendMarkdown 失败: scope=${target.scope} target=${String(target.targetId ?? '').slice(0, 12)}… msgId=${target.msgId ? `…${String(target.msgId).slice(-8)}` : '(无)'} err=${firstErr}`);
+                // ── ① 被动回复(msgId) 被拒 → **去掉 msgId 转主动重试一次** ──────────────────
+                //   ⚠️ 2026-10-08 修（主人实测：崩溃重启后"那个会话再也发不出消息，得新开会话才行"）：
+                //     passive 模式下**所有**出站都带 msgId（见 outbound.ts 的 effectiveTarget），
+                //     msgId 一旦失效（过期 / 被动回复配额用尽 / 崩溃重启残留的陈旧 id），
+                //     原来这里**直接 throw** ⇒ outbound 只记一行日志 ⇒ 消息静默丢失 ⇒ 整个会话像哑了。
+                //     转主动只多花一点主动额度，远好过彻底发不出去；成败都落盘，便于事后溯源。
+                if (target.msgId) {
+                    try {
+                        const act = { scope: target.scope, targetId: target.targetId };
+                        const r0 = (await bot.sendMarkdown(act, content));
+                        pushSent(act, r0?.id);
+                        logger.warn(`被动回复被拒(msgId 失效) → 已去掉 msgId 转主动发送成功: ${firstErr}`);
+                        diagWrite('qqbot-send-diag', `[${new Date().toISOString()}] 已降级为主动发送成功 target=${String(target.targetId ?? '').slice(0, 12)}…`);
+                        return r0;
+                    }
+                    catch (errA) {
+                        const secondErr = errA instanceof Error ? errA.message : String(errA);
+                        logger.error(`被动回复被拒且转主动也失败: 被动轮=${firstErr} / 主动轮=${secondErr}`);
+                        diagWrite('qqbot-send-diag', `[${new Date().toISOString()}] 转主动仍失败 target=${String(target.targetId ?? '').slice(0, 12)}… err=${secondErr}`);
+                        throw errA;
+                    }
+                }
+                // ── ② 纯主动(无 msgId) → 原有降级链: markdown → 纯文本 → c2c is_wakeup ──
+                {
                     // ⚠️ 清洗仅针对 markdown 语法字符; QQ at 标签必须原样保留——
                     // 实测(2026-09-06): 高亮 @ 用 `<@openid>`(无斜杠)或 `<qqbot-at-user id="openid" />`;
                     // 剥掉 '>' 会把标签弄残 → QQ 不渲染。这里先把两类 at 标签暂存, 清洗完再恢复。
@@ -290,7 +313,7 @@ export async function bootstrapGateway(ctx, agents, config, logger) {
                         try {
                             const r2 = (await bot.sendText(target, plain));
                             pushSent(target, r2?.id);
-                            logger.warn(`主动推送 markdown 被拒, 已降级纯文本发送: ${err instanceof Error ? err.message : String(err)}`);
+                            logger.warn(`主动推送 markdown 被拒, 已降级纯文本发送: ${firstErr}`);
                             return r2;
                         }
                         catch (err2) {
@@ -302,11 +325,11 @@ export async function bootstrapGateway(ctx, agents, config, logger) {
                                     return r3;
                                 }
                                 catch (err3) {
-                                    logger.error(`主动推送三通道全拒: md=${err instanceof Error ? err.message : String(err)} / text=${err2 instanceof Error ? err2.message : String(err2)} / wakeup=${err3 instanceof Error ? err3.message : String(err3)}`);
+                                    logger.error(`主动推送三通道全拒: md=${firstErr} / text=${err2 instanceof Error ? err2.message : String(err2)} / wakeup=${err3 instanceof Error ? err3.message : String(err3)}`);
                                     throw err3;
                                 }
                             }
-                            logger.error(`主动推送两通道被拒: md=${err instanceof Error ? err.message : String(err)} / text=${err2 instanceof Error ? err2.message : String(err2)}`);
+                            logger.error(`主动推送两通道被拒: md=${firstErr} / text=${err2 instanceof Error ? err2.message : String(err2)}`);
                             throw err2;
                         }
                     }
