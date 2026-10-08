@@ -4,7 +4,7 @@
 
 基于 [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) 的 QQ Bot IM 插件**增强 fork**：将 QQ 消息平台作为 dsh agent 的前端协议驱动，并加入表情包图库、富媒体收发、定时任务、多实例人格、好感度系统、可视化设置面板等能力。
 
-📦 仓库: [gcry13067381632-jpg/dsh-qqbot](https://github.com/gcry13067381632-jpg/dsh-qqbot)（fork 自 [tencent-connect/dsh-qqbot](https://github.com/tencent-connect/dsh-qqbot)；改动都在这一侧，升级/重装上游会被冲掉）
+📦 仓库: [zaofan-make/dsh-qqbot](https://github.com/zaofan-make/dsh-qqbot)（fork 自 [tencent-connect/dsh-qqbot](https://github.com/tencent-connect/dsh-qqbot)；改动都在这一侧，升级/重装上游会被冲掉）
 
 > ⭐ **用得顺手的话，麻烦点一下右上角的 Star** —— 它是这个项目"有人在用"的唯一可见信号，也是继续更新的动力。
 
@@ -124,7 +124,7 @@ npx @deepseek-ai/dsh plugin --profile web add @zaofan/dsh-qqbot
 
 > 尚未发布到 npm 前，请用下面的方式二。
 
-> ⚠️ **从 GitHub 直装（`github:gcry13067381632-jpg/dsh-qqbot`）需要编译产物 `dist/`，而仓库不提交 `dist`。**
+> ⚠️ **从 GitHub 直装（`github:zaofan-make/dsh-qqbot`）需要编译产物 `dist/`，而仓库不提交 `dist`。**
 > 包已声明 `prepare` 脚本，pnpm 安装时会自动编译；
 > 若你的包管理器没自动跑（或报 `failed to import` / 找不到 `dist/index.js`），
 > 手动在插件目录执行一次 `npm run build` 即可。**最省事的做法是用 npm 上的发布版**（`@zaofan/dsh-qqbot`）。
@@ -134,7 +134,7 @@ npx @deepseek-ai/dsh plugin --profile web add @zaofan/dsh-qqbot
 **Windows（一键脚本）**：
 
 ```powershell
-git clone https://github.com/gcry13067381632-jpg/dsh-qqbot.git
+git clone https://github.com/zaofan-make/dsh-qqbot.git
 cd dsh-qqbot
 .\install.ps1          # 自动 install/build → pack → add tarball → 输出重启指引
 ```
@@ -144,7 +144,7 @@ cd dsh-qqbot
 **macOS / Linux（手动）**：
 
 ```bash
-git clone https://github.com/gcry13067381632-jpg/dsh-qqbot.git
+git clone https://github.com/zaofan-make/dsh-qqbot.git
 cd dsh-qqbot
 npm install && npm run build
 pnpm pack --pack-destination /tmp
@@ -434,7 +434,7 @@ AI 侧的工具叫 **`qq_group_admin`**：
 
 ## 支持这个项目
 
-如果这个插件帮你省了 token、或者让你家的鲸鱼更活蹦乱跳 —— **给个 ⭐ Star** 就是最实在的支持；有 bug / 想要的功能，欢迎开 [Issue](https://github.com/gcry13067381632-jpg/dsh-qqbot/issues)。
+如果这个插件帮你省了 token、或者让你家的鲸鱼更活蹦乱跳 —— **给个 ⭐ Star** 就是最实在的支持；有 bug / 想要的功能，欢迎开 [Issue](https://github.com/zaofan-make/dsh-qqbot/issues)。
 
 ## License
 

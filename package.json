@@ -1,6 +1,6 @@
 {
   "name": "@zaofan/dsh-qqbot",
-  "version": "1.7.7",
+  "version": "1.7.8",
   "description": "QQ Bot IM channel plugin for deepseek-harness (dsh)",
   "type": "module",
   "main": "./entry.js",
@@ -36,11 +36,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/gcry13067381632-jpg/dsh-qqbot.git"
+    "url": "git+https://github.com/zaofan-make/dsh-qqbot.git"
   },
-  "homepage": "https://github.com/gcry13067381632-jpg/dsh-qqbot#readme",
+  "homepage": "https://github.com/zaofan-make/dsh-qqbot#readme",
   "bugs": {
-    "url": "https://github.com/gcry13067381632-jpg/dsh-qqbot/issues"
+    "url": "https://github.com/zaofan-make/dsh-qqbot/issues"
   },
   "keywords": [
     "deepseek-harness",

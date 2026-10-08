@@ -2,7 +2,7 @@
 
 An **enhanced fork** of the QQ Bot IM plugin for [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) (dsh): it drives the dsh agent loop with the QQ messaging platform as the frontend protocol, adding a local sticker library, rich media send/recall, scheduled tasks, multi-instance personas, and a visual settings panel.
 
-📦 Repo: [gcry13067381632-jpg/dsh-qqbot](https://github.com/gcry13067381632-jpg/dsh-qqbot) (forked from [tencent-connect/dsh-qqbot](https://github.com/tencent-connect/dsh-qqbot))
+📦 Repo: [zaofan-make/dsh-qqbot](https://github.com/zaofan-make/dsh-qqbot) (forked from [tencent-connect/dsh-qqbot](https://github.com/tencent-connect/dsh-qqbot))
 
 > ⭐ **If it works well for you, please star the repo** — it is the only visible signal that someone is using it, and it keeps the project going.
 
@@ -142,7 +142,7 @@ npx @deepseek-ai/dsh plugin --profile web add @zaofan/dsh-qqbot
 **Windows (one-click script)**:
 
 ```powershell
-git clone https://github.com/gcry13067381632-jpg/dsh-qqbot.git
+git clone https://github.com/zaofan-make/dsh-qqbot.git
 cd dsh-qqbot
 .\install.ps1          # npm install/build -> pack -> add tarball -> prints restart steps
 ```
@@ -152,7 +152,7 @@ cd dsh-qqbot
 **macOS / Linux (manual)**:
 
 ```bash
-git clone https://github.com/gcry13067381632-jpg/dsh-qqbot.git
+git clone https://github.com/zaofan-make/dsh-qqbot.git
 cd dsh-qqbot
 npm install && npm run build
 pnpm pack --pack-destination /tmp
@@ -463,7 +463,7 @@ npx @deepseek-ai/dsh web --patch /path/to/dsh-qqbot/cordis.dev.yml
 
 ## Support
 
-If this plugin saved you some tokens — or made your QQ bot feel alive — a **⭐ Star** is the most concrete way to say thanks. Bugs and feature requests: [Issues](https://github.com/gcry13067381632-jpg/dsh-qqbot/issues).
+If this plugin saved you some tokens — or made your QQ bot feel alive — a **⭐ Star** is the most concrete way to say thanks. Bugs and feature requests: [Issues](https://github.com/zaofan-make/dsh-qqbot/issues).
 
 ## License
 

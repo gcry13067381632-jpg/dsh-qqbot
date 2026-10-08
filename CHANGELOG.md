@@ -1,3 +1,42 @@
+## [1.7.8] - 2026-10-09
+
+> 两个真 bug 的修复（一个会让**宿主整个退出**，一个会让**某个会话彻底发不出消息**）
+> ＋ 一次社区贡献合并 ＋ 仓库迁移后的链接更新。
+
+### 🐛 修复
+
+- **🔴 群里点一下审批卡片，整个 dsh 进程退出**
+  （症状：点「允许」后终端报 `[dsh-auto-memory] unhandledRejection guard #1` → `process exit code=1`）：
+  `qq-approval` 的结算回执写成 `void this.sender.sendMarkdown(...)` 配**同步** `try/catch` ——
+  同步 try **抓不到 Promise 的拒绝**。而这条回执属于"主动消息"，QQ 常回
+  `主动消息失败，无权限`（超出互动窗口 / 未开通主动推送），于是 rejection 无人接管，
+  被宿主的 unhandledRejection 守卫判为致命 ⇒ 直接退出进程。
+  现给 Promise 挂 `.catch`（发不出去只记一行 warn）。已全项目扫过其余"发射即忘"的发送调用，仅此一处漏网。
+- **🔴 崩溃重启后"那个会话再也发不出消息"（要新开会话才恢复）**：
+  `passive` 模式下所有出站都带"被动回复 ID"（msgId）；msgId 一旦失效
+  （过期 / 被动回复配额用尽 / 崩溃重启残留的陈旧 id），原实现**直接抛错** ⇒
+  出站链路只记一行日志 ⇒ 消息静默丢失 ⇒ 整个会话像哑了。
+  现在会自动**去掉 msgId 转主动重发一次**；顺带把**所有出站失败落盘**到
+  `~/.dsh/qqbot-send-diag.log`，以后遇到这类问题可以直接查日志、不用猜。
+- **扩展工具点按钮后"通知 AI"其实没送到**（回执却宣称已通知）：
+  `bootstrap` 为交互链路组装 caps 时**漏传 `agent`**（`caps.appendWake` 依赖 `agent.followup`）
+  ⇒ 静默 `return false`。现补 `manager.findByPeer(scope, peerId)?.agent`；
+  `examples/ext-tools/vote.mjs` 的回执也改为**据实**（失败就明说"通知 AI 没成功"）。
+
+### 🧩 社区贡献
+
+- 合并 **@fqscfqj** 的 #9：`settings-host.js` 的 `dedupeYamlKeys()` 改为**按映射作用域**判重。
+  原实现按 `(条目 id, 缩进长度, 键名)` 判重，而"同一缩进"**不等于**"同一个映射"——
+  两个并列子映射只要共用键名（权限预设的 `sandbox`/`approval`、cline-pass 的 `perModel`），
+  前一个的键就会被整段删掉；删完 YAML 仍合法、dsh 照常启动，但那行配置在宿主各插件自己的
+  schema 校验里失败、**被静默跳过**（权限预设不注册、面板 404），触发点是"设置页保存一次账号"。
+  现按父键路径判重（与 YAML 自身 `duplicated mapping key` 语义一致），并附 159 行回归测试。感谢！
+
+### 🔧 其它
+
+- **仓库迁移**：用户名与仓库地址变更后，所有内置链接（`package.json` / `README` / `README_EN`）
+  已更新为新地址；旧地址由 GitHub 自动重定向一段时间。
+
 ## [1.7.7] - 2026-10-08
 
 > 1.7.6 的一个「假成功」修补：扩展工具按钮点下去之后，**通知 AI 其实没送达**。
