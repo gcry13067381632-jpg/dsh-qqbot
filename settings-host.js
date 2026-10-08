@@ -253,23 +253,56 @@ function mergeDeepOne(cur, patch) {
   return out;
 }
 
-/** 按 (条目, 缩进层级, 键名) 去掉重复键，保留**最后一次**出现（YAML 语义）。
+/** 按 (条目, **所属映射**, 键名) 去掉重复键，保留**最后一次**出现（YAML 语义）。
  *  2026-09-24 兜底：写 patch 前必跑。重复键会让宿主的 YAML 严格解析直接抛错
- *  （YAMLException: duplicated mapping key）→ dsh 完全启动不了。 */
-function dedupeYamlKeys(text) {
+ *  （YAMLException: duplicated mapping key）→ dsh 完全启动不了。
+ *
+ *  ⚠️ 2026-10-09 修：旧签名是 `条目id + 缩进长度 + 键名`，而"同一 `- id:` 块内的同一
+ *  缩进"**不等于**"同一个映射"——并列的两个子映射只要共用键名，前一个的键就会被整段
+ *  删掉。实测 profile patch 里的两个典型形状都会被写坏：
+ *    · `presets.read-only` / `presets.workspace-write`（键名 sandbox/approval 相同）
+ *      → 前两个只剩空值，只有最后一个 danger-full-access 还留着键；
+ *    · `perModel` 下两个模型的 pin（键名 upstreams/exclude/pinMode 相同）
+ *      → 第一个模型的键被删，留下一个裸列表。
+ *  后果不是"启动不了"，而是更隐蔽的**该行配置校验失败、被宿主静默跳过**：
+ *  例如 `@deepseek-ai/dsh-permission-presets` 的 presets 缺必填 sandbox ⇒ 权限预设
+ *  服务不注册（面板报 permissionPresets 不可用），`dsh-cline-pass` 的 perModel 期望对象
+ *  却拿到列表 ⇒ 面板路由 404。设置页每保存一次账号就复现一次。
+ *
+ *  现在的签名带上**父键路径**（缩进栈）：只有真正同一个映射里的同名键才算重复，
+ *  与 YAML 的 `duplicated mapping key` 判定一致。同时修两处漏判：
+ *    · 键名不再限定 `[A-Za-z0-9_-]` —— `cline-pass/deepseek-v4.1-flash:` 这种含 `/` `.`
+ *      的键原来被当成"非键行"，它下面的键就失去了父级，仍会被误删；
+ *    · 块标量（`section: |`）的正文按缩进跳过，不会被当成键参与判重。 */
+export function dedupeYamlKeys(text) {
   const lines = String(text).split(/\r?\n/);
-  const scope = ['']; const seen = new Map(); const keep = new Array(lines.length).fill(true);
+  const seen = new Map(); const keep = new Array(lines.length).fill(true);
   let cur = '';
+  const stack = [];           // 打开的父键路径: [{ indent, key }]
+  let blockIndent = -1;       // ≥0 = 正在跳过某个块标量的正文
   for (let i = 0; i < lines.length; i++) {
     const l = lines[i];
-    if (!l.trim() || l.trimStart().startsWith('#')) continue;
+    const blank = l.trim() === '';
+    const indent = blank ? -1 : l.length - l.trimStart().length;
+    // 块标量正文: 比键更深的行全部跳过, 直到缩进回到键这一层。
+    if (blockIndent >= 0) {
+      if (blank || indent > blockIndent) continue;
+      blockIndent = -1;
+    }
+    if (blank || l.trimStart().startsWith('#')) continue;
     const mId = /^(\s*)-\s*id:\s*(\S+)\s*$/.exec(l);
-    if (mId) { cur = mId[2]; seen.clear(); continue; }
-    const mK = /^(\s*)([A-Za-z0-9_-]+):/.exec(l);
+    if (mId) { cur = mId[2]; seen.clear(); stack.length = 0; continue; }
+    const mK = /^(\s*)(?!-)([^\s:][^:]*?):(\s|$)/.exec(l);
     if (!mK) continue;
-    const sig = cur + '|' + mK[1].length + '|' + mK[2];
+    const keyIndent = mK[1].length;
+    const key = mK[2];
+    if (/^[|>]/.test(l.slice(mK[0].length).trim())) blockIndent = keyIndent;
+    while (stack.length && stack[stack.length - 1].indent >= keyIndent) stack.pop();
+    const parent = stack.map((f) => f.key).join('/');
+    const sig = cur + '|' + parent + '|' + key;
     if (seen.has(sig)) keep[seen.get(sig)] = false;
     seen.set(sig, i);
+    stack.push({ indent: keyIndent, key });
   }
   return lines.filter((_, i) => keep[i]).join('\n');
 }
