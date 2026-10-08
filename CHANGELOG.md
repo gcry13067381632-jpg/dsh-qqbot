@@ -1,3 +1,43 @@
+## [1.7.6] - 2026-10-08
+
+> 一个能力补齐（**扩展工具也能收按钮回调**）+ 两个"关不干净 / 只改一半"的老 bug，
+> 外加一个能直接跑的**群投票示例工具**。
+
+### ✨ 新功能
+
+- **扩展工具也能收「按钮回调」了**（`ext:` 前缀 + 卡片注册表）：
+  以前扩展工具发的 `type=1` 按钮**点了没人认**（事件落回兜底，也拿不到点击者身份）。
+  现在三步即可：① 发卡前 `env.registerInteractionCard({ cardId, buttonIds, expireAt })` 登记；
+  ② 按钮 `data` 写 `ext:<工具名>:<卡id>:<按钮id>`（`action.type=1`）；
+  ③ 模块导出 `onInteraction(ctx, info)` —— 点击者身份在 `ctx.performer = { openid, isOwner }`，
+  返回非空字符串即作为回执发给点击者。注册表落 `{dataRoot}/.qqbot/ext-tool-cards.json`
+  （原子写、过期自动清、**写失败不影响发卡**）。
+  新增 `src/features/ext-tool-cards.ts` 与 `src/features/ext-tool-interaction.ts`；
+  `ExtCapabilities` 增 `registerInteractionCard`；交互分发串在 botplay 与裸卡兜底之间插入一条。
+- **示例工具 `examples/ext-tools/vote.mjs`（群投票，随包分发）**：
+  可多选（同一按钮每人限一次）、中途加选项（补发新卡、旧卡仍可用）、多投票并存（V1/V2…）、
+  卡片最后一行自带「✋ 结束投票」按钮、结束结算（群里公示 + 唤醒通知 AI）、`minutes` 定时结束、
+  `action=status` 查票数；中途回执只回一行，完整票数只在结束时给。
+
+### 🐛 修复
+
+- **审批白名单只生效一半**（症状：主人点卡片 / 发 `/approve` 都被回"你无权处理这项权限申请"）：
+  `groupAdmin.owners` 此前只进了"发卡时的可点名单"，而两处真正裁决（按钮回调、`/approve`）
+  仍只认"发起者本人" ⇒ 界面上点得动、服务端拒绝。现统一走
+  `allowedDeciders() = 发起者 ∪ owners`，并各加一行 warn 诊断日志（presser/sender 尾号 + 名单）。
+- **三个上下文工具"没开也有"**：`channel-tools` 的 apply 里曾写死 `syncContextTools(ctx, true)`，
+  把 `context_compact / context_drop / context_memo` **无条件注册进插件作用域**，
+  而真正按会话开关裁决的 pre-step 作用在 **agent 作用域** ⇒ "关则注销"够不到 ⇒ 未开启的会话也能调用。
+  现改为 `false`（完全交给 pre-step 按会话裁决）。
+- **指令型按钮拿不到点击者**：`runButtonCommand()` 的 `senderId` 原为**写死空串**，
+  签到/按人统计这类场景做不了；现补点击者 openid（`CardCommandExecutor` 加可选第三参，card-callback 内透传）。
+
+### ✅ 验证
+
+- `tsc` 零错误 + `check-package` 通过；
+- 线上实测：审批卡片按钮与 `/approve` 可放行、未开无上下文模式的会话不再出现那三个工具、
+  投票示例"发卡 → 点击（多选）→ 结束按钮结算 → AI 收到播报"全链路跑通。
+
 ## [1.7.5] - 2026-10-07
 
 > 两个"让聊天更顺"的改动：**忙时消息可选插话**（不再一律排队等她回完）、

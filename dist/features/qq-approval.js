@@ -15,6 +15,11 @@ export function parseApprovalCommand(content) {
 }
 /** 面板/卡片按钮动作负载: {v:'approval', code, act:'allow'|'deny'} */
 const BTN_PREFIX = 'ap:';
+/** openid 只打印尾几位（日志里没必要留完整 id，也方便肉眼比对） */
+function tail(s, n = 8) {
+    const v = String(s ?? '');
+    return v.length > n ? '…' + v.slice(-n) : (v || '(空)');
+}
 /** 构造审批卡片按钮 keyboard(仅主人可点) */
 export function approvalKeyboard(code) {
     const btn = (label, act, style) => ({
@@ -157,6 +162,32 @@ export class QqApprovalController {
         return outcome;
     }
     /**
+     * 「谁有权批这次审批」= **发起者本人 + 主人白名单**(`config.groupAdmin.owners`)。
+     *
+     * ⚠️ 2026-10-08 修（主人报"我为什么没权限点击"）：这个口径以前**只在"发卡片"那一步**用了
+     *   （`request` 里的 ownerIds → `specify_user_ids`），而真正裁决的两处
+     *   （`handleInbound` 的 /approve、`handleInteraction` 的按钮回调）却只认 `record.senderId`
+     *   ⇒ 主人白名单**在 QQ 界面上能点到按钮、点下去却被拒**，体验上就是"没权限"。
+     *   现在两条路共用**同一个口径**，⛔ 别再各写一份 —— 这是本项目第 N 次踩
+     *   "同一个判断散落多处、改一半"的坑。
+     * 私聊(c2c)：发卡时不设限制，这里也就自然放宽（本来就只有双方）。
+     */
+    allowedDeciders(rec) {
+        const out = new Set();
+        const sid = String(rec?.senderId ?? '').trim();
+        if (sid)
+            out.add(sid);
+        try {
+            for (const x of this.manager.adminOwners()) {
+                const s = String(x ?? '').trim();
+                if (s)
+                    out.add(s);
+            }
+        }
+        catch { /* ignore */ }
+        return out;
+    }
+    /**
      * 入站拦截(挂在 bot.on('message') 最前): 命中 /approve|/deny CODE 则结算并消费消息。
      * @returns true = 消息已被审批逻辑消费(调用方不要再派发给 agent)
      */
@@ -172,13 +203,17 @@ export class QqApprovalController {
             catch { /* ignore */ }
             return true;
         }
-        // 双校验: 必须是"任务发起者本人"且"同一会话"(群聊里其他成员看到 CODE 也不能批)
+        // 双校验: "发起者本人 **或 主人白名单**" 且 "同一会话"(群聊里其他人看到 CODE 也不能批)
+        // ⚠️ 2026-10-08 修：白名单以前只进了"发卡片时的可点名单"，这里却只认 rec.senderId
+        //   ⇒ 主人能发得出 /approve 却被回"你无权处理"。现统一走 allowedDeciders(rec)。
         const rec = pending.record;
-        const sameSender = msg.senderId === rec.senderId;
+        const allowed = this.allowedDeciders(rec);
+        const sameSender = allowed.has(String(msg.senderId ?? ''));
         const samePeer = rec.scope === 'c2c'
             ? msg.kind === 'c2c' && msg.senderId === rec.peerId
             : msg.kind === 'group' && msg.groupOpenid === rec.peerId;
         if (!sameSender || !samePeer) {
+            this.logger.warn?.(`[qq-approval] /approve 被拒(非授权者): sender=${tail(msg.senderId)} allowed=[${[...allowed].map((x) => tail(x)).join(', ')}] scope=${String(rec.scope)} peer=${tail(rec.peerId)} samePeer=${String(samePeer)} code=${command.code}`);
             try {
                 await this.sender.sendMarkdown(replyTarget, '你无权处理这项权限申请。');
             }
@@ -208,9 +243,12 @@ export class QqApprovalController {
             catch { /* ignore */ }
             return true;
         }
-        // 校验发起者本人: c2c 看 user_openid; group 看 group_member_openid
-        const presserId = e.group_member_openid ?? e.user_openid ?? '';
-        if (!presserId || presserId !== pending.record.senderId) {
+        // 校验: "发起者本人 **或 主人白名单**"(c2c 看 user_openid; group 看 group_member_openid)
+        //   —— 与发卡片时的可点名单同一口径（2026-10-08 修，详见 allowedDeciders 注释）。
+        const presserId = String(e.group_member_openid ?? e.user_openid ?? '');
+        const allowed = this.allowedDeciders(pending.record);
+        if (!presserId || !allowed.has(presserId)) {
+            this.logger.warn?.(`[qq-approval] 按钮被拒(非授权点击者): presser=${tail(presserId)} allowed=[${[...allowed].map((x) => tail(x)).join(', ')}] code=${parsed.code}`);
             try {
                 await this.sender.sendMarkdown(replyTarget, '你无权处理这项权限申请。');
             }

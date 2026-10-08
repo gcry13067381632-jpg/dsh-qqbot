@@ -39,6 +39,7 @@
  * 这里只做「三套共有」的那一层，实现上仍是同一批底层原语（sender / session / token）。
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { registerExtToolCard } from './ext-tool-cards.js';
 import { dirname, join } from 'node:path';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { canSilentlyAppend } from '../session/surface-guard.js';
@@ -225,6 +226,37 @@ export function makeExtCaps(deps) {
                     return false;
                 }
             },
+        },
+        // ── 回调按钮卡片登记（2026-10-08 新增）──────────────────────────
+        //   工具发卡时调一下，把 cardId / buttonIds 登记进
+        //   `{dataRoot}/.qqbot/ext-tool-cards.json` —— 点击事件到达时插件靠它认领
+        //   （分发链见 features/ext-tool-interaction.ts）。
+        //   ⚠️ 纯旁路：登记失败**不影响发卡**（卡照发，只是按钮点了落回原兜底、最终只 ack）。
+        registerInteractionCard: (input) => {
+            try {
+                if (!deps.dataRoot)
+                    return false;
+                const cardId = String(input?.cardId ?? '').trim();
+                const buttonIds = (Array.isArray(input?.buttonIds) ? input.buttonIds : [])
+                    .map((x) => String(x ?? '').trim())
+                    .filter(Boolean);
+                if (!cardId || buttonIds.length === 0)
+                    return false;
+                const expireAt = Number(input?.expireAt);
+                const ttlMs = Number.isFinite(expireAt) && expireAt > Date.now() ? expireAt - Date.now() : undefined;
+                return registerExtToolCard(deps.dataRoot, {
+                    toolName: self,
+                    cardId,
+                    buttonIds,
+                    scope: String(deps.scope ?? ''),
+                    targetId: String(deps.peerId ?? ''),
+                    ...(ttlMs === undefined ? {} : { ttlMs }),
+                });
+            }
+            catch (err) {
+                warn('registerInteractionCard', err);
+                return false;
+            }
         },
         // ── 上下文（★ appendSilent 必须过表面守卫）───────────────────────
         appendSilent: async (text) => {

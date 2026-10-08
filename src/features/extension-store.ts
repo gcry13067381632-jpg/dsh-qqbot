@@ -147,6 +147,27 @@ export interface ExtensionToolDef {
   inputSchema: Record<string, unknown>;
   /** 执行体: 参数 schema 由调用方校验, run 直接收已校验 args + env */
   run: (args: Record<string, unknown>, env: Record<string, unknown>) => Promise<unknown> | unknown;
+  /**
+   * 按钮回调钩子（2026-10-08 新增，**可选导出**）：本工具发出去的卡片按钮被点击时，
+   * 插件把事件派发到这里（分发链见 features/ext-tool-interaction.ts，注册表见 ext-tool-cards.ts）。
+   *
+   * 契约：
+   * ```js
+   * export default {
+   *   name: 'vote', run() {…},
+   *   async onInteraction(ctx, info) {
+   *     // ctx.performer: { openid, name, isOwner }  ← 点击者身份
+   *     // info: { cardId, buttonId, buttonLabel, clickedBefore, event }
+   *     return '已记票 ✅';   // 非空字符串 → 作为回执发给点击者
+   *   },
+   * };
+   * ```
+   * 不导出它 = 不接收交互（点击落到原有兜底，最终只 ack）。
+   */
+  onInteraction?: (
+    ctx: Record<string, unknown>,
+    info: { cardId: string; buttonId: string; buttonLabel: string; clickedBefore: boolean; event: unknown },
+  ) => Promise<unknown> | unknown;
 }
 
 function normalizeToolModule(mod: unknown, file: string, logger: Logger): ExtensionToolDef | null {
@@ -158,18 +179,22 @@ function normalizeToolModule(mod: unknown, file: string, logger: Logger): Extens
       inputSchema?: Record<string, unknown>;
       parameters?: Record<string, unknown>;
       run?: (args: Record<string, unknown>, env: Record<string, unknown>) => unknown;
+      onInteraction?: ExtensionToolDef['onInteraction'];
     };
     const name = String(obj?.name ?? '').trim();
     if (!name || typeof obj?.run !== 'function') {
       logger.warn(`[ext-tool] ${file}: 缺 name 或 run, 跳过`);
       return null;
     }
+    const onInteraction = typeof obj?.onInteraction === 'function' ? obj.onInteraction : undefined;
     return {
       file,
       name,
       description: String(obj.description ?? '用户扩展工具'),
       inputSchema: obj.inputSchema ?? obj.parameters ?? {},
       run: obj.run,
+      // 有才挂：让"不接收交互的工具"与老版本行为完全一致
+      ...(onInteraction ? { onInteraction } : {}),
     };
   } catch (err) {
     logger.warn(`[ext-tool] ${file}: 归一化失败 ${err instanceof Error ? err.message : String(err)}`);

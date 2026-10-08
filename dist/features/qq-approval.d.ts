@@ -77,6 +77,18 @@ export declare class QqApprovalController {
     /** 宿主 approval/request 处理器: 定位发起者会话并发 QQ 审批提示 */
     request(req: ApprovalRequestLike, next: () => Promise<ApprovalOutcome>): Promise<ApprovalOutcome>;
     /**
+     * 「谁有权批这次审批」= **发起者本人 + 主人白名单**(`config.groupAdmin.owners`)。
+     *
+     * ⚠️ 2026-10-08 修（主人报"我为什么没权限点击"）：这个口径以前**只在"发卡片"那一步**用了
+     *   （`request` 里的 ownerIds → `specify_user_ids`），而真正裁决的两处
+     *   （`handleInbound` 的 /approve、`handleInteraction` 的按钮回调）却只认 `record.senderId`
+     *   ⇒ 主人白名单**在 QQ 界面上能点到按钮、点下去却被拒**，体验上就是"没权限"。
+     *   现在两条路共用**同一个口径**，⛔ 别再各写一份 —— 这是本项目第 N 次踩
+     *   "同一个判断散落多处、改一半"的坑。
+     * 私聊(c2c)：发卡时不设限制，这里也就自然放宽（本来就只有双方）。
+     */
+    private allowedDeciders;
+    /**
      * 入站拦截(挂在 bot.on('message') 最前): 命中 /approve|/deny CODE 则结算并消费消息。
      * @returns true = 消息已被审批逻辑消费(调用方不要再派发给 agent)
      */

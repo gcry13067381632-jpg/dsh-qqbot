@@ -2203,11 +2203,19 @@ export async function apply(ctx) {
     });
     // 逐个注册并记录结果(便于线上定位是哪个工具失败)
     // 供 syncContextTools 动态挂载用（apply 早于 pre-step，填好即可）
-    // ★ 自动热刷（2026-10-02）：apply 早于任何回合 ⇒ 在这里注册一次，第一回合的工具表里就有，
-    //   不必依赖 pre-step（那只在回合内生效，会滞后一回合 —— 表现为"工具不存在，得 tools_reload"）。
-    //   之后 pre-step 仍按会话开关刷新：开则保持、关则注销。
+    // ⚠️ 2026-10-07 修（主人实测："明明没开无上下文模式，也冒出 context_compact / context_drop /
+    //   context_memo 三个工具"）：
+    //   这里原来写死 `syncContextTools(ctx, true)` ⇒ 把三个上下文工具**无条件**注册进了**插件作用域**；
+    //   而真正按会话开关裁决的是 pre-step 那次（作用在 **agent 作用域**）—— **两次是不同对象**，
+    //   所以"开则保持、关则注销"压根够不到 apply 这一份 ⇒ **没开的会话也能调用**（与设计
+    //   "只在「无上下文模式+智能判断」开启时出现"冲突）。
+    //   现在传 false：插件作用域不再预注册这三个工具（②段的 QQ 群管理工具照旧挂，语义不变），
+    //   三者完全交给 pre-step 按会话裁决 —— 开了的会话照挂，没开的会话真的没有。
+    //   ⛔ 别再改回 true：那等于给所有会话开后门。
+    //   代价：插件作用域不再"提前"备一份，开启的会话若在极早期回合看不到工具，等下一个 step
+    //   （pre-step 每个 step 都跑）即出现 —— 比"人人都有"划算得多。
     try {
-        syncContextTools(ctx, true);
+        syncContextTools(ctx, false);
     }
     catch { /* ignore */ }
     const toolDefs = [

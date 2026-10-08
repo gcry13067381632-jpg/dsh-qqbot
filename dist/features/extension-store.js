@@ -125,12 +125,15 @@ function normalizeToolModule(mod, file, logger) {
             logger.warn(`[ext-tool] ${file}: 缺 name 或 run, 跳过`);
             return null;
         }
+        const onInteraction = typeof obj?.onInteraction === 'function' ? obj.onInteraction : undefined;
         return {
             file,
             name,
             description: String(obj.description ?? '用户扩展工具'),
             inputSchema: obj.inputSchema ?? obj.parameters ?? {},
             run: obj.run,
+            // 有才挂：让"不接收交互的工具"与老版本行为完全一致
+            ...(onInteraction ? { onInteraction } : {}),
         };
     }
     catch (err) {

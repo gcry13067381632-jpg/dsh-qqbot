@@ -39,6 +39,7 @@
  * 这里只做「三套共有」的那一层，实现上仍是同一批底层原语（sender / session / token）。
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { registerExtToolCard } from './ext-tool-cards.js';
 import { dirname, join } from 'node:path';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import type { Logger } from '../types.js';
@@ -125,6 +126,28 @@ export interface ExtCapabilities {
     save(value: unknown): boolean;
     path: string;
   };
+  /**
+   * ★ 登记本工具发出的「回调按钮卡片」（2026-10-08 新增，见 features/ext-tool-cards.ts）。
+   *
+   * 为什么必须登记：按钮 data 形如 `ext:<工具名>:<卡id>:<按钮id>`，插件收到点击后
+   * **要能在注册表里查到这张卡** 才会把事件派发给本工具的 `onInteraction`。
+   * 不登记 = 卡照发，但按钮点了没人认（落回原兜底，最终只 ack）。
+   *
+   * ```js
+   * const cardId = 'v' + Date.now().toString(36);
+   * env.registerInteractionCard({ cardId, buttonIds: ['yes', 'no'], expireAt: Date.now() + 86400_000 });
+   * await env.markdownCard('要投「A」吗？', { content: { rows: [ { buttons: [
+   *   { id: 'b1', render_data: { label: '投 A', visited_label: '已投 A', style: 1 },
+   *     action: { type: 1, permission: { type: 2 },
+   *               data: 'ext:vote:' + cardId + ':yes' } } ] } ] } });
+   * ```
+   *
+   * @param input.cardId 卡 id（必须与按钮 data 里的第二段**完全一致**）
+   * @param input.buttonIds 这张卡上所有回调按钮的 id（漏一个 → 那个按钮点了没人认）
+   * @param input.expireAt 可选绝对过期时间(ms)；缺省 7 天（投票/签到建议 1~3 天）
+   * @returns 是否登记成功；**失败也不影响发卡**（纯旁路）
+   */
+  registerInteractionCard(input: { cardId: string; buttonIds: string[]; expireAt?: number }): boolean;
   appendSilent(text: string): Promise<boolean>;
   appendWake(text: string): Promise<boolean>;
   canAppendSilent(): boolean;
@@ -320,6 +343,35 @@ export function makeExtCaps(deps: ExtCapsDeps): ExtCapabilities {
           return true;
         } catch (err) { warn('store.save', err); return false; }
       },
+    },
+
+    // ── 回调按钮卡片登记（2026-10-08 新增）──────────────────────────
+    //   工具发卡时调一下，把 cardId / buttonIds 登记进
+    //   `{dataRoot}/.qqbot/ext-tool-cards.json` —— 点击事件到达时插件靠它认领
+    //   （分发链见 features/ext-tool-interaction.ts）。
+    //   ⚠️ 纯旁路：登记失败**不影响发卡**（卡照发，只是按钮点了落回原兜底、最终只 ack）。
+    registerInteractionCard: (input) => {
+      try {
+        if (!deps.dataRoot) return false;
+        const cardId = String(input?.cardId ?? '').trim();
+        const buttonIds = (Array.isArray(input?.buttonIds) ? input.buttonIds : [])
+          .map((x) => String(x ?? '').trim())
+          .filter(Boolean);
+        if (!cardId || buttonIds.length === 0) return false;
+        const expireAt = Number(input?.expireAt);
+        const ttlMs = Number.isFinite(expireAt) && expireAt > Date.now() ? expireAt - Date.now() : undefined;
+        return registerExtToolCard(deps.dataRoot, {
+          toolName: self,
+          cardId,
+          buttonIds,
+          scope: String(deps.scope ?? ''),
+          targetId: String(deps.peerId ?? ''),
+          ...(ttlMs === undefined ? {} : { ttlMs }),
+        });
+      } catch (err) {
+        warn('registerInteractionCard', err);
+        return false;
+      }
     },
 
     // ── 上下文（★ appendSilent 必须过表面守卫）───────────────────────

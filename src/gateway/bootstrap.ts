@@ -33,6 +33,8 @@ import { handleGroupMemberAddEvent, handleGroupAddRobotEvent } from '../features
 import { registerSessionManager, setBotOnline } from '../features/session-registry.js';
 import { BotplayController, registerBotplayController, setBotplayTriggerImpl, setBotplayCatalogImpl } from '../features/botplay.js';
 import { createCardCallbackController } from '../features/card-callback.js';
+import { createExtToolInteractionController } from '../features/ext-tool-interaction.js';
+import { makeExtCaps } from '../features/ext-capabilities.js';
 import { readBotplayEvents } from '../features/botplay-store.js';
 import { PresetSwitcherController, setPresetCardImpl } from '../features/preset-switcher.js';
 import { buildCommandList } from '../commands/index.js';
@@ -76,6 +78,8 @@ export async function bootstrapGateway(
   let botplayController: BotplayController | undefined;
   /** 自定义卡片(📝 卡片编辑器)按钮回调兜底处理器; 见 features/card-callback.ts */
   let cardCallbackController: ReturnType<typeof createCardCallbackController> | undefined;
+  // 扩展工具按钮回调(2026-10-08): data 前缀 `ext:` → 派发给该工具的 onInteraction
+  let extToolInteractionController: ReturnType<typeof createExtToolInteractionController> | undefined;
 
   // ── 表情包图库单例预初始化(防目录分裂) ──
   // ⚠️ 单例时序坑：谁先 getStickerStore 谁定路径。必须在启动早期按数据根
@@ -510,12 +514,15 @@ export async function bootstrapGateway(
   // 模拟一个最小命令 ctx(command 名称/空参 + 消息壳), 返回 handler 结果文本。
   // ⚠️ 2026-09-10: 抽成具名函数 —— botplay 卡片(bp:) 与「📝 卡片」编辑器发的自定义卡(bpk:)
   //    共用同一条命令执行链路(见 features/card-callback.ts)。
-  const runButtonCommand = async (cmdName: string, target: ReplyTarget): Promise<string> => {
+  // ⚠️ 2026-10-08 修：`senderId` 原为**写死空串** ⇒ 指令型按钮执行时拿不到"谁点的"
+  //    （签到、按人统计这类场景全部做不了）。交互事件里本来就有点击者 openid
+  //    （`group_member_openid` / `user_openid`），这里补成可选第三参 `actorOpenid`。
+  const runButtonCommand = async (cmdName: string, target: ReplyTarget, actorOpenid?: string): Promise<string> => {
     const cmdList = buildCommandList({ manager, config });
     const cmd = cmdList.find((c) => (Array.isArray(c.name) ? c.name : [c.name]).map(String).includes(cmdName));
     if (!cmd) return `未知指令「${cmdName}」(指令型按钮可用的: ${cmdList.filter((c) => !(c as { hidden?: boolean }).hidden).map((c) => (Array.isArray(c.name) ? c.name[0] : c.name)).join(', ')})`;
     const fakeCtx = {
-      message: { kind: target.scope === 'group' ? 'group' : 'c2c', senderId: '', groupOpenid: target.scope === 'group' ? target.targetId : undefined },
+      message: { kind: target.scope === 'group' ? 'group' : 'c2c', senderId: String(actorOpenid ?? ''), groupOpenid: target.scope === 'group' ? target.targetId : undefined },
       replyTarget: target,
       command: { name: cmdName, args: [], raw: '' },
       // 部分命令(如 /bot-help)直接经 cmdCtx.bot.sendMarkdown 分段发消息 → 桥到真实 sender
@@ -537,8 +544,43 @@ export async function bootstrapGateway(
   cardCallbackController = createCardCallbackController({
     dataRoot: dataRootOf(config),
     sendText: async (target, text) => { await sender.sendMarkdown((target as Parameters<typeof sender.sendMarkdown>[0]) || target, text); },
-    commandExecutor: (cmdName, target) => runButtonCommand(cmdName, target as ReplyTarget),
+    commandExecutor: (cmdName, target, actorOpenid) => runButtonCommand(cmdName, target as ReplyTarget, actorOpenid),
     logger,
+  });
+
+  // ── 扩展工具按钮回调（2026-10-08 新增）──────────────────────────────
+  //   让 `{dataRoot}/.qqbot-extensions/tools/*.mjs` 发出的
+  //   `ext:<工具名>:<卡id>:<按钮id>` 回调按钮，能被派发给该工具的 `onInteraction(ctx, info)`
+  //   （卡片注册表 features/ext-tool-cards.ts；工具契约 extension-store.ts 的 ExtensionToolDef）。
+  //   ctx 用 makeExtCaps **现场组装** —— 保证"点按钮时拿到的能力"与"run() 时拿到的能力"同一套。
+  extToolInteractionController = createExtToolInteractionController({
+    dataRoot: dataRootOf(config),
+    logger,
+    makeCtx: ({ toolName, replyTarget, actor, scope, peerId, clickedBefore }) => {
+      const owners = Array.isArray(config.groupAdmin?.owners) ? config.groupAdmin.owners.map(String) : [];
+      const caps = makeExtCaps({
+        dataRoot: dataRootOf(config),
+        logger,
+        appId: String(config.appId ?? ''),
+        appSecret: String(config.appSecret ?? ''),
+        sender: sender as never,
+        replyTarget,
+        scope,
+        peerId,
+        actorOpenid: actor.openid,
+        selfName: toolName,
+        owners,
+        kind: 'tools',
+      }) as unknown as Record<string, unknown>;
+      // 点击者身份（与 botplay 同口径：owners 白名单判 isOwner）
+      // name 暂留空（事件里只有 openid）；需要昵称的模块可自行查群成员台账
+      caps['performer'] = { openid: actor.openid, name: '', isOwner: !!actor.openid && owners.includes(actor.openid) };
+      caps['clickedBefore'] = clickedBefore; // 内存态提示；权威判重请用 caps.store 落盘
+      return caps;
+    },
+    sendReceipt: async (target, text) => {
+      try { await sender.sendMarkdown((target as Parameters<typeof sender.sendMarkdown>[0]) || target, text); } catch { /* ignore */ }
+    },
   });
   logger.info('[im-qqbot] botplay 互动事件接线就绪(/botplay 触发发卡, dock🎮装配, 保存即热更; 指令型按钮已接命令层)');
 
@@ -563,6 +605,8 @@ export async function bootstrapGateway(
         if (!consumed && approvalController) consumed = await approvalController.handleInteraction(ev, target);
         if (!consumed && questionController) consumed = await questionController.handleInteraction(ev, target);
         if (!consumed && botplayController) consumed = await botplayController.handleInteraction(ev, target);
+        // 扩展工具按钮(2026-10-08): data=ext:<工具名>:<卡id>:<按钮id> → 派发给该工具的 onInteraction
+        if (!consumed && extToolInteractionController) consumed = await extToolInteractionController.handleInteraction(ev, target);
         // 自定义卡片(📝 卡片编辑器发的裸卡, data=bpk:<cardId>:<btnId>)兜底:
         // 查 {dataRoot}/.qqbot/card-callbacks.json → 回文本 / 执行命令 / 跳转提示
         if (!consumed && cardCallbackController) consumed = await cardCallbackController.handleInteraction(ev, target);

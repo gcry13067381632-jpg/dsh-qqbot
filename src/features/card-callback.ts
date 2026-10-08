@@ -102,8 +102,12 @@ export function parseCardButtonData(data: string | undefined): { cardId: string;
   return { cardId: rest.slice(0, idx), buttonId: rest.slice(idx + 1) };
 }
 
-/** 命令执行器签名（与 botplay 指令型按钮一致：给命令名与回复目标，返回要发的文本） */
-export type CardCommandExecutor = (cmdName: string, target: unknown) => Promise<string>;
+/**
+ * 命令执行器签名（与 botplay 指令型按钮一致：给命令名与回复目标，返回要发的文本）。
+ * ⚠️ 2026-10-08 补第三参 `actorOpenid`：**点击者本人**的 openid。
+ *   以前这条链路不带身份（bootstrap 侧写死空串）⇒ 签到/按人统计这类"指令型按钮"做不了。
+ */
+export type CardCommandExecutor = (cmdName: string, target: unknown, actorOpenid?: string) => Promise<string>;
 
 export interface CardCallbackDeps {
   dataRoot: string;
@@ -124,8 +128,14 @@ export function createCardCallbackController(deps: CardCallbackDeps): {
   const { dataRoot, sendText, commandExecutor, logger } = deps;
   return {
     async handleInteraction(event: unknown, target: unknown): Promise<boolean> {
-      const e = event as { data?: { type?: number; resolved?: { button_data?: string } } };
+      const e = event as {
+        data?: { type?: number; resolved?: { button_data?: string } };
+        group_member_openid?: string;
+        user_openid?: string;
+      };
       if (e?.data?.type !== 11) return false;
+      // 点击者身份（群聊=群成员 openid / 单聊=用户 openid）；拿不到就留空，行为与以前一致
+      const actorOpenid = String(e.group_member_openid ?? e.user_openid ?? '');
       const parsed = parseCardButtonData(e.data.resolved?.button_data);
       if (!parsed) return false;
       const card = findCardCallback(dataRoot, parsed.cardId);
@@ -149,7 +159,7 @@ export function createCardCallbackController(deps: CardCallbackDeps): {
             await sendText(target, '指令执行器未就绪, 请稍后再试~');
             return true;
           }
-          const out = await commandExecutor(cmdName, target);
+          const out = await commandExecutor(cmdName, target, actorOpenid);
           if (out && out.trim()) await sendText(target, out);
           return true;
         }

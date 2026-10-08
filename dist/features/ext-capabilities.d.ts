@@ -87,6 +87,32 @@ export interface ExtCapabilities {
         save(value: unknown): boolean;
         path: string;
     };
+    /**
+     * ★ 登记本工具发出的「回调按钮卡片」（2026-10-08 新增，见 features/ext-tool-cards.ts）。
+     *
+     * 为什么必须登记：按钮 data 形如 `ext:<工具名>:<卡id>:<按钮id>`，插件收到点击后
+     * **要能在注册表里查到这张卡** 才会把事件派发给本工具的 `onInteraction`。
+     * 不登记 = 卡照发，但按钮点了没人认（落回原兜底，最终只 ack）。
+     *
+     * ```js
+     * const cardId = 'v' + Date.now().toString(36);
+     * env.registerInteractionCard({ cardId, buttonIds: ['yes', 'no'], expireAt: Date.now() + 86400_000 });
+     * await env.markdownCard('要投「A」吗？', { content: { rows: [ { buttons: [
+     *   { id: 'b1', render_data: { label: '投 A', visited_label: '已投 A', style: 1 },
+     *     action: { type: 1, permission: { type: 2 },
+     *               data: 'ext:vote:' + cardId + ':yes' } } ] } ] } });
+     * ```
+     *
+     * @param input.cardId 卡 id（必须与按钮 data 里的第二段**完全一致**）
+     * @param input.buttonIds 这张卡上所有回调按钮的 id（漏一个 → 那个按钮点了没人认）
+     * @param input.expireAt 可选绝对过期时间(ms)；缺省 7 天（投票/签到建议 1~3 天）
+     * @returns 是否登记成功；**失败也不影响发卡**（纯旁路）
+     */
+    registerInteractionCard(input: {
+        cardId: string;
+        buttonIds: string[];
+        expireAt?: number;
+    }): boolean;
     appendSilent(text: string): Promise<boolean>;
     appendWake(text: string): Promise<boolean>;
     canAppendSilent(): boolean;

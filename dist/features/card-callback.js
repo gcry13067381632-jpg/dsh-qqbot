@@ -85,6 +85,8 @@ export function createCardCallbackController(deps) {
             const e = event;
             if (e?.data?.type !== 11)
                 return false;
+            // 点击者身份（群聊=群成员 openid / 单聊=用户 openid）；拿不到就留空，行为与以前一致
+            const actorOpenid = String(e.group_member_openid ?? e.user_openid ?? '');
             const parsed = parseCardButtonData(e.data.resolved?.button_data);
             if (!parsed)
                 return false;
@@ -111,7 +113,7 @@ export function createCardCallbackController(deps) {
                         await sendText(target, '指令执行器未就绪, 请稍后再试~');
                         return true;
                     }
-                    const out = await commandExecutor(cmdName, target);
+                    const out = await commandExecutor(cmdName, target, actorOpenid);
                     if (out && out.trim())
                         await sendText(target, out);
                     return true;

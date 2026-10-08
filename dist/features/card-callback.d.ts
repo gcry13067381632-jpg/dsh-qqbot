@@ -29,8 +29,12 @@ export declare function parseCardButtonData(data: string | undefined): {
     cardId: string;
     buttonId: string;
 } | null;
-/** 命令执行器签名（与 botplay 指令型按钮一致：给命令名与回复目标，返回要发的文本） */
-export type CardCommandExecutor = (cmdName: string, target: unknown) => Promise<string>;
+/**
+ * 命令执行器签名（与 botplay 指令型按钮一致：给命令名与回复目标，返回要发的文本）。
+ * ⚠️ 2026-10-08 补第三参 `actorOpenid`：**点击者本人**的 openid。
+ *   以前这条链路不带身份（bootstrap 侧写死空串）⇒ 签到/按人统计这类"指令型按钮"做不了。
+ */
+export type CardCommandExecutor = (cmdName: string, target: unknown, actorOpenid?: string) => Promise<string>;
 export interface CardCallbackDeps {
     dataRoot: string;
     /** 发文本(群/私聊通用; 由 bootstrap 注入真实 sender) */
