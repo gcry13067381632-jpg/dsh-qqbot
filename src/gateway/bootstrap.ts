@@ -571,6 +571,11 @@ export async function bootstrapGateway(
         selfName: toolName,
         owners,
         kind: 'tools',
+        // ⚠️ 2026-10-08 补（主人实测：回执说"已通知 AI"，AI 那边什么都没收到）：
+        //   caps.appendWake 靠 **该会话的 agent.followup** 才能唤醒；漏传时它会静默 return false
+        //   （fail-soft 恰好把失败吞掉）⇒ 症状就是"嘴上说通知了、上下文里啥也没有"。
+        //   与 channel-tools 里给扩展工具 run() 的 env 保持一致（那边本来就传了 agent）。
+        agent: (manager.findByPeer(scope === 'group' ? 'group' : 'c2c', peerId)?.agent ?? undefined) as never,
       }) as unknown as Record<string, unknown>;
       // 点击者身份（与 botplay 同口径：owners 白名单判 isOwner）
       // name 暂留空（事件里只有 openid）；需要昵称的模块可自行查群成员台账

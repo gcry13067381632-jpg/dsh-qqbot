@@ -354,12 +354,18 @@ export class QqApprovalController {
         }));
       }
     } catch { /* 注入失败不影响裁决 */ }
-    try {
-      void this.sender.sendMarkdown(
-        replyTarget,
-        outcome === 'allowed-once' ? '✅ 已允许本次操作。' : '❌ 已拒绝本次操作。',
-      );
-    } catch { /* ignore */ }
+    // ⚠️ 2026-10-08 修（主人实测：群里点一下"允许"，整个 dsh 进程退出、终端报 process exit code=1）：
+    //   原来是 `void promise` + **同步** try/catch —— 同步 try 根本抓不到 Promise 的拒绝！
+    //   而这条回执属于"主动消息"，QQ 常回 `主动消息失败，无权限`（超出互动窗口 / 无主动推送权限），
+    //   于是 rejection 无人接管 → 宿主 unhandledRejection guard → process.exit(1)。
+    //   修法：发射即忘也必须挂 `.catch`（这条回执发不出去只是少一句提示，绝不能连累宿主）。
+    void this.sender
+      .sendMarkdown(replyTarget, outcome === 'allowed-once' ? '✅ 已允许本次操作。' : '❌ 已拒绝本次操作。')
+      .catch((err: unknown) => {
+        try {
+          this.logger?.warn?.(`[qq-approval] 回执发送失败(已忽略，不影响裁决): ${err instanceof Error ? err.message : String(err)}`);
+        } catch { /* ignore */ }
+      });
   }
 
   /** 结算: 清定时器/中止监听/pending 项并 resolve */

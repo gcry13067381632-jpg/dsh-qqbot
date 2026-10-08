@@ -1,3 +1,31 @@
+## [1.7.7] - 2026-10-08
+
+> 1.7.6 的一个「假成功」修补：扩展工具按钮点下去之后，**通知 AI 其实没送达**。
+
+### 🐛 修复
+
+- **扩展工具 `onInteraction` 里的 `appendWake` 静默失效**
+  （症状：点投票卡片的「✋ 结束投票」后，回执写着"已通知 AI"，但 AI 的上下文里什么都没有）：
+  `bootstrap` 为交互链路组装 caps 时**漏传 `agent`**，而 `caps.appendWake` 依赖
+  `agent.followup` 才能唤醒 ⇒ 直接 `return false`，又被 fail-soft 吞掉。
+  现补 `agent: manager.findByPeer(scope, peerId)?.agent`（与扩展工具 `run()` 那条链路对齐）。
+- **回执不再"嘴硬"**：`examples/ext-tools/vote.mjs` 的 `finish()` 现在返回 `woke` 标志，
+  通知失败时回执明说「⚠️ 但通知 AI 没成功，可以让她用 status 自查」，不再一律宣称"已通知"。
+- **🔴 点审批卡片会让宿主进程整个退出**（症状：群里点一下「允许」，终端报
+  `[dsh-auto-memory] unhandledRejection guard #1` → `[dsh-auto-memory] process exit code=1`，dsh 重启）：
+  `qq-approval` 的结算回执写成了 `void this.sender.sendMarkdown(...)` 配**同步** `try/catch` ——
+  同步 try **抓不到 Promise 的拒绝**。而这条审批回执属于"主动消息"，QQ 常回
+  `主动消息失败，无权限`（超出互动窗口 / 未开通主动推送），于是 rejection 无人接管，
+  被宿主的 unhandledRejection 守卫判为致命 → 直接退出进程。
+  现改为给 Promise 挂 `.catch`（发不出去只记一行 warn，绝不影响裁决）。
+  已全项目扫描其余"发射即忘"的发送调用（outbound 的 passive 收尾、channel-tools 的后台大文件、
+  提问卡片的抢答提示）—— 它们本来就带了 rejection 处理，只有这一处漏网。
+
+### 📌 教训
+
+**fail-soft 的布尔返回值必须被 caller 检查、并反映到用户可见的文案里。**
+否则"失败被吞掉 + 文案宣称成功" = 假成功，比直接报错更难查 —— 本次就是主人从群里的回执一眼看出来的。
+
 ## [1.7.6] - 2026-10-08
 
 > 一个能力补齐（**扩展工具也能收按钮回调**）+ 两个"关不干净 / 只改一半"的老 bug，

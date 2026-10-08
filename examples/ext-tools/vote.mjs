@@ -168,12 +168,14 @@ async function finish(env, v, byWhom) {
       block,
     ].filter(Boolean).join('\n'));
   } catch { /* 公示失败不影响结算 */ }
+  let woke = false;
   try {
     if (typeof env.appendWake === 'function') {
-      await env.appendWake(`[投票结束] ${v.id}「${v.topic}」已结算：\n${block}`);
+      // appendWake 返回 false = 没唤醒成功（例如 caps 没拿到该会话的 agent）—— 别嘴上说通知了
+      woke = (await env.appendWake(`[投票结束] ${v.id}「${v.topic}」已结算：\n${block}`)) !== false;
     }
   } catch { /* 通知失败不影响结算 */ }
-  return { first, block };
+  return { first, block, woke };
 }
 
 export default {
@@ -290,10 +292,13 @@ export default {
     // ── 结束按钮 ─────────────────────────────────────────
     if (String(info.buttonId) === END_BTN) {
       if (v.closed) return '这次投票已经结束啦，结算在上面那条消息里。';
-      await finish(ctx, v, who);
+      const { woke } = await finish(ctx, v, who);
       saveAll(ctx, all);
-      ctx.log?.(`[vote] ${v.id} 由 ${who} 点结束按钮`);
-      return '✅ 已结束，结算发到群里了（也通知到 AI 了）。';
+      ctx.log?.(`[vote] ${v.id} 由 ${who} 点结束按钮 woke=${woke}`);
+      // 回执据实：通知失败时别嘴硬（2026-10-08 主人抓到过一次"说通知了其实没通知"）
+      return woke
+        ? '✅ 已结束，结算发到群里了（也把结果通知给 AI 了）。'
+        : '✅ 已结束，结算发到群里了（⚠️ 但通知 AI 没成功，可以让她用 status 自查）。';
     }
 
     if (v.closed) return '这次投票已经结束啦，结算在上面那条消息里。';
