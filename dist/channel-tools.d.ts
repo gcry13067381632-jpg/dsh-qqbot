@@ -89,4 +89,24 @@ export declare function syncContextTools(agentCtx: unknown, shouldHave: boolean,
     dataRoot?: string;
     sessionKey?: string;
 }, reminderText?: string): void;
+/**
+ * 把"三个上下文工具 + QQ 群管理工具"**全局注册一次、永不注销**。
+ *
+ * 幂等靠 globalThis 记句柄：跨热刷（模块重新 import）依然有效，避免热刷后重复注册被宿主判重名。
+ * ⚠️ 可见性不在这里决定 —— 交给 {@link restrictContextTools} 按会话剪枝。
+ */
+export declare function ensureContextToolsGlobal(globalCtx: unknown): void;
+/**
+ * 按会话**实时剪枝**三个上下文工具的可见性（2026-10-09，主人要的"实时变更"）。
+ *
+ * 语义：**开了「无上下文模式 + 智能判断」**的会话 → 看得见那三个工具；
+ * 否则该会话**连工具名都看不到**（模型清单里没有 = 零 token），而**注册表纹丝不动**。
+ * 面板一改开关 → 下一次 pre-step（下一回合/下一 step）即生效；撤销限制是立即的。
+ *
+ * 幂等：同一作用域状态没变化就直接 return，不重复设/撤 restriction（避免无谓的变更通知与抖动）。
+ */
+export declare function restrictContextTools(agentCtx: unknown, shouldHave: boolean, env?: {
+    dataRoot?: string;
+    sessionKey?: string;
+}): void;
 //# sourceMappingURL=channel-tools.d.ts.map

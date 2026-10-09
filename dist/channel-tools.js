@@ -2214,10 +2214,15 @@ export async function apply(ctx) {
     //   ⛔ 别再改回 true：那等于给所有会话开后门。
     //   代价：插件作用域不再"提前"备一份，开启的会话若在极早期回合看不到工具，等下一个 step
     //   （pre-step 每个 step 都跑）即出现 —— 比"人人都有"划算得多。
-    try {
-        syncContextTools(ctx, false);
-    }
-    catch { /* ignore */ }
+    // ⚠️ 2026-10-09 **第二次修正**（实测抓到；主人定的"注册不动 + 实时剪枝"要落地必须这样）：
+    //   ⛔ **不要在这里注册那三个上下文工具** —— 本函数是"每会话"被调用的
+    //      （session-manager 传进来的是 **agentCtx**），在这儿 register 等于注册进**该 agent 作用域**；
+    //      而 `restrict({deny})` 按宿主文档**只过滤"继承来的"（全局层 + 祖先层）工具，
+    //      管不到本作用域自己注册的** ⇒ 剪枝永远打空
+    //      （trace 原话：`restrict 失败: names unknown global tools "context_memo","context_compact","context_drop"`）。
+    //   ✅ 全局注册统一交给 session-manager 的 pre-step 用**插件根 ctx** 做：
+    //      `ensureContextToolsGlobal(this.ctx)` —— 它内部用 `ctx.get('tools')` 取服务，绕开 inject 限制。
+    //   这里只保留下面 ②段"QQ 群管理工具"的按会话注册（那本来就是会话级工具）。
     const toolDefs = [
         { name: 'send_media', tool: sendMediaTool },
         { name: 'recall_message', tool: recallTool },
@@ -2958,6 +2963,125 @@ export function syncContextTools(agentCtx, shouldHave, env, reminderText) {
     catch (e) {
         // fail-soft：工具挂载失败绝不影响会话；但必须留下证据
         traceToolReg('[ctxtool-reg] 异常: ' + String(e?.message ?? e).slice(0, 160));
+    }
+}
+// ══════════════════════════════════════════════════════════════════════════
+// 2026-10-09 架构微调（主人定）：**注册不动 + 按会话实时剪枝可见性**
+// ══════════════════════════════════════════════════════════════════════════
+// 旧做法是 pre-step 每步都 `syncContextTools()`：内部"先注销、再重新注册"，
+// 于是**每一步都动一次工具表** → 宿主每步都发"工具已更新 · 移除/新增"（还进上下文，纯烧 token），
+// 多会话并存时更是"你挂我卸"来回抖。
+//
+// 主人的判断是对的：不该用"注册/注销"表达"这个会话要不要有"，而该
+// **注册只做一次，可见性按会话实时剪枝** —— 宿主正好提供了这个接口：
+// `ctx.tools.restrict({ allow | deny })`，**per-scope**（只作用于调用方那一个 agent 作用域），
+// 且"只过滤**继承**来的工具（全局层+祖先层），不动该作用域自己注册的"。
+//
+// 于是现在的分工：
+//   · {@link ensureContextToolsGlobal} —— 全局注册一次（永不注销），幂等；
+//   · {@link restrictContextTools}   —— 每个会话每次 pre-step 声明"我要不要看得到那三个"，
+//                                      状态没变就一根手指都不动（不产生任何变更通知）。
+// =========================================================================
+/** 三个上下文工具的名字（restrict 用；必须与 ctxToolsRef() 里的 name 完全一致） */
+const CTX_TOOL_NAMES = ['context_memo', 'context_compact', 'context_drop'];
+/**
+ * 把"三个上下文工具 + QQ 群管理工具"**全局注册一次、永不注销**。
+ *
+ * 幂等靠 globalThis 记句柄：跨热刷（模块重新 import）依然有效，避免热刷后重复注册被宿主判重名。
+ * ⚠️ 可见性不在这里决定 —— 交给 {@link restrictContextTools} 按会话剪枝。
+ */
+export function ensureContextToolsGlobal(globalCtx) {
+    try {
+        if (!globalCtx || typeof globalCtx !== 'object')
+            return;
+        // ⚠️ 2026-10-09 修（实测抓到）：apply 的注入列表是 `["settings","webServer"]`，**没有 `tools`** ⇒
+        //   直接读 `ctx.tools` 会被宿主拒（`cannot get property "tools" without inject`），异常被 catch 吞掉，
+        //   表现就是"全局注册压根没发生"（trace 里只有别的报错、没有"全局注册 N 件"）。
+        //   正解：**用 cordis 的运行时取服务 `ctx.get('tools')`**（不需要 inject 声明）——
+        //   本插件别处也是这个姿势（见 ext-capabilities 给扩展工具的 kernel 文档：`ctx.get('tools')`）。
+        const ctxObj = globalCtx;
+        let toolsObj;
+        try {
+            toolsObj = ctxObj.tools;
+        }
+        catch { /* 未声明 inject 时会抛 —— 忽略，下面改走 get */ }
+        if (!toolsObj || typeof toolsObj.register !== 'function') {
+            try {
+                toolsObj = ctxObj.get?.('tools');
+            }
+            catch { /* ignore */ }
+        }
+        const reg = toolsObj?.register;
+        if (!toolsObj || typeof reg !== 'function') {
+            traceToolReg('[ctxtool-reg] 全局注册跳过: 拿不到 tools 服务（ctx.tools 被拒 且 ctx.get("tools") 为空）');
+            return;
+        }
+        const g = globalThis;
+        if (Array.isArray(g.__qqbotCtxToolsGlobal) && g.__qqbotCtxToolsGlobal.length > 0)
+            return;
+        const ds = [];
+        for (const t of [...ctxToolsRef(), ...qunAdminRef()]) {
+            try {
+                const d = reg.call(toolsObj, t);
+                if (typeof d === 'function')
+                    ds.push(d);
+            }
+            catch { /* 单个失败不影响其它 */ }
+        }
+        g.__qqbotCtxToolsGlobal = ds;
+        traceToolReg(`[ctxtool-reg] 全局注册 ${ds.length} 件（永不注销；可见性改由 per-scope restrict 控制）`);
+    }
+    catch (e) {
+        traceToolReg('[ctxtool-reg] 全局注册异常: ' + String(e?.message ?? e).slice(0, 160));
+    }
+}
+/** 每个 agent 作用域当前的可见性状态（幂等用：状态没变就不动） */
+const ctxRestrictState = new WeakMap();
+/**
+ * 按会话**实时剪枝**三个上下文工具的可见性（2026-10-09，主人要的"实时变更"）。
+ *
+ * 语义：**开了「无上下文模式 + 智能判断」**的会话 → 看得见那三个工具；
+ * 否则该会话**连工具名都看不到**（模型清单里没有 = 零 token），而**注册表纹丝不动**。
+ * 面板一改开关 → 下一次 pre-step（下一回合/下一 step）即生效；撤销限制是立即的。
+ *
+ * 幂等：同一作用域状态没变化就直接 return，不重复设/撤 restriction（避免无谓的变更通知与抖动）。
+ */
+export function restrictContextTools(agentCtx, shouldHave, env) {
+    try {
+        if (!agentCtx || typeof agentCtx !== 'object')
+            return;
+        const key = agentCtx;
+        // 会话坐标每次都刷新（工具执行时靠它定位数据根/会话）
+        if (env && env.dataRoot) {
+            ctxEnvMap.set(key, { dataRoot: String(env.dataRoot), sessionKey: String(env.sessionKey ?? '') });
+        }
+        const st = ctxRestrictState.get(key);
+        if (st && st.shouldHave === shouldHave)
+            return; // ← 状态一致：不动（这是"不抖"的关键）
+        if (st?.dispose) {
+            try {
+                st.dispose();
+            }
+            catch { /* ignore */ }
+        }
+        const toolsObj = agentCtx.tools;
+        const restrict = toolsObj?.restrict;
+        let dispose;
+        if (!shouldHave && typeof restrict === 'function') {
+            try {
+                const d = restrict.call(toolsObj, { deny: [...CTX_TOOL_NAMES] });
+                if (typeof d === 'function')
+                    dispose = d;
+            }
+            catch (e) {
+                traceToolReg('[ctxtool-reg] restrict 失败: ' + String(e?.message ?? e).slice(0, 160));
+            }
+        }
+        ctxRestrictState.set(key, dispose ? { shouldHave, dispose } : { shouldHave });
+        traceToolReg(`[ctxtool-reg] ${shouldHave ? '放开(本会话继承全局三个工具)' : '剪枝(本会话看不到三个工具)'} dataRoot=${String(env?.dataRoot ?? '')} sk=${String(env?.sessionKey ?? '')}`);
+    }
+    catch (e) {
+        traceToolReg('[ctxtool-reg] 剪枝异常: ' + String(e?.message ?? e).slice(0, 160));
     }
 }
 //# sourceMappingURL=channel-tools.js.map

@@ -264,6 +264,8 @@ class OutboundRouter {
         // turn/end 复位 false → 攒的消息才批量入站。assistant/tool 事件=回合活跃。
         if (event.type === 'turn/end') {
             record.turnActive = false;
+            // 插话计数随回合结束清零（2026-10-09）→ 下一回合的第一次插话又用完整提示
+            record.interjectSeq = 0;
             // 好感度结算：整个回合算**一次**（放在 silent/nothink 早退之前 —— "照常思考"也包括潜水）
             const acc = this.turnAcc.get(record.sessionKey);
             if (acc !== undefined) {

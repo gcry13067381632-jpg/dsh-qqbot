@@ -109,6 +109,12 @@ export interface SessionRecord {
     lastInboundAt?: number;
     /** LLM 回合进行中标记: 出站事件(assistant/tool)期间=true, turn/end 复位 → debounce 见它忙就把新消息全攒着 */
     turnActive?: boolean;
+    /**
+     * 本回合已插话几次（2026-10-09 加，用于**逐次缩短**插话提示省 token）：
+     * 0/undefined = 还没插过 → 用完整提示；≥1 → 用更短的提示（语义已在上下文里）。
+     * 回合结束（turn/end）时由 outbound 清零。
+     */
+    interjectSeq?: number;
     /** setup 收到的 agent ctx(工具自愈用；setup 竞态失败时可能缺) */
     agentCtx?: unknown;
     /** 通道工具是否已确认装载(自愈幂等标记) */

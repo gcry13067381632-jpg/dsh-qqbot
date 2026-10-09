@@ -41,7 +41,7 @@ import type {
   TokenUsageStats,
 } from './types.js';
 import type { QQBotSender } from '../transport/outbound-buffer.js';
-import { apply as mountChannelTools, readContextPending, clearContextPending, syncContextTools } from '../channel-tools.js';
+import { apply as mountChannelTools, readContextPending, clearContextPending, ensureContextToolsGlobal, restrictContextTools } from '../channel-tools.js';
 import { createGroupAdmin } from '../api/group-admin.js';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { appendFileSync, statSync } from 'node:fs';
@@ -945,6 +945,10 @@ export class SessionManager {
     hostCtx.on('agent/pre-step', async (payload: unknown, next: unknown) => {
       // ctxSmartOn 提到回调最外层（固定 trim 让位 + 后面的消费/注入都要用）
       let ctxSmartOn = false;
+      // ⚠️ 2026-10-09：同一 pre-step 里有两个 try 块，后面"动态挂/卸三个上下文工具"那块
+      //   需要本会话的 sessionKey 做反查兜底 —— 而 sk0 只活在前一个 try 块内，故这里提到外层存一份
+      //   （反查不到就保持空串，调用方按"未知 = 不动"处理，绝不因为读不到而卸工具）。
+      let skForTool = '';
       const _isCtxSmartMsg = (m: unknown): boolean => {
       try {
       const src = (m as { source?: { kind?: string } } | undefined)?.source;
@@ -995,6 +999,7 @@ export class SessionManager {
             const rec0 = this.findBySessionId(sid0) as { sessionKey?: string } | undefined;
             sk0 = String(rec0?.sessionKey ?? '');
             if (!sk0) for (const [k, r] of this.sessions) { if ((r as { sessionId?: string })?.sessionId === sid0) { sk0 = k; break; } }
+            skForTool = sk0;   // 存到外层，供"上下文工具挂/卸"那块兜底用
           }
           try {
             traceContextless('pre-step 登记检查: sid=' + sid0 + ' sk=' + (sk0 || '(反查为空)')
@@ -1054,6 +1059,15 @@ export class SessionManager {
           return String(this.config.cwd ?? '');
         })();   // 数据根（提前声明：下面多处用）
         // ── 按**会话**开关动态挂载/卸载三个上下文工具（照测试插件做法：面板改了下一回合就生效）──
+        //   ⚠️ 2026-10-09 修（主人实测："开无上下文模式后，回合第一轮那三个工具被移除，AI 还以为是没开"）：
+        //     旧实现的两个坑叠加 ——
+        //       ① `ctxSmartOn` 初值 false，且只在 `findByAgent(agent)` 反查成功时才被赋值；
+        //       ② 下面却**无条件**拿 `ctxSmartOn` 去 sync ⇒ 回合**第一个 step** 反查常落空
+        //          （agent↔record 映射尚未登记 / 换了 agent 实例）时，被误判成"该会话不该有工具"
+        //          ⇒ sync(false) 把 context_compact/drop/memo **卸掉** ⇒ AI 那一轮调不了压缩，
+        //          还会从"工具不在"反推出"这个会话没开无上下文模式"。后面 step 反查成功又挂回来 ⇒ 抖动。
+        //     现在两处兜底：**反查兜底**（findByAgent 落空就用上面 findBySessionId 得到的 sk0）
+        //     ＋ **未知不动**（真拿不到会话 key 就保持现状 —— 绝不因为"读不到"而卸工具）。
         try {
           const recTool = agent ? this.findByAgent(agent as never) : undefined;
           // ⚠️ 2026-10-01：rec.agentCtx 可能是空的（SessionRecord 注释："setup 竞态失败时可能缺"），
@@ -1061,9 +1075,29 @@ export class SessionManager {
           const fromRec = (recTool as unknown as { agentCtx?: unknown } | undefined)?.agentCtx;
           const fromAgent = (agent as unknown as { ctx?: unknown } | undefined)?.ctx;
           const ctxOfTool = fromRec ?? fromAgent;
-          traceContextless('[ctxtool] on=' + String(ctxSmartOn) + ' fromRec=' + String(Boolean(fromRec)) + ' fromAgent=' + String(Boolean(fromAgent)));
-          const skTool = String((recTool as unknown as { sessionKey?: unknown } | undefined)?.sessionKey ?? '');
-          if (ctxOfTool) syncContextTools(ctxOfTool, ctxSmartOn, { dataRoot: dataRootSmart, sessionKey: skTool }, CTX_SMART_REMINDER);
+          const skTool = String((recTool as unknown as { sessionKey?: unknown } | undefined)?.sessionKey ?? '').trim() || skForTool;
+          const smartKnown = !!skTool;   // 拿不到 key = "还不知道"，不是"不该有"
+          const smartForTool = smartKnown
+            ? (isContextlessActive(skTool, this.config.contextlessMode) && contextlessSmartOf(skTool, this.config.contextlessSmart))
+            : ctxSmartOn;
+          ctxSmartOn = smartForTool;     // 与后面的 pending 消费/注入共用同一口径
+          traceContextless('[ctxtool] on=' + String(smartForTool) + ' known=' + String(smartKnown)
+            + ' fromRec=' + String(Boolean(fromRec)) + ' fromAgent=' + String(Boolean(fromAgent))
+            + ' sk=' + (skTool || '(未知)'));
+          // ── 2026-10-09 改造（主人定）：**注册不动 + 按会话实时剪枝可见性** ──
+          //   ① `ensureContextToolsGlobal` 全局注册一次（幂等、永不注销）⇒ 不再有"工具已更新·移除/新增"抖动；
+          //   ② `restrictContextTools` 只对**本会话**设/撤 restrict（deny 那三个工具）⇒
+          //      没开「无上下文模式+智能判断」的会话**连工具名都看不到**（零 token）；开了的会话正常继承。
+          //   面板一改开关 → 下次 pre-step（下一回合/下一步）即生效。
+          //   状态没变时两个函数都直接 return，所以"每步都跑"也**不产生任何变更通知**。
+          if (ctxOfTool && smartKnown) {
+            // ① 全局注册一次（幂等、永不注销）：必须用**插件根 ctx** ——
+            //    它 `get('tools')` 拿到的是**全局层**注册表，per-scope 的 restrict 才有资格剪它。
+            //    （若改成用 agentCtx 注册 = 变成"该 agent 自己注册的工具"，restrict 按文档管不到 —— 实测踩过。）
+            ensureContextToolsGlobal(this.ctx);
+            // ② 只对**本会话**声明可见性：没开的 deny 掉那三个，开了的撤限制
+            restrictContextTools(ctxOfTool, smartForTool, { dataRoot: dataRootSmart, sessionKey: skTool });
+          } else if (!smartKnown) traceContextless('[ctxtool] 会话 key 未知 → 保持现状(不动可见性)');
           else traceContextless('[ctxtool] 两个来源都拿不到 ctx，跳过');
           traceContextless('[ctxtool-env] dataRoot=' + String(dataRootSmart) + ' sk=' + skTool);
         } catch (e) { traceContextless('[ctxtool] 动态挂载异常: ' + String(e)); }

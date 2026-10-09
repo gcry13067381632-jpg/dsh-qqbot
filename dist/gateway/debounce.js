@@ -36,12 +36,25 @@ function busySendModeOf(config) {
     return raw === 'interject' ? 'interject' : 'queue';
 }
 /**
- * 插话提示 —— **每次插话都带**(主人 2026-10-07 定: "还是每句都提示(插话, 不要轻易改变当前任务)"),
- * 但**必须极短**(主人同日追加: "系统提示太长了, 浪费 token"): 这条提示每次插话都占上下文,
- * 所以只留两个不可省的语义 —— ①这是她输出期间群友**新插进来**的(不是对她上一条的回应);
- * ②**先把当前任务做完**(防她被带偏)。⛔ 别再往这条里加解释性长句。
+ * 插话提示 —— **每次插话都带**(主人 2026-10-07 定: "还是每句都提示(插话, 不要轻易改变当前任务)")，
+ * 但**逐次缩短**(主人 2026-10-09 追加: "同一回合内第二次以后的插话, 提醒文本继续缩短省 token")：
+ * 上一版每次都重复同一句长提示，同回合插 3 次就白烧 3 遍 —— 而"该干什么"语义第一句就立住了。
+ * 只留两个不可省的语义：①这是她输出期间群友**新插进来**的（不是对她上一条的回应）；
+ * ②**先把当前任务做完**（防她被带偏）。⛔ 别再往这些句子里加解释性长句。
  */
-const INTERJECT_NOTE = '[插话] 你思考/输出期间群友新发的消息(非对你的回应): 先做完当前任务, 再按需回应。';
+const INTERJECT_NOTES = [
+    // ① 本轮第一次：说清"这是什么 + 该怎么办"
+    '[插话] 你思考/输出期间群友新发的消息(非对你的回应): 先做完当前任务, 再按需回应。',
+    // ② 第二次：语义已在上下文里，只提醒"又插进来了"
+    '[插话] 又有群友新消息(非对你的回应): 先做完当前任务。',
+    // ③ 第三次及以后：只剩"这是插话"这一个事实
+    '[插话] 又有新消息(非对你的回应)。',
+];
+/** 按"本回合已插话次数"取提示（超出档位就一路用最后一档最短的） */
+function interjectNoteFor(seq) {
+    const i = Math.min(Math.max(0, Math.floor(Number(seq) || 0)), INTERJECT_NOTES.length - 1);
+    return INTERJECT_NOTES[i] ?? INTERJECT_NOTES[0];
+}
 function shortSender(v) {
     const s = String(v ?? '').trim();
     if (!s)
@@ -86,7 +99,7 @@ function attachmentNote(atts, processed) {
     return out.join(' ');
 }
 /** 把窗口这批消息拼成一条插话文本(带发送者标签; 当时 @ 过她的补 (@you), 与正常派发同款事实标注) */
-function buildInterjectText(entries) {
+function buildInterjectText(entries, note) {
     const lines = [];
     for (const e of entries) {
         const m = e.msg;
@@ -96,7 +109,7 @@ function buildInterjectText(entries) {
     }
     if (lines.length === 0)
         return '';
-    return `${INTERJECT_NOTE}\n${lines.join('\n')}`;
+    return `${note}\n${lines.join('\n')}`;
 }
 /**
  * 插话注入: agent.inject = dsh 底层 `send(msg,'next-step',wakeup:false)`
@@ -107,7 +120,9 @@ function interjectBatch(rec, entries, logger) {
     const a = rec.agent;
     if (!a || typeof a.inject !== 'function')
         return false;
-    const text = buildInterjectText(entries);
+    // 逐次缩短提示(2026-10-09): 本回合第 n 次插话就用第 n 档; 注入成功后才 +1（失败回落排队，不算插过）
+    const seq = Number(rec.interjectSeq) || 0;
+    const text = buildInterjectText(entries, interjectNoteFor(seq));
     if (!text)
         return false;
     try {
@@ -115,6 +130,7 @@ function interjectBatch(rec, entries, logger) {
             content: [{ type: 'text', text }],
             source: { kind: 'user' },
         }));
+        rec.interjectSeq = seq + 1;
         return true;
     }
     catch (err) {
