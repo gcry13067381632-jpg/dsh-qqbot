@@ -200,36 +200,400 @@ window.__ModuleLoader__.load({
         h('button', { className: 'qqs-btn', style: { marginTop: 4 }, onClick: () => props.onRemove(r.id) }, '删除这条提醒'))
     }
 
+    // ══════════════════════════════════════════════════════════════════════════
+    // 「配置即数据」引擎 —— Schema 驱动渲染 + 只提交 diff（2026-10-10 主人定）
+    // ══════════════════════════════════════════════════════════════════════════
+    // 旧版同一个字段要在三处手写：① load() 里手写 normalize；② doSave() 里手写全量
+    // patch；③ 渲染时手写 label + 控件。加一个字段要改三处，漏一处 =「面板勾了却存不
+    // 下去」（本文件历史注释里反复出现的就是这个病）。现在只有一处：FGROUPS。
+    //   · 渲染   → renderField() 按 t 出控件
+    //   · 默认值 → 渲染时按 def 回落（**不写进 cfg**，这样 diff 才是"真实改动"）
+    //   · 提交   → buildPatch() 只放**变化了的顶层 key**（值是当前完整快照，host 侧
+    //              浅合并也不会丢子字段）
+    // 顺带修掉两个真 bug：
+    //   ① ⑥「提问卡片」的 questionsMode 从来没进过 patch —— 选"后台/阻塞"永远存不下去；
+    //   ② 列表类字段（禁发群、owner 列表）原来是**受控** input，逗号打不进去
+    //      （RuleEditor 2026-09-14 踩过同一个坑）→ 现在统一非受控。
+    // --------------------------------------------------------------------------
+
+    function trimS(s) { return String(s).trim() }
+    function gPath(o, path) {
+      var ps = String(path).split('.'), c = o, i
+      for (i = 0; i < ps.length; i++) { if (c === null || c === undefined) return undefined; c = c[ps[i]] }
+      return c
+    }
+    function sPath(o, path, val) {
+      var ps = String(path).split('.')
+      function rec(node, i) {
+        var copy = (node && typeof node === 'object' && !Array.isArray(node)) ? Object.assign({}, node) : {}
+        if (i === ps.length - 1) { copy[ps[i]] = val; return copy }
+        copy[ps[i]] = rec(node ? node[ps[i]] : undefined, i + 1)
+        return copy
+      }
+      return rec(o, 0)
+    }
+    function deepEq(a, b) {
+      if (a === b) return true
+      if (a === null || b === null || a === undefined || b === undefined) return a === b
+      if (typeof a !== 'object' || typeof b !== 'object') return false
+      if (Array.isArray(a) !== Array.isArray(b)) return false
+      var ka = Object.keys(a), kb = Object.keys(b), i
+      if (ka.length !== kb.length) return false
+      for (i = 0; i < ka.length; i++) { if (!deepEq(a[ka[i]], b[ka[i]])) return false }
+      return true
+    }
+    function cloneCfg(v) { try { return JSON.parse(JSON.stringify(v)) } catch (e) { return v } }
+    function numOf(v, def) { var n = Number(v); return isFinite(n) ? n : (typeof def === 'number' ? def : 0) }
+    /** 只提交变化了的「顶层 key」—— 没碰过的字段(含本页不编辑的 schedule 等)一律不提交 */
+    function buildPatch(cur, saved) {
+      var patch = {}, keys = {}, k
+      var c = cur || {}, s = saved || {}
+      for (k in c) keys[k] = 1
+      for (k in s) keys[k] = 1
+      for (k in keys) { if (!deepEq(c[k], s[k])) patch[k] = c[k] }
+      return patch
+    }
+    /** 字段当前值（undefined 用 def 回落） */
+    function fieldVal(cfg, f) {
+      var v = gPath(cfg || {}, f.k)
+      if (v === undefined || v === null) return f.def
+      if (f.t === 'num') return numOf(v, f.def)
+      if (f.t === 'bool') return v === true
+      return v
+    }
+
+    // ── 字段 / 分组定义（label、说明 一律集中在这里；以后改文案只改这一处）──
+    // t: bool | num | str | area | radio | list | note | custom
+    // k: 配置里的点分路径    def: 默认值    sec: 单位换算(存 = 显示 × sec)
+    // wide: 宽输入框         rows: textarea 行数            options: radio 选项
+    var FGROUPS = [
+      {
+        id: 'prompt', icon: '①', title: '群里她要一直记住的守则',
+        desc: '每轮回复都会带上的一段提醒(所有 QQ 群都生效,不碰你的人格设定)。默认是"表情包礼仪";想让她不主动发图,把这里清空即可(留空=没守则,不会自动填回)。',
+        fields: [
+          { k: 'groupPrompt', kw: '守则 人设 人格 提示词 提醒 每轮 遵守 规则 prompt', t: 'area', label: '', rows: 5, def: DEFAULT_GROUP_PROMPT },
+          {
+            t: 'custom', render: function (ctx) {
+              return h('button', {
+                className: 'qqs-btn', style: { padding: '2px 10px', fontSize: 12 },
+                onClick: function () { ctx.set('groupPrompt', DEFAULT_GROUP_PROMPT) },
+              }, '恢复默认守则(表情包礼仪, 点下方「保存」生效)')
+            }
+          },
+        ],
+      },
+      {
+        id: 'rate', icon: '②', title: '多久回一次消息',
+        desc: '控制她回复的速度。全填 0 = 来一条回一条(不限制)。',
+        fields: [
+          { k: 'behavior.freeIntervalSec', kw: '回复 间隔 频率 冷却 限速 慢 秒 群 没人at', t: 'num', label: '群里没人 @ 她时,隔几秒才回一次(0=每条都回)', def: 0 },
+          { k: 'behavior.mentionIntervalSec', kw: '回复 间隔 at 提及 秒 快 随叫随到', t: 'num', label: '有人 @ 她时,两次回复至少隔几秒(0=随叫随到)', def: 0 },
+          { k: 'behavior.directIntervalSec', kw: '回复 间隔 私聊 单聊 秒', t: 'num', label: '私聊里隔几秒回一次(0=不限制)', def: 0 },
+          {
+            k: 'outboundMode', kw: '出站 发送 主动 被动 静默 连发 丢消息 模式', t: 'radio', label: '出站方式(连发消息 QQ 端丢失时切主动):', def: 'adaptive',
+            options: [
+              { v: 'adaptive', label: '适配主动(推荐默认)' },
+              { v: 'detail', label: '详细主动(连工具调用一起推)' },
+              { v: 'passive', label: '被动(只回最后一句)' },
+              { v: 'silent', label: '完全不出站(静默)' },
+              { v: 'nothink', label: '完全不思考(QQ入站不唤醒,仅设置页)' },
+            ],
+            hint: '适配主动=刚收到真人消息时前5条带引用回你, 第6条起自动转独立新消息(连发不被QQ吞); 一段时间没新消息的主动推送(定时等)也走独立消息。被动=始终回你那条(连发约4~5条后被QQ吞)。完全不出站=照常思考但不向QQ发任何回复(AI 可用工具切回)。完全不思考=QQ入站不唤醒AI, 消息只记录(仅本页可开; 唤醒请发 /outmode adaptive)。保存即热更新, 不用重启。',
+          },
+          { t: 'note', label: '延迟聚合(另一套机制,和上面冷却不冲突): 她收到消息先等一小会儿, 把连发的话攒一起综合回, 免得只回第一句。' },
+          { k: 'behavior.debounce.enabled', kw: '延迟 聚合 攒 合并 一起回 开关', t: 'bool', label: '开启延迟聚合(不勾=回到来一条回一条)', def: true },
+          { k: 'behavior.debounce.silenceSec', kw: '延迟 聚合 停顿 静默 等待 秒', t: 'num', label: '对方停口几秒后她才开口(默认3;0=不停顿)', def: 3 },
+          { k: 'behavior.debounce.maxMsgs', kw: '延迟 聚合 攒 条数 上限 立即', t: 'num', label: '攒满几条立即开口,不等对方停(默认10)', def: 10 },
+          { k: 'behavior.debounce.mentionDelayed', kw: '延迟 聚合 at 提及 秒回', t: 'bool', label: '有人 @ 她时也走延迟(不勾=@到秒回)', def: true },
+          { t: 'note', label: '她正在思考/输出时, 群里又来了新消息怎么办:' },
+          {
+            k: 'behavior.debounce.busySendMode', kw: '插话 排队 忙碌 正在输出 中途 消息', t: 'radio', def: 'queue',
+            options: [
+              { v: 'queue', label: '排队发送(默认: 攒着, 等这轮回完再一起看)' },
+              { v: 'interject', label: '插话发送(在这回的轮次之间立刻插进去)' },
+            ],
+            hint: '排队=她正忙时消息攒在窗口里, 等这回合结束才整批送进去(带"上次回复前群友所发"的提示)。插话=照样先聚合(静默秒数/条数上限都不变, 不会一条条吵醒她), 但不等回合结束, 直接在回合内的轮次之间插进去 —— 每次插话都带一句"先做完当前任务、别被带偏"的轻提示(同一回合第2次起提示会自动缩短省 token)。注意: 若她这一步是纯文字收尾(后面没有工具轮次), 插话会留到下次唤醒才被读到, 效果和排队一样(宿主 inject 的固有语义)。保存即热更新, 不用重启。',
+          },
+        ],
+      },
+      {
+        id: 'sticker', icon: '③', title: '发表情包的限制(全默认不限制)',
+        desc: '防止她聊天时表情包刷屏;下面两项是"她主动发图"时才用——群里很热闹才发,冷清就憋着。不想管就保持全 0,也别勾总开关。',
+        fields: [
+          { t: 'note', label: '发图闸门' },
+          { k: 'sticker.gates.enabled', kw: '表情包 图 限制 闸门 开关 刷屏', t: 'bool', label: '开启表情包限制(不勾=完全不限制)', def: false },
+          { k: 'sticker.gates.perTurnMax', kw: '表情包 图 每轮 一次 上限 几张', t: 'num', label: '她一次回复最多带几张图(0=不限)', def: 0 },
+          { k: 'sticker.gates.maxPerWindow', kw: '表情包 图 频率 窗口 上限 几张', t: 'num', label: '每隔"一小段时间"最多发几张(0=不限)', def: 0 },
+          { k: 'sticker.gates.perWindowSec', kw: '窗口 时间 秒 频率 区间', t: 'num', label: '上面说的"一小段时间"是多长(秒,如600=10分钟)', def: 0 },
+          { k: 'sticker.gates.dailyBudgetPerGroup', kw: '表情包 每日 每天 预算 上限 群', t: 'num', label: '每个群一天最多发几张表情包(0=不限)', def: 0 },
+          { k: 'sticker.gates.dupTTLHours', kw: '重复 去重 同一张 小时 冷却', t: 'num', label: '同一张图多久内不许重复发(小时,0=不查)', def: 0 },
+          { k: 'sticker.gates.activityWindowSec', kw: '活跃 热闹 窗口 时间 多久', t: 'num', label: '看"最近"多长时间的聊天来判热闹(3600=最近1小时)', def: 0 },
+          { k: 'sticker.gates.activityMinMsgs', kw: '活跃 热闹 消息数 门槛 冷清', t: 'num', label: '最近这段时间群消息达到几条,她才肯主动发图(0=不管冷不冷都发)', def: 0 },
+          { k: 'sticker.gates.bannedGroups', kw: '禁止 禁发 群 黑名单 排除', t: 'list', label: '禁止发图的群(填群ID,逗号分隔;一般不用填)', wide: true, def: [] },
+          { t: 'note', label: '图库维护' },
+          { k: 'sticker.autoTagEnabled', kw: '自动 打标 识图 视觉 标签 图库', t: 'bool', label: '新图自动后台识图打标(会花视觉额度;不勾=全靠人工手动补)', def: false },
+          { k: 'sticker.visionCli', kw: '视觉 引擎 命令 cli 识图 ocr 高级', t: 'str', label: '视觉引擎命令(高级;留空自动探测)', wide: true, def: '' },
+        ],
+      },
+      {
+        id: 'rules', icon: '④', title: '自定义小提醒(高级)',
+        desc: '当群友发的消息满足下面条件,就偷偷给机器人加一条要照做的提醒。比如:勾上"含链接",提醒写"引用前先核实"。',
+        fields: [
+          {
+            t: 'custom', render: function (ctx) {
+              var list = Array.isArray(ctx.cfg.injectRules) ? ctx.cfg.injectRules : []
+              return h('div', null,
+                list.map(function (r, i) {
+                  return h(RuleEditor, {
+                    key: r.id || ('r' + i), rule: r,
+                    onChange: function (nr) { var l = list.slice(); l[i] = nr; ctx.set('injectRules', l) },
+                    onRemove: function (id) { ctx.set('injectRules', list.filter(function (x) { return x.id !== id })) },
+                  })
+                }),
+                h('button', {
+                  className: 'qqs-btn', onClick: function () {
+                    var l = list.slice()
+                    l.push({
+                      id: 'rule-' + Date.now().toString(36), name: '', enabled: true,
+                      conditions: { hasImage: false, hasLink: false, contentRegex: '', contentKeywords: [], matchScope: 'any' }, prompt: '',
+                    })
+                    ctx.set('injectRules', l)
+                  },
+                }, '+ 添加一条提醒'))
+            }
+          },
+          { k: 'imageHint', kw: '图片 看图 提示 识图 注入', t: 'bool', label: '图片消息自动提示 AI 看图(内置兜底; 不勾=不再注入「请把URL传给识图工具」那条)', def: true },
+          { k: 'messageReference', kw: '引用 消息号 原文 rf 回复某条', t: 'bool', label: '引用消息(默认开): 入站消息带短消息号(本地台账索引,省token) + 引用消息附原文; AI 用 [rf:短号] 引用对方消息', def: true },
+        ],
+      },
+      {
+        id: 'diag', kw: '日志 诊断 排查 log 落盘', icon: '⑤', title: '诊断日志(排查用)',
+        desc: '默认关。开了才会把排查用的诊断日志写进 {DSH_HOME|~/.dsh} 下的 *.log（单文件 2MB 自动轮转，只留 1 份旧档）。平时别开——它会持续占盘；出问题时再开，排查完可以关掉、并把那些 .log 删掉。',
+        fields: [
+          { k: 'diagLog', kw: '日志 诊断 排查 log 落盘 记录', t: 'bool', label: '诊断日志落盘(默认关): 写 ~/.dsh/*.log 便于离线排查', def: false },
+        ],
+      },
+      {
+        id: 'timers', kw: '定时 提醒 计划 到点 主动 唤醒 闹钟', icon: '⑥', title: '定时唤醒',
+        desc: '已合并到「定时任务」页(顶部 tab)一起编辑——到点主动开口的群/人分组,与她答应你的定时提醒,都在那边管理。',
+        fields: [],
+      },
+      {
+        id: 'approval', icon: '⑦', title: 'QQ 远程审批(在 QQ 里放行 dsh 权限申请)',
+        desc: '机器人的工具要动"工作区外"的东西时,dsh 会申请权限。开启后审批请求直接发到你的 QQ(私聊/群聊看你从哪发起),回 /approve 验证码 放行、/deny 拒绝——只放行这一次,验证码一次性,只有你能批。',
+        fields: [
+          { k: 'enableApprovals', kw: '审批 权限 申请 放行 授权 approve', t: 'bool', label: '开启 QQ 远程审批(不勾=保持默认审批方式)', def: false },
+          { k: 'approvalTimeoutMs', kw: '审批 超时 等待 秒 拒绝', t: 'num', label: '审批等待秒数(超时自动拒绝;默认120)', def: 120000, sec: 1000 },
+        ],
+      },
+      {
+        id: 'ask', icon: '⑧', title: '提问卡片(她问人时要不要在旁边干等)',
+        desc: '她调用 ask_user_question 问你或群友时怎么等答案。后台提问=卡片发出去她就能接着聊天/干活, 对方答完之后答案会作为一条"提问卡片·回执"自动送回她的会话(她正忙→插进当前回合不打断; 她闲着→叫醒她接着处理), 超时没答也会收到一条"超时未答"的回执。阻塞等待=旧行为, 她的这一回合一直挂到对方作答或超时, 期间收不了新消息。',
+        fields: [
+          {
+            k: 'questionsMode', kw: '提问 卡片 等待 后台 阻塞 回执 答案', t: 'radio', label: '等待方式:', def: 'async',
+            options: [
+              { v: 'async', label: '后台提问(推荐默认: 不卡她)' },
+              { v: 'blocking', label: '阻塞等待(旧行为: 她会卡住)' },
+            ],
+          },
+        ],
+      },
+      {
+        id: 'group', icon: '⑨', title: '群管理基础设置',
+        desc: '开启后 QQ 会话里可用群管理工具; 踢人/成员列表等官方未开放能力会在下方 Tab 里提示等待公测。',
+        fields: [
+          { k: 'groupAdmin.enabled', kw: '群管理 踢人 禁言 成员 入群 管理员', t: 'bool', label: '开启 QQ 群管理(不勾=群管理工具不可用)', def: false },
+          { k: 'groupAdmin.owners', kw: '群管理 主人 权限 openid 名单', t: 'list', label: '允许操作的主人 openid(逗号分隔,可留空=不校验)', wide: true, def: [] },
+          { k: 'groupAdmin.manageGroup', kw: '群管理 默认群 group_openid 目标群', t: 'str', label: '对话内默认管理群 group_openid(web 对话时群工具用它; QQ 群会话自动用当前群)', wide: true, def: '' },
+          { k: 'groupAdmin.watchJoinRequests', kw: '入群申请 事件 提醒 订阅', t: 'bool', label: '实时接收"入群申请"事件并自动提醒(勾选后需重启才生效)', def: false },
+          { k: 'groupAdmin.notifyInGroup', kw: '入群申请 提醒 群内 通知', t: 'bool', label: '收到入群申请时在该群内发提醒消息', def: true },
+          { t: 'custom', render: function (ctx) { return h(GroupAdminPanel, { key: 'ga-' + (ctx.ns || 'main'), ns: ctx.ns || undefined }) } },
+        ],
+      },
+    ]
+
+    // 分区导航的短名(完整标题太长)
+    var GSHORT = { prompt: '① 守则', rate: '② 回复节奏', sticker: '③ 表情包', rules: '④ 小提醒', diag: '⑤ 诊断日志', timers: '⑥ 定时', approval: '⑦ 审批', ask: '⑧ 提问卡片', group: '⑨ 群管理' }
+
+    // ── 搜索（2026-10-10 主人定）：上栏=精确(字面)，下栏=模糊/语义 ───────────────
+    // 语义侧**程序算**、零依赖、离线即时：字符 bigram ＋ IDF 加权余弦；
+    // 文档 = label×2 + kw×2 + hint + 键名（kw 是每个字段手挂的关键词，见 FGROUPS）。
+    // 不调模型、不联网 —— 32 个字段的规模，这套查表+加权已经完全够用。
+    function sqBigrams(t) {
+      var s = String(t || '').toLowerCase().replace(/[\s\-_./:()（）,，。、"'“”「」【】\[\]?？!！@#*;；]+/g, '')
+      var out = {}, i
+      for (i = 0; i < s.length - 1; i++) { var g = s.slice(i, i + 2); out[g] = (out[g] || 0) + 1 }
+      if (s.length === 1) out[s] = 1
+      return out
+    }
+    var SQ_DOCS = []
+    var SQ_IDF = {}
+    function sqVec(t) { var g = sqBigrams(t), o = {}, k; for (k in g) o[k] = g[k] * (SQ_IDF[k] || 1); return o }
+    function sqCos(a, b) {
+      var dot = 0, na = 0, nb = 0, k
+      for (k in a) { na += a[k] * a[k]; if (b[k]) dot += a[k] * b[k] }
+      for (k in b) nb += b[k] * b[k]
+      return (!na || !nb) ? 0 : dot / (Math.sqrt(na) * Math.sqrt(nb))
+    }
+    ;(function buildSearchIndex() {
+      FGROUPS.forEach(function (g) {
+        (g.fields || []).forEach(function (fd) {
+          if (!fd.k || fd.t === 'note' || fd.t === 'custom') return
+          SQ_DOCS.push({ k: fd.k, doc: [fd.label || '', fd.label || '', fd.kw || '', fd.kw || '', fd.hint || '', String(fd.k).replace(/[.\-_]/g, ' ')].join(' ') })
+        })
+      })
+      var df = {}, i, b
+      for (i = 0; i < SQ_DOCS.length; i++) {
+        var seen = {}, g2 = sqBigrams(SQ_DOCS[i].doc)
+        for (b in g2) seen[b] = 1
+        for (b in seen) df[b] = (df[b] || 0) + 1
+      }
+      var N = SQ_DOCS.length || 1
+      for (b in df) SQ_IDF[b] = Math.log(1 + N / (1 + df[b])) + 0.2
+      SQ_DOCS.forEach(function (d) { d.vec = sqVec(d.doc) })
+    })()
+    /** 查询 → { 字段key: 相似度 }（0~1） */
+    function sqScores(query) {
+      var out = {}, i, qv = sqVec(query)
+      for (i = 0; i < SQ_DOCS.length; i++) out[SQ_DOCS[i].k] = sqCos(qv, SQ_DOCS[i].vec)
+      return out
+    }
+
+    // ── 渲染：一个字段 → 控件（t 决定形态；外观沿用旧版的行/输入框样式）──
+    function renderControl(f, val, ctx) {
+      var onNum = function (e) { ctx.set(f.k, Number(e.target.value) * (f.sec || 1)) }
+      if (f.t === 'bool') {
+        return h('input', {
+          className: 'qqs-inp', type: 'checkbox', style: inputStyle, checked: !!val,
+          onChange: function (e) { ctx.set(f.k, e.target.checked) },
+        })
+      }
+      if (f.t === 'num') {
+        return h('input', {
+          className: 'qqs-inp', type: 'number', style: inputStyle,
+          value: nv(val) / (f.sec || 1), onChange: onNum,
+        })
+      }
+      if (f.t === 'str') {
+        return h('input', {
+          className: 'qqs-inp', style: f.wide ? wideStyle : inputStyle, value: sv(val),
+          onChange: function (e) { ctx.set(f.k, e.target.value) },
+        })
+      }
+      if (f.t === 'area') {
+        return h('textarea', {
+          className: 'qqs-area', style: { ...fullStyle, minHeight: (f.rows || 3) * 20 },
+          value: sv(val), onChange: function (e) { ctx.set(f.k, e.target.value) },
+        })
+      }
+      if (f.t === 'list') {
+        // ⚠️ 非受控：受控写法下"输入逗号"会被 join 重建掉（同 RuleEditor 2026-09-14 的坑）
+        return h('input', {
+          className: 'qqs-inp', style: f.wide ? wideStyle : inputStyle,
+          defaultValue: (Array.isArray(val) ? val : []).join(','),
+          onChange: function (e) {
+            ctx.set(f.k, e.target.value.split(/[,，]/).map(trimS).filter(Boolean))
+          },
+        })
+      }
+      if (f.t === 'radio') {
+        return h('span', { style: { display: 'inline-flex', gap: 14, flexWrap: 'wrap', alignItems: 'center' } },
+          (f.options || []).map(function (o) {
+            return h('label', { key: o.v, style: { display: 'inline-flex', gap: 5, alignItems: 'center', fontSize: 12, color: T.text2, cursor: 'pointer' } },
+              h('input', { type: 'radio', name: 'qqs-f-' + f.k, checked: String(val) === o.v, onChange: function () { ctx.set(f.k, o.v) } }),
+              o.label)
+          }))
+      }
+      if (f.t === 'custom') return f.render ? f.render(ctx) : null
+      return null
+    }
+
+    /** 长说明默认折叠成一行，点开看全文（短说明直接显示） */
+    function HintBlock(props) {
+      var txt = String(props.text || '')
+      var [open, setOpen] = useState(false)
+      if (!txt) return null
+      if (txt.length <= 110) {
+        return h('div', { style: { fontSize: 12, color: T.text3, margin: '2px 0 4px', lineHeight: 1.7, whiteSpace: 'pre-wrap' } }, txt)
+      }
+      return h('div', { style: { margin: '2px 0 4px' } },
+        h('span', {
+          onClick: function () { setOpen(!open) },
+          style: { fontSize: 12, color: T.primary, cursor: 'pointer', userSelect: 'none' },
+        }, open ? '▾ 收起说明' : 'ⓘ 说明(点开)'),
+        open ? h('div', { style: { fontSize: 12, color: T.text3, marginTop: 3, lineHeight: 1.75, whiteSpace: 'pre-wrap' } }, txt) : null)
+    }
+
+    /** 分组介绍（长的收成一行 + 展开） */
+    function GroupDesc(props) {
+      var txt = String(props.text || '')
+      var [open, setOpen] = useState(false)
+      if (!txt) return null
+      var st = { fontSize: 12, color: T.text3, lineHeight: 1.75, background: T.cardHi, border: '1px solid ' + T.borderLight, borderRadius: T.radius, padding: '6px 10px', margin: '0 0 8px' }
+      if (txt.length <= 120) return h('div', { style: st }, txt)
+      return h('div', { style: st },
+        open ? txt : (txt.slice(0, 108) + '…'),
+        h('span', {
+          onClick: function () { setOpen(!open) },
+          style: { color: T.primary, cursor: 'pointer', marginLeft: 6, whiteSpace: 'nowrap' },
+        }, open ? '收起' : '展开'))
+    }
+
+    function FieldRow(props) {
+      var f = props.f, ctx = props.ctx, val = fieldVal(ctx.cfg, f)
+      var ctrl = renderControl(f, val, ctx)
+      var badge = props.sem ? h('span', { style: { fontSize: 11, color: T.primary, background: T.primaryBg, borderRadius: 999, padding: '0 6px', marginLeft: 6, whiteSpace: 'nowrap' } }, Math.round(props.sem * 100) + '% 匹配') : null
+      var lstyle = { fontSize: 13, color: T.text, lineHeight: 1.65 }
+      var body
+      if (f.t === 'note') return h('div', { style: { fontSize: 12, color: T.text2, margin: '12px 0 2px', lineHeight: 1.7, fontWeight: 600 } }, f.label)
+      if (f.t === 'custom') body = h('div', { style: { margin: '8px 0' } }, ctrl)
+      else if (f.t === 'bool') {
+        body = h('label', { style: { display: 'flex', alignItems: 'flex-start', gap: 8, margin: '6px 0', cursor: 'pointer' } },
+          h('span', { style: { paddingTop: 2, flexShrink: 0 } }, ctrl),
+          h('span', { style: lstyle }, f.label, badge))
+      } else if (f.t === 'num') {
+        body = h('label', { style: { display: 'flex', alignItems: 'flex-start', gap: 8, margin: '6px 0' } },
+          h('span', { style: Object.assign({}, lstyle, { flex: 1 }) }, f.label, badge),
+          ctrl)
+      } else if (f.t === 'str' || f.t === 'list') {
+        body = h('label', { style: { display: 'flex', alignItems: 'center', gap: 8, margin: '6px 0' } },
+          h('span', { style: Object.assign({}, lstyle, { flex: 1 }) }, f.label, badge),
+          ctrl)
+      } else {
+        body = h('div', { style: { margin: '8px 0' } },
+          f.label ? h('div', { style: lstyle }, f.label, badge) : null,
+          h('div', { style: { marginTop: 5 } }, ctrl))
+      }
+      return h('div', null, body, h(HintBlock, { text: f.hint }))
+    }
+
     function SettingsPage(props) {
       var close = props && props.close
       // 多账号: 当前操作账号的 settings 命名空间(主=im-qqbot 不带参, 其它=实例 id)
       var _acctNs = props && props.acct && props.acct.ns && props.acct.ns !== 'im-qqbot' ? String(props.acct.ns) : ''
       var [cfg, setCfg] = useState(null)
+      var [saved, setSaved] = useState(null)      // 已保存快照(2026-10-10: 只提交 diff 用)
       var [rev, setRev] = useState(undefined)
       var [msg, setMsg] = useState('')
+      var [q, setQ] = useState('')                // 搜索词(上栏: 精确)
+      var [q2, setQ2] = useState('')              // 搜索词(下栏: 模糊/语义)
+      var [folded, setFolded] = useState({})      // 分组折叠
 
+      // 读取后只做**必要的类型规整**(渲染安全), 其余原样保留 ⇒ diff 才准
+      function tidy(v) {
+        var o = cloneCfg(v) || {}
+        if (typeof o.groupPrompt !== 'string') o.groupPrompt = DEFAULT_GROUP_PROMPT
+        if (o.outboundMode === 'active' || typeof o.outboundMode !== 'string') o.outboundMode = 'adaptive'
+        if (o.questionsMode !== 'blocking') o.questionsMode = 'async'
+        return o
+      }
       function load() {
         setMsg('加载中…')
         fetch(READ + (_acctNs ? '?ns=' + encodeURIComponent(_acctNs) : '')).then(function (r) { return r.json() }).then(function (d) {
           if (d && d.value) {
-            var v = d.value
-            var base = {
-              behavior: v.behavior || {},
-              sticker: v.sticker || {},
-              injectRules: Array.isArray(v.injectRules) ? v.injectRules : [],
-              imageHint: typeof v.imageHint === 'boolean' ? v.imageHint : undefined,
-              messageReference: v.messageReference !== false,
-              diagLog: v.diagLog === true,
-              schedule: v.schedule && Array.isArray(v.schedule.targets) ? v.schedule : { targets: [] },
-              // groupPrompt 必须读回来, 否则每次保存都会把它清空成 ''
-              // undefined(从未设置)→ 显示默认守则; ''(用户明确清空)→ 保持空(无守则)
-              groupPrompt: typeof v.groupPrompt === 'string' ? v.groupPrompt : DEFAULT_GROUP_PROMPT,
-              enableApprovals: v.enableApprovals === true,
-              approvalTimeoutMs: typeof v.approvalTimeoutMs === 'number' ? v.approvalTimeoutMs : 120000,
-              outboundMode: (v.outboundMode === 'detail' || v.outboundMode === 'passive' || v.outboundMode === 'silent' || v.outboundMode === 'nothink' ? v.outboundMode : 'adaptive'),
-              groupAdmin: { enabled: v.groupAdmin && v.groupAdmin.enabled === true, owners: Array.isArray(v.groupAdmin && v.groupAdmin.owners) ? v.groupAdmin.owners : [], manageGroup: v.groupAdmin && typeof v.groupAdmin.manageGroup === 'string' ? v.groupAdmin.manageGroup : '', watchJoinRequests: !!(v.groupAdmin && v.groupAdmin.watchJoinRequests), notifyInGroup: v.groupAdmin && v.groupAdmin.notifyInGroup !== false },
-            }
-            setCfg(base); setRev(d.revision); setMsg('')
+            var v = tidy(d.value)
+            setCfg(v); setSaved(cloneCfg(v)); setRev(d.revision); setMsg('')
           } else { setMsg('读取失败: ' + JSON.stringify(d)) }
         }).catch(function (e) { setMsg('读取异常: ' + e.message) })
       }
@@ -237,179 +601,119 @@ window.__ModuleLoader__.load({
 
       if (!cfg) return h('div', null, h('p', null, msg || '加载中…'))
 
-      var gates = cfg.sticker.gates || {}
-      var dbc = cfg.behavior.debounce || {} // 延迟聚合(后端未设置时缺省回落默认值)
-      function setBehavior(p) { setCfg(function (c) { return { ...c, behavior: { ...c.behavior, ...p } } }) }
-      function setGates(p) { setCfg(function (c) { return { ...c, sticker: { ...c.sticker, gates: { ...(c.sticker.gates || {}), ...p } } } }) }
-      function setSticker(p) { setCfg(function (c) { return { ...c, sticker: { ...(c.sticker || {}), ...p } } }) }
-      function setGroupAdmin(p) { setCfg(function (c) { return { ...c, groupAdmin: { ...(c.groupAdmin || { enabled: false, owners: [] }), ...p } } }) }
-      function setRules(list) { setCfg(function (c) { return { ...c, injectRules: list } }) }
+      function set(path, value) { setCfg(function (c) { return sPath(c, path, value) }) }
+      var ctx = { cfg: cfg, set: set, ns: _acctNs || undefined }
+      var patch = buildPatch(cfg, saved)
+      var dirtyN = Object.keys(patch).length
 
-      function addRule() {
-        var list = (cfg.injectRules || []).slice()
-        list.push({
-          id: 'rule-' + Date.now().toString(36),
-          name: '',
-          enabled: true,
-          conditions: { hasImage: false, hasLink: false, contentRegex: '', contentKeywords: [], matchScope: 'any' },
-          prompt: '',
-        })
-        setRules(list)
-      }
-      function updRule(i, r) { var list = cfg.injectRules.slice(); list[i] = r; setRules(list) }
-      function rmRule(id) { setRules(cfg.injectRules.filter(function (r) { return r.id !== id })) }
-
-      // gpOverride: 传入字符串 = 用该守则保存(恢复默认用); undefined = 用当前编辑框内容
-      function doSave(gpOverride) {
-        setMsg('保存中…')
-        var patch = {
-          behavior: cfg.behavior,
-          sticker: {
-            gates: cfg.sticker.gates,
-            autoTagEnabled: cfg.sticker.autoTagEnabled,
-            visionCli: cfg.sticker.visionCli,
-          },
-          injectRules: cfg.injectRules,
-          // 2026-09-30 修: 这两个开关原来漏写进 patch → 面板勾了/取消了都存不下去(读得到、写不回)
-          imageHint: cfg.imageHint !== false,
-          messageReference: cfg.messageReference !== false,
-              diagLog: cfg.diagLog === true,
-          // 定时唤醒(④)已并入「定时任务」页编辑; 这里原样带过不丢即可
-          schedule: cfg.schedule && Array.isArray(cfg.schedule.targets) ? cfg.schedule : { targets: [] },
-          groupPrompt: typeof gpOverride === 'string' ? gpOverride : (typeof cfg.groupPrompt === 'string' ? cfg.groupPrompt : ''),
-          enableApprovals: cfg.enableApprovals === true,
-          approvalTimeoutMs: typeof cfg.approvalTimeoutMs === 'number' ? cfg.approvalTimeoutMs : 120000,
-          outboundMode: cfg.outboundMode === 'detail' || cfg.outboundMode === 'passive' || cfg.outboundMode === 'silent' || cfg.outboundMode === 'nothink' ? cfg.outboundMode : 'adaptive',
-          groupAdmin: { enabled: cfg.groupAdmin && cfg.groupAdmin.enabled === true, owners: Array.isArray(cfg.groupAdmin && cfg.groupAdmin.owners) ? cfg.groupAdmin.owners : [], manageGroup: cfg.groupAdmin && typeof cfg.groupAdmin.manageGroup === 'string' ? cfg.groupAdmin.manageGroup : '', watchJoinRequests: !!(cfg.groupAdmin && cfg.groupAdmin.watchJoinRequests), notifyInGroup: cfg.groupAdmin && cfg.groupAdmin.notifyInGroup !== false },
-        }
+      function doSave() {
+        if (!dirtyN) { setMsg('没有改动, 无需保存'); return }   // 按钮不再 disabled ⇒ 点了一定有回应
+        setMsg('保存中…(提交 ' + dirtyN + ' 项)')
         fetch(UPDATE, {
           method: 'POST', headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ patch: patch, expectedRevision: rev, ns: _acctNs || undefined }),
         }).then(function (r) { return r.json().catch(function () { return null }) }).then(function (d) {
           if (d && d.value) {
-            var v2 = d.value
-            setCfg({
-              behavior: v2.behavior || {}, sticker: v2.sticker || {},
-              injectRules: Array.isArray(v2.injectRules) ? v2.injectRules : [],
-              imageHint: typeof v2.imageHint === 'boolean' ? v2.imageHint : undefined,
-              messageReference: v2.messageReference !== false,
-              diagLog: v2.diagLog === true,
-              schedule: v2.schedule && Array.isArray(v2.schedule.targets) ? v2.schedule : { targets: [] },
-              groupPrompt: typeof v2.groupPrompt === 'string' ? v2.groupPrompt : (typeof cfg.groupPrompt === 'string' ? cfg.groupPrompt : DEFAULT_GROUP_PROMPT),
-              enableApprovals: v2.enableApprovals === true,
-              approvalTimeoutMs: typeof v2.approvalTimeoutMs === 'number' ? v2.approvalTimeoutMs : 120000,
-              outboundMode: (v2.outboundMode === 'detail' || v2.outboundMode === 'passive' || v2.outboundMode === 'silent' || v2.outboundMode === 'nothink' ? v2.outboundMode : 'adaptive'),
-              groupAdmin: { enabled: v2.groupAdmin && v2.groupAdmin.enabled === true, owners: Array.isArray(v2.groupAdmin && v2.groupAdmin.owners) ? v2.groupAdmin.owners : [], manageGroup: v2.groupAdmin && typeof v2.groupAdmin.manageGroup === 'string' ? v2.groupAdmin.manageGroup : '', watchJoinRequests: !!(v2.groupAdmin && v2.groupAdmin.watchJoinRequests), notifyInGroup: v2.groupAdmin && v2.groupAdmin.notifyInGroup !== false },
-            })
-            setRev(d.revision); setMsg('已保存 ✓(live 生效)')
-          }
-          else if (d && d.error) { setMsg('保存失败: ' + d.error) }
+            var v2 = tidy(d.value)
+            setCfg(v2); setSaved(cloneCfg(v2)); setRev(d.revision)
+            setMsg('已保存 ✓(live 生效)')
+          } else if (d && d.error) { setMsg('保存失败: ' + d.error) }
           else { setMsg('保存失败(未知响应)') }
         }).catch(function (e) { setMsg('保存异常: ' + e.message) })
       }
-      function save() { doSave(undefined) }
-      // 恢复默认守则: 直接把"表情包礼仪"默认文本写回并保存(不需手动粘贴)
-      function restoreDefault() { doSave(DEFAULT_GROUP_PROMPT) }
 
-      var gh = gates.bannedGroups || []
-      return h('div', { style: { maxWidth: 640 } },
-        h('h2', null, 'QQ 机器人设置'),
-        h('p', { style: { fontSize: 12, color: '#888' } }, '改完点「保存」立刻生效(不用重启)。看不懂的项放着别动就行;想恢复"不限制"就把数字填 0、勾选取消、列表清空。'),
+      // 搜索：上栏=精确(字面命中名称/说明/键名)；下栏=模糊/语义(程序算相似度, 按分排序)
+      var qq = q.trim().toLowerCase()
+      var qs = q2.trim()
+      var sem = qs ? sqScores(qs) : null
+      var SEM_MIN = 0.1
+      function hitF(f) {
+        if (!qq) return true
+        if (f.t === 'note' || f.t === 'custom') return false
+        return (String(f.label || '') + ' ' + String(f.hint || '') + ' ' + String(f.k || '')).toLowerCase().indexOf(qq) >= 0
+      }
+      function semOf(f) { return (sem && f.k) ? (sem[f.k] || 0) : 0 }
+      function semGroup(g) {
+        if (!sem) return 0
+        return sqCos(sqVec(qs), sqVec(String(g.title || '') + ' ' + String(g.kw || '') + ' ' + String(g.desc || '')))
+      }
+      function hitText(t) { return !qq || String(t || '').toLowerCase().indexOf(qq) >= 0 }
+      function jump(id) {
+        var el = document.getElementById('qqs-g-' + id)
+        if (el && el.scrollIntoView) el.scrollIntoView({ block: 'start', behavior: 'smooth' })
+      }
 
-        h('div', { style: sectionTitle }, '⓪ 群里她要一直记住的守则'),
-        h('p', { style: { fontSize: 12, color: '#888' } }, '每轮回复都会带上的一段提醒(所有 QQ 群都生效,不碰你的人格设定)。默认是"表情包礼仪";想让她不主动发图,把这里清空即可(留空=没守则,不会自动填回)。'),
-        h('textarea', { className: 'qqs-area',
-          style: { ...fullStyle, minHeight: 90 },
-          value: sv(cfg.groupPrompt),
-          onChange: function (e) { setCfg(function (c) { return { ...c, groupPrompt: e.target.value } }) },
+      var visible = FGROUPS.map(function (g) {
+        var fields = (g.fields || []).filter(function (f) {
+          var special = (f.t === 'note' || f.t === 'custom')
+          if (special) return (!qq && !sem)                  // 一搜索，note/custom 就不参与
+          if (qq && !hitF(f)) return false                   // 上栏：必须字面命中
+          if (sem && semOf(f) < SEM_MIN) return false        // 下栏：相似度得够
+          return true
+        })
+        if (sem) fields = fields.slice().sort(function (a, b) { return semOf(b) - semOf(a) })
+        var show = (!qq && !sem) || fields.length > 0 || (qq && hitText(g.title + ' ' + g.desc)) || (sem && semGroup(g) >= 0.15)
+        if (!show) return null
+        var isFolded = !!folded[g.id] && !qq && !sem
+        var header = h('div', {
+          onClick: function () { setFolded(function (m) { var n = Object.assign({}, m); n[g.id] = !m[g.id]; return n }) },
+          style: { display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', padding: '10px 14px', borderBottom: isFolded ? 'none' : '1px solid ' + T.borderLight, userSelect: 'none' },
+        },
+          h('span', { style: { fontSize: 14, fontWeight: 700, color: T.text } }, g.icon + ' ' + g.title),
+          h('span', { style: { flex: 1 } }),
+          !qq && (g.fields || []).length > 0 ? h('span', { style: { fontSize: 12, color: T.text3 } }, ((g.fields || []).length) + ' 项') : null,
+          h('span', { style: { fontSize: 12, color: T.text3 } }, isFolded ? '▸' : '▾'))
+        return h('div', { key: g.id, id: 'qqs-g-' + g.id, style: { background: T.card, border: '1px solid ' + T.border, borderRadius: T.radiusLg, marginBottom: 12, overflow: 'hidden' } },
+          header,
+          isFolded ? null : h('div', { style: { padding: '10px 14px 14px' } },
+            h(GroupDesc, { text: g.desc }),
+            fields.map(function (f, i) { return h(FieldRow, { key: (f.k || 'x') + '#' + i, f: f, ctx: ctx, sem: sem ? semOf(f) : 0 }) })))
+      }).filter(Boolean)
+
+      var chips = h('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap', margin: '0 0 10px' } },
+        FGROUPS.map(function (g) {
+          return h('span', {
+            key: g.id, onClick: function () { jump(g.id) },
+            style: { fontSize: 12, color: T.text2, background: T.cardHi, border: '1px solid ' + T.border, borderRadius: 999, padding: '3px 10px', cursor: 'pointer', whiteSpace: 'nowrap' },
+          }, GSHORT[g.id] || (g.icon + ' ' + g.title))
+        }))
+
+      var toolbar = h('div', { style: { margin: '0 0 10px' } },
+        h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 6 } },
+        h('span', { style: { fontSize: 11, color: T.text3, flexShrink: 0 } }, '精确'),
+        h('input', {
+          className: 'qqs-inp', placeholder: '🔍 精确搜索：字面匹配 名称 / 说明 / 键名（如"间隔""审批"）',
+          style: { flex: 1, minWidth: 180, padding: '5px 10px', border: '1px solid ' + T.border, borderRadius: T.radius, background: T.card },
+          value: q, onChange: function (e) { setQ(e.target.value) },
         }),
-        h('div', { style: { margin: '0 0 6px' } },
-          h('button', { className: 'qqs-btn', style: { padding: '2px 10px', fontSize: 12 }, onClick: restoreDefault }, '恢复默认守则(表情包礼仪)')),
+        q ? h('span', { onClick: function () { setQ('') }, style: { fontSize: 12, color: T.text3, cursor: 'pointer' } }, '清空') : null,
+        dirtyN
+          ? h('span', { style: { fontSize: 12, color: T.warn, fontWeight: 700, whiteSpace: 'nowrap' } }, '● 有未保存改动(' + dirtyN + ')')
+          : h('span', { style: { fontSize: 12, color: T.success, whiteSpace: 'nowrap' } }, '✓ 已同步'),
+        msg ? h('span', { style: { fontSize: 12, color: T.text2, whiteSpace: 'nowrap' } }, msg) : null,
+        h(SButton, { variant: 'primary', onClick: doSave }, dirtyN ? ('保存(' + dirtyN + ')') : '保存'),
+        h(SButton, { variant: 'ghost', onClick: load }, '放弃修改')),
+        h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+          h('span', { style: { fontSize: 11, color: T.text3, flexShrink: 0 } }, '模糊'),
+          h('input', {
+            className: 'qqs-inp', placeholder: '🧠 语义搜索：说人话也行（"回复太慢""图刷屏""踢人""进群申请"）',
+            style: { flex: 1, minWidth: 180, padding: '5px 10px', border: '1px solid ' + T.border, borderRadius: T.radius, background: T.card },
+            value: q2, onChange: function (e) { setQ2(e.target.value) },
+          }),
+          q2 ? h('span', { onClick: function () { setQ2('') }, style: { fontSize: 12, color: T.text3, cursor: 'pointer' } }, '清空') : null,
+          h('span', { style: { fontSize: 11, color: T.text3, whiteSpace: 'nowrap' } }, '程序算的相似度 · 本地即时')))
 
-        h('div', { style: sectionTitle }, '① 多久回一次消息'),
-        h('p', { style: { fontSize: 12, color: '#888' } }, '控制她回复的速度。全填 0 = 来一条回一条(不限制)。'),
-        h('div', { style: boxStyle },
-          NumRow({ label: '群里没人 @ 她时,隔几秒才回一次(0=每条都回)', value: cfg.behavior.freeIntervalSec, onChange: function (v) { setBehavior({ freeIntervalSec: v }) } }),
-          NumRow({ label: '有人 @ 她时,两次回复至少隔几秒(0=随叫随到)', value: cfg.behavior.mentionIntervalSec, onChange: function (v) { setBehavior({ mentionIntervalSec: v }) } }),
-          NumRow({ label: '私聊里隔几秒回一次(0=不限制)', value: cfg.behavior.directIntervalSec, onChange: function (v) { setBehavior({ directIntervalSec: v }) } }),
-          h('div', { style: { fontSize: 12, color: '#666', margin: '10px 0 2px' } }, '出站方式(连发消息 QQ 端丢失时切主动):'),          h('div', { style: { display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' } },            ['adaptive', 'detail', 'passive', 'silent', 'nothink'].map(function (m) {              var cur = (cfg.outboundMode || 'adaptive'); if (cur === 'active') cur = 'adaptive';              return h('label', { style: { display: 'inline-flex', gap: 5, alignItems: 'center', fontSize: 12, color: '#333', cursor: 'pointer' } },                h('input', { type: 'radio', name: 'qqs-outbound', checked: cur === m, onChange: function () { setCfg(function (c) { return Object.assign({}, c, { outboundMode: m }) }) } }),                m === 'adaptive' ? '适配主动(推荐默认)' : (m === 'detail' ? '详细主动(连工具调用一起推)' : (m === 'passive' ? '被动(只回最后一句)' : (m === 'silent' ? '完全不出站(静默)' : '完全不思考(QQ入站不唤醒,仅设置页)'))))            })),          h('div', { style: { fontSize: 12, color: '#888' } }, '适配主动=刚收到真人消息时前5条带引用回你, 第6条起自动转独立新消息(连发不被QQ吞); 一段时间没新消息的主动推送(定时等)也走独立消息。被动=始终回你那条(连发约4~5条后被QQ吞)。完全不出站=照常思考但不向QQ发任何回复(AI 可用工具切回)。完全不思考=QQ入站不唤醒AI, 消息只记录(仅本页可开; 唤醒请发 /outmode adaptive)。保存即热更新, 不用重启。'),          h('div', { style: { fontSize: 12, color: '#666', margin: '10px 0 2px' } }, '延迟聚合(另一套机制,和上面冷却不冲突): 她收到消息先等一小会儿, 把连发的话攒一起综合回, 免得只回第一句。'),
-          BoolRow({ label: '开启延迟聚合(不勾=回到来一条回一条)', value: dbc.enabled !== false, onChange: function (v) { setBehavior({ debounce: { ...dbc, enabled: v } }) } }),
-          NumRow({ label: '对方停口几秒后她才开口(默认3;0=不停顿)', value: dbc.silenceSec != null ? dbc.silenceSec : 3, onChange: function (v) { setBehavior({ debounce: { ...dbc, silenceSec: v } }) } }),
-          NumRow({ label: '攒满几条立即开口,不等对方停(默认10)', value: dbc.maxMsgs != null ? dbc.maxMsgs : 10, onChange: function (v) { setBehavior({ debounce: { ...dbc, maxMsgs: v } }) } }),
-          BoolRow({ label: '有人 @ 她时也走延迟(不勾=@到秒回)', value: dbc.mentionDelayed !== false, onChange: function (v) { setBehavior({ debounce: { ...dbc, mentionDelayed: v } }) } }),
-          h('div', { style: { fontSize: 12, color: '#666', margin: '10px 0 2px' } }, '她正在思考/输出时, 群里又来了新消息怎么办(同宿主「繁忙时的发送行为」那两项):'),
-          h('div', { style: { display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' } },
-            ['queue', 'interject'].map(function (m) {
-              var cur = dbc.busySendMode === 'interject' ? 'interject' : 'queue'
-              return h('label', { style: { display: 'inline-flex', gap: 5, alignItems: 'center', fontSize: 12, color: '#333', cursor: 'pointer' } },
-                h('input', { type: 'radio', name: 'qqs-busy', checked: cur === m, onChange: function () { setBehavior({ debounce: { ...dbc, busySendMode: m } }) } }),
-                m === 'queue' ? '排队发送(默认: 攒着, 等这轮回完再一起看)' : '插话发送(在这回的轮次之间立刻插进去)')
-            })),
-          h('div', { style: { fontSize: 12, color: '#888' } }, '排队=她正忙时消息攒在窗口里, 等这轮回合结束才整批送进去(带"上次回复前群友所发"的提示)。插话=照样先聚合(静默秒数/条数上限都不变, 不会一条条吵醒她), 但不等回合结束, 直接在回合内的轮次之间插进去 —— 每次插话都带一句"先做完当前任务、别被带偏"的轻提示。注意: 若她这一步是纯文字收尾(后面没有工具轮次), 插话会留到下次唤醒才被读到, 效果和排队一样(宿主 inject 的固有语义)。保存即热更新, 不用重启。')),
-
-        h('div', { style: sectionTitle }, '② 发表情包的限制(全默认不限制)'),
-        h('p', { style: { fontSize: 12, color: '#888' } }, '防止她聊天时表情包刷屏;下面两项是"她主动发图"时才用——群里很热闹才发,冷清就憋着。不想管就保持全 0,也别勾总开关。'),
-        h('div', { style: boxStyle },
-          BoolRow({ label: '开启表情包限制(不勾=完全不限制)', value: gates.enabled, onChange: function (v) { setGates({ enabled: v }) } }),
-          NumRow({ label: '她一次回复最多带几张图(0=不限)', value: gates.perTurnMax, onChange: function (v) { setGates({ perTurnMax: v }) } }),
-          NumRow({ label: '每隔"一小段时间"最多发几张(0=不限)', value: gates.maxPerWindow, onChange: function (v) { setGates({ maxPerWindow: v }) } }),
-          NumRow({ label: '上面说的"一小段时间"是多长(秒,如600=10分钟)', value: gates.perWindowSec, onChange: function (v) { setGates({ perWindowSec: v }) } }),
-          NumRow({ label: '每个群一天最多发几张表情包(0=不限)', value: gates.dailyBudgetPerGroup, onChange: function (v) { setGates({ dailyBudgetPerGroup: v }) } }),
-          NumRow({ label: '同一张图多久内不许重复发(小时,0=不查)', value: gates.dupTTLHours, onChange: function (v) { setGates({ dupTTLHours: v }) } }),
-          NumRow({ label: '看"最近"多长时间的聊天来判热闹(3600=最近1小时)', value: gates.activityWindowSec, onChange: function (v) { setGates({ activityWindowSec: v }) } }),
-          NumRow({ label: '最近这段时间群消息达到几条,她才肯主动发图(0=不管冷不冷都发)', value: gates.activityMinMsgs, onChange: function (v) { setGates({ activityMinMsgs: v }) } }),
-          StrRow({ label: '禁止发图的群(填群ID,逗号分隔;一般不用填)', value: gh.join(','), wide: true, onChange: function (v) { setGates({ bannedGroups: v.split(/[,，]/).map(function (s) { return s.trim() }).filter(Boolean) }) } })),
-        h('div', { style: boxStyle },
-          BoolRow({ label: '新图自动后台识图打标(会花视觉额度;不勾=全靠人工手动补)', value: !!cfg.sticker.autoTagEnabled, onChange: function (v) { setSticker({ autoTagEnabled: v }) } }),
-          StrRow({ label: '视觉引擎命令(高级;留空自动探测)', value: sv(cfg.sticker.visionCli), wide: true, onChange: function (v) { setSticker({ visionCli: v }) } })),
-
-        h('div', { style: sectionTitle }, '③ 自定义小提醒(高级)'),
-        h('p', { style: { fontSize: 12, color: '#888' } }, '当群友发的消息满足下面条件,就偷偷给机器人加一条要照做的提醒。比如:勾上"含链接",提醒写"引用前先核实"。'),
-        (cfg.injectRules || []).map(function (r, i) {
-          return h(RuleEditor, { key: r.id, rule: r, onChange: function (nr) { updRule(i, nr) }, onRemove: rmRule })
-        }),
-        h('button', { className: 'qqs-btn', onClick: addRule }, '+ 添加一条提醒'),
-        h('div', { style: boxStyle },
-          BoolRow({ label: '图片消息自动提示 AI 看图(内置兜底; 不勾=不再注入「请把URL传给识图工具」那条)', value: cfg.imageHint !== false, onChange: function (v) { setCfg(function (c) { return { ...c, imageHint: v } }) } }),
-          BoolRow({ label: '引用消息(默认开): 入站消息带短消息号(本地台账索引,省token) + 引用消息附原文; AI 用 [rf:短号] 引用对方消息', value: cfg.messageReference !== false, onChange: function (v) { setCfg(function (c) { return { ...c, messageReference: v } }) } })),
-
-        h('div', { style: sectionTitle }, '③.5 诊断日志(排查用)'),
-          h('p', { style: { fontSize: 12, color: '#888' } }, '默认关。开了才会把排查用的诊断日志写进 {DSH_HOME|~/.dsh} 下的 *.log（单文件 2MB 自动轮转，只留 1 份旧档）。平时别开——它会持续占盘；出问题时再开，排查完可以关掉、并把那些 .log 删掉。'),
-          BoolRow({ label: '诊断日志落盘(默认关): 写 ~/.dsh/*.log 便于离线排查', value: cfg.diagLog === true, onChange: function (v) { setCfg(function (c) { return Object.assign({}, c, { diagLog: v }) }) } }),
-          h('div', { style: sectionTitle }, '④ 定时唤醒'),
-        h('p', { style: { fontSize: 12, color: '#888' } }, '已合并到「定时任务」页(顶部 tab)一起编辑——到点主动开口的群/人分组,与她答应你的定时提醒,都在那边管理。'),
-
-        h('div', { style: sectionTitle }, '⑤ QQ 远程审批(在 QQ 里放行 dsh 权限申请)'),
-        h('p', { style: { fontSize: 12, color: '#888' } }, '机器人的工具要动"工作区外"的东西时,dsh 会申请权限。开启后审批请求直接发到你的 QQ(私聊/群聊看你从哪发起),回 /approve 验证码 放行、/deny 拒绝——只放行这一次,验证码一次性,只有你能批。'),
-        h('div', { style: boxStyle },
-          BoolRow({ label: '开启 QQ 远程审批(不勾=保持默认审批方式)', value: cfg.enableApprovals === true, onChange: function (v) { setCfg(function (c) { return { ...c, enableApprovals: v } }) } }),
-          NumRow({ label: '审批等待秒数(超时自动拒绝;默认120)', value: Math.round((cfg.approvalTimeoutMs || 120000) / 1000), onChange: function (v) { setCfg(function (c) { return { ...c, approvalTimeoutMs: v * 1000 } }) } })),
-
-        h('div', { style: sectionTitle }, '⑥ 提问卡片(她问人时要不要在旁边干等)'),
-        h('p', { style: { fontSize: 12, color: '#888' } }, '她调用 ask_user_question 问你或群友时怎么等答案。后台提问=卡片发出去她就能接着聊天/干活, 对方答完之后答案会作为一条"提问卡片·回执"自动送回她的会话(她正忙→插进当前回合不打断; 她闲着→叫醒她接着处理), 超时没答也会收到一条"超时未答"的回执。阻塞等待=旧行为, 她的这一回合一直挂到对方作答或超时, 期间收不了新消息。'),
-        h('div', { style: boxStyle },
-          ['async', 'blocking'].map(function (m) {
-            var cur = cfg.questionsMode === 'blocking' ? 'blocking' : 'async'
-            return h('label', { style: { display: 'inline-flex', gap: 5, alignItems: 'center', fontSize: 12, color: '#333', cursor: 'pointer', marginRight: 16 } },
-              h('input', { type: 'radio', name: 'qqs-qmode', checked: cur === m, onChange: function () { setCfg(function (c) { return { ...c, questionsMode: m } }) } }),
-              m === 'async' ? '后台提问(推荐默认: 不卡她)' : '阻塞等待(旧行为: 她会卡住)')
-          })),
-
-        h('div', { style: { ...card, margin: '10px 0', padding: '12px 16px' } },
-          h('div', { style: { fontWeight: 700, fontSize: 13, marginBottom: 2 } }, '⚙ 群管理基础设置'),
-          h('p', { style: { fontSize: 12, color: T.text3, margin: '0 0 6px' } }, '开启后 QQ 会话里可用群管理工具; 踢人/成员列表等官方未开放能力会在下方 Tab 里提示等待公测。'),
-          BoolRow({ label: '开启 QQ 群管理(不勾=群管理工具不可用)', value: cfg.groupAdmin && cfg.groupAdmin.enabled === true, onChange: function (v) { setGroupAdmin({ enabled: v }) } }),
-          StrRow({ label: '允许操作的主人 openid(逗号分隔,可留空=不校验)', value: (cfg.groupAdmin && Array.isArray(cfg.groupAdmin.owners) ? cfg.groupAdmin.owners : []).join(','), wide: true, onChange: function (v) { setGroupAdmin({ owners: v.split(/[,，]/).map(function (s) { return s.trim() }).filter(Boolean) }) } }),
-          StrRow({ label: '对话内默认管理群 group_openid(web 对话时群工具用它; QQ 群会话自动用当前群)', value: (cfg.groupAdmin && typeof cfg.groupAdmin.manageGroup === 'string' ? cfg.groupAdmin.manageGroup : ''), wide: true, onChange: function (v) { setGroupAdmin({ manageGroup: v.trim() }) } }),
-          BoolRow({ label: '实时接收"入群申请"事件并自动提醒(勾选后需重启才生效)', value: !!(cfg.groupAdmin && cfg.groupAdmin.watchJoinRequests), onChange: function (v) { setGroupAdmin({ watchJoinRequests: v }) } }),
-          BoolRow({ label: '收到入群申请时在该群内发提醒消息', value: !(cfg.groupAdmin && cfg.groupAdmin.notifyInGroup === false), onChange: function (v) { setGroupAdmin({ notifyInGroup: v }) } })),
-        h(GroupAdminPanel, { key: 'ga-' + (_acctNs || 'main'), ns: _acctNs || undefined }),
-
-        h('div', { style: { margin: '12px 0' } },
-          h('button', { className: 'qqs-btn', style: { marginRight: 8 }, onClick: save }, '保存'),
-          h('button', { className: 'qqs-btn', onClick: load }, '放弃修改(重新读取)')),
-        msg ? h('p', { style: { fontSize: 13, color: '#2f9e44' } }, msg) : null,
-        close ? h('button', { className: 'qqs-btn', onClick: close, style: { float: 'right' } }, '完成') : null)
+      return h('div', { style: { maxWidth: 720 } },
+        h('h2', { style: { margin: '0 0 6px' } }, 'QQ 机器人设置'),
+        h('p', { style: { fontSize: 12, color: T.text3, margin: '0 0 10px' } }, '改完点「保存」立刻生效(不用重启)。看不懂的项放着别动就行;想恢复"不限制"就把数字填 0、勾选取消、列表清空。只提交你改过的字段——没碰的项不会被动。'),
+        toolbar,
+        chips,
+        visible.length ? visible : h(Empty, { icon: '🔍', text: '没有匹配「' + q + '」的设置项' }),
+        h('div', { style: { margin: '14px 0', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+          h(SButton, { variant: 'primary', onClick: doSave }, dirtyN ? ('保存(' + dirtyN + ' 项改动)') : '保存'),
+          h(SButton, { variant: 'ghost', onClick: load }, '放弃修改(重新读取)'),
+          msg ? h('span', { style: { fontSize: 13, color: T.text2 } }, msg) : null,
+          close ? h(SButton, { variant: 'ghost', onClick: close }, '完成') : null))
     }
 
         // ── ⑥ QQ 群管理(单开大卡片; P3+ 设计系统版: 横排 Tab + 状态条 + 表格 + 空状态 + 预留接口位) ──
