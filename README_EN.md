@@ -391,6 +391,31 @@ export default {
 ```
 Then run `/tools-reload` (or ask the AI to call the `tools_reload` tool). Commands need a host restart.
 
+### Cross-channel tools: `expose: 'all'` (v1.8.0+)
+
+By default an extension tool exists **only in QQ conversations** (that is where the plugin mounts them — zero token cost anywhere else).
+One extra line makes it **visible to every conversation** (web / terminal / any non-QQ channel) and able to **act on QQ** from there:
+
+```js
+export default {
+  name: 'qq_send',
+  expose: 'all',              // ← the switch
+  description: 'list QQ chats / send a message to a group or DM',
+  inputSchema: { action: { type: 'string' }, target: { type: 'string' }, text: { type: 'string' } },
+  run: async (args, env) => {
+    const qq = env.qq;        // ← injected only for expose:'all'
+    return { ok: true, msg: (await qq.sendText('group', args.target, args.text)) ? 'sent ✓' : 'failed' };
+  },
+};
+```
+
+- **Registered name** becomes `<name>__<preset_id>` (e.g. `qq_send__whale-girl`), so you can tell which persona/account it belongs to.
+  ⚠️ **Tool names may only contain `[a-zA-Z0-9_-]`** — a character like `@` makes the LLM API reject the **whole request** (`Invalid 'tools[N].name'`). The plugin now validates first and simply **refuses** illegal names instead of breaking every turn.
+- **`env.qq`** = that persona's account pack: `{ preset, appId, appSecret, owners, groups:[{gid,name,lastAt}], c2c:[{openid,name,lastAt}], sender, sendText(scope,id,text), sendMarkdown(...), sendImage(...), apiCall(method,path,body) }`.
+- **Sending is passive-first**: `sendText()` looks up the target conversation's latest inbound `msgId` and replies with it (passive — no active-message quota, and QQ will not drop it); on failure it **retries without the msgId** (active fallback). A passive window only exists in conversations with **recent activity** — a cold group has none and will always go active.
+- Registration happens **at plugin startup** (no need to wait for a QQ message), idempotent and fail-soft.
+- **New users get examples for free**: at startup the plugin copies `examples/ext-tools/*.mjs` and `examples/botplay/*.mjs` into `{dataRoot}/.qqbot-extensions/{tools,botplay}/` — **only missing files**, never overwriting what you wrote.
+
 **For AI agents — you can write these yourself (no feature request needed):**
 - Card bodies are **plain markdown you write** (`#`, bold, `![alt](url)`, fenced code). This plugin has **no template engine — the model is the engine**. Cards with buttons go through a botplay event or the dock card editor (button callbacks must be registered host-side).
 - Extensions live in the **account data directory** (`.qqbot-extensions/`), never inside the plugin package → **upgrading or reinstalling the plugin never overwrites them**.

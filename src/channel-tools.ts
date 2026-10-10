@@ -257,6 +257,8 @@ function buildWorkspaceQqPack(tag: string, dataRoot: string): Record<string, unk
           getSessionRecord?: (s: string, p: string) => { replyTarget?: { msgId?: string } } | undefined;
         } | undefined)?.getSessionRecord?.(target.scope, id);
         passiveMsgId = String(rec?.replyTarget?.msgId ?? '');
+        // 诊断（2026-10-10）：被动窗口到底有没有 —— 排查"为何走了主动通道"用
+        try { extGlobDiag('send window=' + (passiveMsgId ? ('Y/' + passiveMsgId.slice(0, 10)) : 'N') + ' rec=' + (rec ? 'Y' : 'N') + ' key=' + String(rec && (rec as { sessionKey?: string }).sessionKey || '') + ' -> ' + target.scope + ':' + id.slice(0, 12)); } catch { /* ignore */ }
       } catch { /* ignore */ }
       if (passiveMsgId && typeof snd.sendMarkdown === 'function') {
         try {

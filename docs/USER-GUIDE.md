@@ -508,6 +508,36 @@ export default {
 ```
 写完在 QQ 里发 `/tools-reload`(或直接让 AI 调 `tools_reload` 工具)即可用, 无需重启。
 
+### ★ 跨通道工具：`expose: 'all'`（v1.8.0+）
+
+默认情况下扩展工具**只存在于 QQ 会话**里（那是插件挂工具的地方；别处的会话完全看不到 ⇒ 零 token 占用）。
+加一行就能让它**对所有会话可见**（web / 终端等非 QQ 通道），并在那边**直接操作 QQ**：
+
+```js
+export default {
+  name: 'qq_send',
+  expose: 'all',              // ← 开关
+  description: '查 QQ 聊天对象 / 向群或私聊发消息',
+  inputSchema: { action: { type: 'string' }, target: { type: 'string' }, text: { type: 'string' } },
+  run: async (args, env) => {
+    const qq = env.qq;        // ← 只有 expose:'all' 才会注入
+    return { ok: true, msg: (await qq.sendText('group', args.target, args.text)) ? '已发送 ✓' : '发送失败' };
+  },
+};
+```
+
+- **注册名**变成 `<原名>__<人设id>`（例 `qq_send__whale-girl`），多实例/多人设时一眼看出归属。
+  ⚠️ **工具名只能用 `[a-zA-Z0-9_-]`** —— 出现 `@` 等字符会被 LLM API **整轮拒绝**（`Invalid 'tools[N].name'`，机器人会全面瘫痪，
+    连 `/bot-new` 都救不回来）。插件现在**注册前会校验并拒绝**非法名，不会再让一个坏名字拖垮全链路。
+- **`env.qq`（账号包）**：`{ preset, appId, appSecret, owners, groups:[{gid,name,lastAt}], c2c:[{openid,name,lastAt}], sender, sendText(scope,id,text), sendMarkdown, sendImage, apiCall }`。
+  `groups/c2c` = 群台账（`groups.json`）＋ 各实例活跃会话合并去重，用来"按名字寻址"。
+- **发送"被动优先、失败转主动"**：`env.qq.sendText()` 先查**目标会话最近一条入站消息的 msgId**、带上它发
+  （被动回复：不吃主动消息配额、QQ 也不会吞）；失败（msg_id 过期／被动配额用尽／没有窗口）自动**去掉 msgId 重发**。
+  ⚠️ **被动窗口只在"最近有互动"的会话成立** —— 冷群没有窗口，必然走主动。
+- **注册时机 = 插件启动**（不用等 QQ 消息），幂等、失败静默。
+- **新用户白拿示例**：插件启动时把自带的 `examples/ext-tools/*.mjs`、`examples/botplay/*.mjs` 铺进
+  `{dataRoot}/.qqbot-extensions/{tools,botplay}/` —— **只补不存在**的，绝不覆盖你自己写的（因此也不会重复搬）。
+
 ### 给 AI 的要点(让 AI 帮用户写扩展时照此办)
 1. 命令/工具文件都放**账号数据目录**的 `.qqbot-extensions/` 下(dataRoot 优先, 无则 cwd), 别放插件包内。
    → **升级/重装插件(换 node_modules)只动插件本体, 不会覆盖扩展目录**, 用户的扩展永久保留。

@@ -352,6 +352,32 @@ dsh: disabling profile plugin row "mcp-chrome": Plugin ... is incompatible with 
 
 ---
 
+## 🧩 扩展工具：自己写 QQ 工具，还能"跨通道"（v1.8.0+）
+
+把 `.mjs` 放进 `{dataRoot}/.qqbot-extensions/tools/`，AI 就能调用它（写完发 `/tools-reload` 即生效，无需重启）。
+**默认**：扩展工具**只在 QQ 会话里存在**——别处的会话完全看不到它，所以也不占一点 token。
+
+**加一行 `expose: 'all'`**，它就对**所有会话可见**（web 对话、终端…），并在那边**直接操作 QQ**：
+
+```js
+export default {
+  name: 'qq_send',
+  expose: 'all',
+  description: '查 QQ 聊天对象 / 向群或私聊发消息',
+  inputSchema: { action: { type: 'string' }, target: { type: 'string' }, text: { type: 'string' } },
+  run: async (args, env) => {
+    const qq = env.qq;   // 账号包：appId / 群与私聊清单 / sender / sendText / apiCall…
+    return { ok: true, msg: (await qq.sendText('group', args.target, args.text)) ? '已发送 ✓' : '发送失败' };
+  },
+};
+```
+
+- 注册名会带上**人设 id**（如 `qq_send__whale-girl`），归属一眼可见；
+  ⚠️ **工具名只能用 `[a-zA-Z0-9_-]`** —— 用 `@` 之类的字符会被 LLM API **整轮拒绝**（会让机器人全面瘫痪）。插件现在会**直接拒绝注册**这类名字，不会再把整条链路带崩。
+- 发送**被动优先、失败转主动**：先拿目标会话最近的 `msgId` 走被动回复（不吃主动配额、也不被 QQ 吞），失败再去掉 `msgId` 重发。冷群没有被动窗口，会直接走主动。
+- **新用户不用自己搬示例**：插件启动时会把自带的 `examples/ext-tools`、`examples/botplay` **只补不覆盖**地铺进你的扩展目录 —— 装上就有能跑的工具（如 `qq_send`）和卡片示例。
+
+细节见 **[用户手册](./docs/USER-GUIDE.md)** 的「自定义 QQ 工具」一节。
 ## 🔨 锤子面板：禁言 / 踢人（v1.6.3）
 
 dock 面板里的 **🔨 锤子**（原来叫「🔇 禁言」），下面分两页：
