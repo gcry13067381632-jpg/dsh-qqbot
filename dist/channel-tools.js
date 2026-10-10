@@ -1035,6 +1035,8 @@ export async function apply(ctx) {
     const replyGateTool = defineTool({
         name: 'reply_gate',
         description: '回复闸门: 开始回复前先调用它, 决定本回合开口还是静默。传 reply:true → 正常继续, 按当前对话决定说什么; 传 reply:false → 本回合立即静默终止, 你不会再输出任何内容(这条消息就像没发生过)。选 true 还是 false 由你根据当前对话自己判断: 觉得该回应就 true, 觉得安静待着更好就 false。' +
+            '\n✅ **收到 reply:false 后，你会看到一条 `tool call aborted` 之类的"报错" —— 那正是「静默成功」本身**（本工具就是靠中断输出实现的，设计如此），不是工具坏了、也不是调用失败。看到它请直接收手，什么都不用做、也不用重试。' +
+            '\n⛔ **不要为了"想安静"去动别的开关**（例如把出站模式切成 silent/静默）：那会影响**后续所有回合**，而你要的只是"这一轮别说话"。要静默，只走本工具。' +
             '\n⚠️ 传 reply:false 后**不要再调用任何工具**(包括记笔记、记喜好、发表情包): 本回合已经关闭, 那些调用会被直接中止 —— 想记录的话, 留到下一次开口的回合里做。',
         parameters: {
             reply: { type: 'boolean', required: true, description: 'true=正常开口回复; false=静默终止本回合(不再输出任何内容)' },
