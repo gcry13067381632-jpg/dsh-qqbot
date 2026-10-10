@@ -2531,8 +2531,21 @@ export async function apply(ctx) {
             // ★ expose:'all' 的工具**不在这里注册** —— 交给 ensureExtToolsGlobal 挂到插件根
             //   （只有挂到那一层，web / 终端等非 QQ 会话才继承得到；在这儿重复注册的话，
             //    QQ 会话会同时看到「带后缀」和「不带后缀」两套工具）
-            if (def.expose === 'all')
+            // ★ 2026-10-10 修（主人实测抓到）：工具可能被改成 expose:'all'（或改回）⇒
+            //   注册名会在「原名 ↔ 原名__人设ID」之间切换。旧名字那份**必须回收**，
+            //   否则会同时存在两份同样的工具（同一份 schema 进上下文两次 ⇒ 白占 token）。
+            if (def.expose === 'all') {
+                const stale = myDisposers.get(def.name);
+                if (stale) {
+                    try {
+                        stale();
+                    }
+                    catch { /* 旧句柄已失效 */ }
+                    myDisposers.delete(def.name);
+                    extDiag('回收旧注册(该工具已改为 expose:all): ' + def.name);
+                }
                 continue;
+            }
             try {
                 // 注：expose:'all' 的工具已在循环开头 continue（它们由 ensureExtToolsGlobal 全局注册）。
                 //     走到这里的都是"只服务 QQ 会话"的工具 ⇒ 名字保持原名，不带 @人设id
