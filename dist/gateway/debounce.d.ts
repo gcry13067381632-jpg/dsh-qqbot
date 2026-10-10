@@ -29,6 +29,7 @@ import type { Middleware } from '@tencent-connect/qqbot-nodejs';
 import type { ImQQBotConfig } from '../config.js';
 import type { SessionManager } from '../session/index.js';
 import type { Logger } from '../types.js';
+export declare function markTurnAborted(sessionId: string): void;
 export declare function injectSynthetic(scope: 'group' | 'c2c', peerId: string, text: string, opts?: {
     senderId?: string;
     senderName?: string;

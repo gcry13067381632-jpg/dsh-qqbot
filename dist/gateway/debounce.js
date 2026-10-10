@@ -47,10 +47,50 @@ function busySendModeOf(config) {
  *
  * ⚠️ 结构保留：想恢复提示，只要把对应的句子填回 INTERJECT_NOTES 即可（空数组 = 不带任何前缀）。
  */
-const INTERJECT_NOTES = [];
-/** 按"本回合已插话次数"取提示；空数组（当前默认）⇒ 永远返回空串，即"静默插话" */
-function interjectNoteFor(_seq) {
-    return INTERJECT_NOTES.length ? (INTERJECT_NOTES[INTERJECT_NOTES.length - 1] ?? '') : '';
+const INTERJECT_NOTES = [
+    '[插话] 你思考/输出期间群友新发的消息(非对你的回应): 先做完当前任务, 再按需回应。',
+    '[插话] 又有群友新消息(非对你的回应): 先做完当前任务。',
+    '[插话] 又有新消息(非对你的回应)。',
+];
+/**
+ * 「本回合是被意外中止的」标记（2026-10-10 主人定）。
+ *
+ * 背景：插话前缀（"[插话]…先做完当前任务"）只在**回合确实还在跑**时才有意义。
+ * 但"停止生成"、闸门 self-cancel、崩溃恢复这些路径收尾后，宿主那边这一步是 aborted/interrupted，
+ * 而会话记录的 `turnActive` 未必立刻翻掉 ⇒ 之后插进来的消息会被**误标**成"[插话]"，
+ * 面板上就冒出一串"[插话] 又有群友新消息…"（主人实测）。
+ * ⇒ 由 session-manager 在收到 aborted/interrupted 决策时打点；TTL 内这类消息**不带任何前缀**。
+ *   （正常跑着的回合：照旧带前缀，行为不变。）
+ */
+const ABORTED_TTL_MS = 5 * 60 * 1000;
+const abortedAt = new Map();
+export function markTurnAborted(sessionId) {
+    try {
+        const k = String(sessionId || '');
+        if (k)
+            abortedAt.set(k, Date.now());
+    }
+    catch { /* ignore */ }
+}
+function turnAbortedRecently(sessionId) {
+    const k = String(sessionId || '');
+    if (!k)
+        return false;
+    const t = abortedAt.get(k);
+    if (!t)
+        return false;
+    if (Date.now() - t > ABORTED_TTL_MS) {
+        abortedAt.delete(k);
+        return false;
+    }
+    return true;
+}
+/** 按"本回合已插话次数"取提示；**该会话刚被中止** ⇒ 返回空串（那批消息不是"插话"） */
+function interjectNoteFor(seq, sessionId) {
+    if (turnAbortedRecently(sessionId))
+        return '';
+    const i = Math.min(Math.max(0, Math.floor(Number(seq) || 0)), INTERJECT_NOTES.length - 1);
+    return INTERJECT_NOTES[i] ?? INTERJECT_NOTES[0];
 }
 function shortSender(v) {
     const s = String(v ?? '').trim();
@@ -119,7 +159,7 @@ function interjectBatch(rec, entries, logger) {
         return false;
     // 逐次缩短提示(2026-10-09): 本回合第 n 次插话就用第 n 档; 注入成功后才 +1（失败回落排队，不算插过）
     const seq = Number(rec.interjectSeq) || 0;
-    const text = buildInterjectText(entries, interjectNoteFor(seq));
+    const text = buildInterjectText(entries, interjectNoteFor(seq, rec.sessionId));
     if (!text)
         return false;
     try {

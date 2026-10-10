@@ -41,6 +41,7 @@ import type {
   TokenUsageStats,
 } from './types.js';
 import type { QQBotSender } from '../transport/outbound-buffer.js';
+import { markTurnAborted } from '../gateway/debounce.js';
 import { apply as mountChannelTools, readContextPending, clearContextPending, ensureContextToolsGlobal, restrictContextTools, ensureExtToolsGlobal } from '../channel-tools.js';
 import { createGroupAdmin } from '../api/group-admin.js';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
@@ -992,6 +993,11 @@ export class SessionManager {
         const ns = this.nsForCwd(cwd);
         if (!ns) return decision; // 非本 bot agent, 不注入
         const dec = decision as { kind?: string; messages?: unknown[] };
+        // ★ 2026-10-10：本步若是 aborted/interrupted（点"停止生成" / 闸门 self-cancel / 崩溃恢复），
+        //   给该会话打个"刚被中止"点 ⇒ 之后插进来的消息不再被误标成 "[插话]…" 前缀（见 debounce.ts）
+        if (dec?.kind === 'aborted' || dec?.kind === 'interrupted') {
+          try { markTurnAborted(String((agent?.session as { id?: string } | undefined)?.id ?? '')); } catch { /* ignore */ }
+        }
         if (dec?.kind !== 'enter' || !Array.isArray(dec.messages)) return decision;
 
         // ── 无上下文模式(2026-09-27)：登记"本回合结束后省略历史" ──
