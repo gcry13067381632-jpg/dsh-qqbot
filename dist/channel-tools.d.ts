@@ -95,6 +95,32 @@ export declare function syncContextTools(agentCtx: unknown, shouldHave: boolean,
  * 幂等靠 globalThis 记句柄：跨热刷（模块重新 import）依然有效，避免热刷后重复注册被宿主判重名。
  * ⚠️ 可见性不在这里决定 —— 交给 {@link restrictContextTools} 按会话剪枝。
  */
+/**
+
+ * 把 `expose: 'all'` 的扩展工具注册到**插件根作用域**（2026-10-10 主人要的"暴露给全部会话"）。
+
+ *
+
+ * 为什么必须挂在这一层：扩展工具平时由 session-manager 在**每个 QQ 会话**上用 `agentCtx` 注册，
+
+ * 而 web / 终端等**非 QQ 会话不走那条链** ⇒ 压根看不到它们。想让它们跨通道，
+
+ * 只能挂到插件根 —— 宿主会让所有会话继承插件作用域的工具（`context_*` 三工具当年也是为此才改成全局）。
+
+ *
+
+ * 命名：`<name>@<人设 id>`，并且**每个账号实例各注册一份**（实例各有自己的 preset / appId / 账号数据）；
+
+ * 执行时由注册名里的 tag 反查账号包（见 buildWorkspaceQqPack）—— **名字即归属**。
+
+ *
+
+ * 幂等：句柄存 globalThis（跨热刷可见），已注册过的 `name@tag` 不重复注册。
+
+ * fail-soft：拿不到 tools 服务 / 没有实例 / 目录读不到，一律静默跳过，绝不影响主流程。
+
+ */
+export declare function ensureExtToolsGlobal(globalCtx: unknown): void;
 export declare function ensureContextToolsGlobal(globalCtx: unknown): void;
 /**
  * 按会话**实时剪枝**三个上下文工具的可见性（2026-10-09，主人要的"实时变更"）。

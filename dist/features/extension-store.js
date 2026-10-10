@@ -18,9 +18,9 @@
  * 群聊前置解析 cmdMap + SDK slash 都覆盖 → /命令 重启后即用(宿主有 /bot-restart 一键重启)。
  * 热刷(不重启)留给 P4.2 dock 管理 UI。
  */
-import { readdirSync, statSync } from 'node:fs';
+import { readdirSync, statSync, existsSync, mkdirSync, copyFileSync } from 'node:fs';
 import { join, extname } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 /** 扩展命令目录名(相对 cwd) */
 export const EXT_COMMANDS_SUBDIR = join('.qqbot-extensions', 'commands');
 /** 扩展工具目录名(相对 cwd) */
@@ -134,6 +134,8 @@ function normalizeToolModule(mod, file, logger) {
             run: obj.run,
             // 有才挂：让"不接收交互的工具"与老版本行为完全一致
             ...(onInteraction ? { onInteraction } : {}),
+            // 同上：不声明 expose 的工具，行为与老版本一模一样
+            ...(obj?.expose === 'all' ? { expose: 'all' } : {}),
         };
     }
     catch (err) {
@@ -256,5 +258,57 @@ export async function loadBotplayExtensionModule(dataRoot, file, logger) {
         logger.warn(`[botplay-ext] ${safe} 加载失败: ${msg}`);
         return { ok: false, error: `${safe}: ${msg}`, path: abs };
     }
+}
+/**
+ * 首次运行"送个见面礼"：把本包自带的扩展示例（`examples/ext-tools/*.mjs`）
+ * 铺到用户的扩展目录 `{dataRoot}/.qqbot-extensions/tools/`。
+ *
+ * 场景（2026-10-10 主人定）：新用户装上插件、工作目录里生成 `dshqqbot/` 之后，
+ * **不用自己手动搬示例** —— 插件启动时自动铺一份可跑的工具示例进去。
+ *
+ * ⚠️ 三条纪律：
+ *   ① **只补不存在**的文件，绝不覆盖用户改过/写过的同名文件；
+ *   ② 失败静默（示例只是见面礼，绝不能影响插件启动）；
+ *   ③ 返回本次铺设的数量（便于日志/诊断）。
+ */
+export function seedExampleTools(dataRoot, logger) {
+    let n = 0;
+    try {
+        // 项目里**所有**扩展示例都要送（2026-10-10 主人定）：工具示例 + botplay 卡片示例
+        const sets = [
+            ['../../examples/ext-tools/', join(dataRoot, EXT_TOOLS_SUBDIR)],
+            ['../../examples/botplay/', join(dataRoot, EXT_BOTPLAY_SUBDIR)],
+        ];
+        for (const [rel, dstDir] of sets) {
+            try {
+                const srcDir = fileURLToPath(new URL(rel, import.meta.url));
+                if (!existsSync(srcDir))
+                    continue;
+                try {
+                    mkdirSync(dstDir, { recursive: true });
+                }
+                catch { /* 建不出就跳过这套 */ }
+                for (const file of readdirSync(srcDir)) {
+                    if (!ALLOWED_EXT.has(extname(file)))
+                        continue;
+                    const to = join(dstDir, file);
+                    if (existsSync(to))
+                        continue; // ★ 不覆盖用户已有的（也就不会重复搬）
+                    try {
+                        copyFileSync(join(srcDir, file), to);
+                        n += 1;
+                    }
+                    catch { /* 单个失败继续 */ }
+                }
+            }
+            catch { /* 单套失败继续下一套 */ }
+        }
+        if (n > 0)
+            logger.info?.(`[ext-tools] 已自动铺 ${n} 个扩展示例（tools + botplay）`);
+    }
+    catch (err) {
+        logger.debug?.('[ext-tools] 示例铺设跳过: ' + (err instanceof Error ? err.message : String(err)));
+    }
+    return n;
 }
 //# sourceMappingURL=extension-store.js.map

@@ -461,6 +461,34 @@ export async function bootstrapGateway(
   };
   approvalCtx.on('approval/request', makeApprovalListener(myApprovalHandler as never) as never, { prepend: true });
 
+  // ── expose:'all' 的扩展工具：**启动即注册**（2026-10-10 主人定）────────────
+  //  ⚠️ 之前它只挂在 agent/pre-step 上（那是"每个 QQ 会话每步"才触发）⇒
+  //     QQ 不活跃时永远注册不上（主人原话："不能 qq 不活跃也注册吗" —— 对）。
+  //  现在：插件启动就注册一次，并每 5 秒重试（最多 12 次，约 1 分钟）兜住"实例/扩展目录稍后才就绪"。
+  //  用动态 import 避免与 channel-tools 的循环依赖；函数内部自己 `ctx.root ?? ctx`，幂等 + 节流。
+  //  工具名 = `<name>__<人设id>`（分隔符只能是 [a-zA-Z0-9_-]，`@` 会被 LLM API 拒 —— 见 channel-tools 注释）。
+  void (async () => {
+    for (let i = 0; i < 12; i++) {
+      try {
+        const ct = await import('../channel-tools.js');
+        ct.ensureExtToolsGlobal(ctx);
+      } catch { /* 单次失败继续重试 */ }
+      await new Promise((r) => setTimeout(r, 5000));
+    }
+  })();
+  logger.info('[im-qqbot] expose:all 扩展工具：启动即注册（含重试）已启动');
+
+  // ── 首次运行"见面礼"：把本包自带的扩展示例铺到用户的扩展目录（2026-10-10 主人定）──
+  //   用户的工作目录里生成 `dshqqbot/` 之后，不用自己手动搬示例 ——
+  //   插件启动就把 examples/ext-tools/*.mjs 补进 `{dataRoot}/.qqbot-extensions/tools/`。
+  //   ⚠️ 只补不覆盖（用户改过的同名文件一律不动），失败静默，绝不影响启动。
+  void (async () => {
+    try {
+      const es = await import('../features/extension-store.js');
+      const n = es.seedExampleTools(dataRootOf(config), logger);
+      if (n > 0) logger.info(`[im-qqbot] 已自动铺设 ${n} 个扩展示例`);
+    } catch { /* 静默 */ }
+  })();
   logger.info(`[im-qqbot] QQ 远程审批接线就绪(${config.enableApprovals ? '已启用' : '默认关闭, Web 设置可热开'})`);
 
   // ── QQ 远程提问(按钮卡片版): ask_user_question → QQ 卡片按钮 ──

@@ -41,7 +41,7 @@ import type {
   TokenUsageStats,
 } from './types.js';
 import type { QQBotSender } from '../transport/outbound-buffer.js';
-import { apply as mountChannelTools, readContextPending, clearContextPending, ensureContextToolsGlobal, restrictContextTools } from '../channel-tools.js';
+import { apply as mountChannelTools, readContextPending, clearContextPending, ensureContextToolsGlobal, restrictContextTools, ensureExtToolsGlobal } from '../channel-tools.js';
 import { createGroupAdmin } from '../api/group-admin.js';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { appendFileSync, statSync } from 'node:fs';
@@ -943,6 +943,19 @@ export class SessionManager {
     if (!hostCtx?.on || (this as unknown as Record<string, unknown>).__rulesMounted) return;
     (this as unknown as Record<string, unknown>).__rulesMounted = true;
     hostCtx.on('agent/pre-step', async (payload: unknown, next: unknown) => {
+      // ★ 2026-10-10 主人要的"暴露给全部会话"：把 expose:'all' 的扩展工具挂到**插件根作用域**。
+      //   ⚠️ 必须放在**最外层、无条件**执行 —— 它跟"无上下文模式"无关，任何会话的每一步都该保证注册到位。
+      //   （人家最初把它塞进了下面的条件分支 ⇒ 条件不满足就永不执行 ⇒ 工具谁都看不到，连自己都看不见。）
+      //   函数内部：15s 节流 + 幂等（已注册的 name@tag 直接跳过）+ fail-soft（出错静默）。
+      try { ensureExtToolsGlobal(this.ctx); } catch { /* ignore */ }
+      // ★ 2026-10-10 主人定：剪枝要覆盖非 QQ 会话。
+      //   这里对每一个进来的会话先无条件设 deny（context_memo/compact/drop + qq_group_admin）；
+      //   若它确实是无上下文模式的 QQ 会话，下面那段会按开关把它放开（后设状态覆盖前者）。
+      //   非 QQ 会话（web / 终端）就保持 deny，那几个工具连名字都不出现（零 token）。
+      try {
+        const _nonQqCtx = ((payload as { agent?: { ctx?: unknown } } | undefined)?.agent)?.ctx;
+        if (_nonQqCtx) restrictContextTools(_nonQqCtx, false, { dataRoot: String(this.dataRoot ?? '') });
+      } catch { /* ignore */ }
       // ctxSmartOn 提到回调最外层（固定 trim 让位 + 后面的消费/注入都要用）
       let ctxSmartOn = false;
       // ⚠️ 2026-10-09：同一 pre-step 里有两个 try 块，后面"动态挂/卸三个上下文工具"那块

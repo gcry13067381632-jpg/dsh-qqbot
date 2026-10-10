@@ -47,6 +47,18 @@ export interface ExtensionToolDef {
         clickedBefore: boolean;
         event: unknown;
     }) => Promise<unknown> | unknown;
+    /**
+     * 暴露范围（2026-10-10 主人定）：让扩展工具能**跨通道**用。
+     *
+     * - 不写 / 'qq'：完全维持旧行为 —— 只在 QQ 会话里能拿到 manager/sender。
+     * - 'all'：注册名自动带**人设 id**（`<name>@<preset>`，如 `send_texts@whale`）标明归属，
+     *   并在执行时注入 `env.qq`（该人设实例的"QQ 账号包"：
+     *   appId / appSecret / owners / groups[] / c2c[] / sender / sendText·sendMarkdown·sendImage / apiCall）——
+     *   于是 **web、终端等非 QQ 通道的会话**也能把消息发进指定的群或私聊。
+     *
+     * ⚠️ 账号参数只交给本机 `.qqbot-extensions/tools/*.mjs`（= 主人自己写的代码），与内置工具同权限。
+     */
+    expose?: 'qq' | 'all';
 }
 /** 扫描并加载扩展工具目录(P4.2; 由 channel-tools 在注册时调用) */
 export declare function loadExtensionTools(cwd: string | undefined, logger: Logger): Promise<ExtensionToolDef[]>;
@@ -97,4 +109,17 @@ export declare function loadBotplayExtensionModule(dataRoot: string, file: strin
     error: string;
     path: string;
 }>;
+/**
+ * 首次运行"送个见面礼"：把本包自带的扩展示例（`examples/ext-tools/*.mjs`）
+ * 铺到用户的扩展目录 `{dataRoot}/.qqbot-extensions/tools/`。
+ *
+ * 场景（2026-10-10 主人定）：新用户装上插件、工作目录里生成 `dshqqbot/` 之后，
+ * **不用自己手动搬示例** —— 插件启动时自动铺一份可跑的工具示例进去。
+ *
+ * ⚠️ 三条纪律：
+ *   ① **只补不存在**的文件，绝不覆盖用户改过/写过的同名文件；
+ *   ② 失败静默（示例只是见面礼，绝不能影响插件启动）；
+ *   ③ 返回本次铺设的数量（便于日志/诊断）。
+ */
+export declare function seedExampleTools(dataRoot: string, logger: Logger): number;
 //# sourceMappingURL=extension-store.d.ts.map

@@ -111,6 +111,183 @@ export const inject = ['tools'];
  *   防止 setup 未执行/竞态导致"不是 QQ 会话"误判(线上踩坑: 重启后 setup 未跑到)。
  */
 let channelBridges = [];
+/** 全局懒扫节流（2026-10-10）：ensureExtToolsGlobal 挂在"每 step 都触发"的钩子上，别每次都扫盘 */
+let lastExtGlobAt = 0;
+/**
+ * expose:'all' 全局注册的**专用诊断**（2026-10-10 排查用）。
+ * ⚠️ 无条件写：不走 diagWrite/diagLog 那套（那套默认关，害我以为"没跑"，其实是"没记"）。
+ * 行程：~/.dsh/qqbot-extglob.log —— 定位完可整段删。
+ */
+function extGlobDiag(line) {
+    // ★ 2026-10-10 主人提醒（人家的疏忽）：**不该再有"无条件写自有文件"的日志** ——
+    //   别的用户不需要它，而且没有轮转会一直吃盘（1.7.3 就为这个还过债）。
+    //   现在改走统一诊断底座：受设置页 ⑤「诊断日志落盘」开关控制（**默认关**）、2MB 自动轮转、只留 1 份旧档。
+    //   ⇒ 需要排查时把那个开关打开即可，平时一个字节都不写。
+    diagWrite('qqbot-extglob', line);
+}
+/** 工作区标识兜底：cwd 末级目录名（清洗后）。仅在实例没配 preset 时使用 */
+function workspaceTagOf(cwd) {
+    const base = String(cwd ?? '').replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? '';
+    const asciiOnly = base.replace(/[^A-Za-z0-9_-]+/g, '');
+    if (asciiOnly.length >= 2)
+        return asciiOnly.toLowerCase().slice(0, 24);
+    let hsh = 0;
+    const srcT = String(cwd ?? base);
+    for (let i = 0; i < srcT.length; i++)
+        hsh = (hsh * 31 + srcT.charCodeAt(i)) | 0;
+    return 'ws' + Math.abs(hsh).toString(36).slice(0, 6);
+}
+/** 某实例的标识：优先**人设 id**（config.preset），没配才回落工作区目录名 */
+function instanceTagOfManager(m) {
+    const cfg = m?.config;
+    const p = String(cfg?.preset ?? '').trim();
+    return p || workspaceTagOf(m?.cwd);
+}
+/** 按标识找人设实例的通道桥（先查全局桥，再退会话注册表） */
+function findChannelByTag(tag) {
+    if (!tag)
+        return undefined;
+    for (const b of channelBridges) {
+        if (b?.manager && instanceTagOfManager(b.manager) === tag)
+            return { manager: b.manager, sender: b.sender };
+    }
+    try {
+        for (const m of managersOf()) {
+            if (instanceTagOfManager(m) === tag) {
+                const b = channelBridges.find((x) => x.manager === m);
+                return { manager: m, sender: b?.sender };
+            }
+        }
+    }
+    catch { /* ignore */ }
+    return undefined;
+}
+/**
+ * 构造"人设 / 工作区的 QQ 账号包"（expose:'all' 专用；非 QQ 会话的唯一入口）。
+ * @param tag       人设 id（如 whale）
+ * @param dataRoot  插件数据根（群台账在这里）
+ */
+function buildWorkspaceQqPack(tag, dataRoot) {
+    const hit = findChannelByTag(tag);
+    if (!hit)
+        return undefined;
+    const mgr = hit.manager;
+    // ⚠️ 2026-10-10：**别从桥里拿 sender** —— channelBridges 未必被填充（实测是空的），
+    //   真正的 sender 在 manager 上：installChannelSender() → this.channelSender。
+    const mgrSender = mgr?.channelSender;
+    extGlobDiag('pack tag=' + tag + ' bridgeSender=' + (hit.sender ? 'Y' : 'N') + ' mgrSender=' + (mgrSender ? 'Y' : 'N'));
+    const sender = (hit.sender ?? mgrSender);
+    const root = String(mgr?.dataRoot ?? dataRoot ?? '');
+    const toTarget = (scope, id) => ({
+        scope: scope === 'c2c' ? 'c2c' : 'group', targetId: id,
+    });
+    // 已知聊天目标 = 群注册表(groups.json) ＋ 各实例活跃会话；同一目标按"最新者胜"
+    const known = new Map();
+    const add = (scope, id, name, lastAt = 0) => {
+        if (!id)
+            return;
+        const key = scope + ':' + id;
+        const cur = known.get(key);
+        if (!cur) {
+            known.set(key, { scope, id, name, lastAt });
+            return;
+        }
+        if (lastAt > cur.lastAt) {
+            cur.lastAt = lastAt;
+            if (name)
+                cur.name = name;
+            return;
+        }
+        if (!cur.name && name)
+            cur.name = name;
+    };
+    try {
+        const reg = JSON.parse(readFileSync(groupRegistryPath(root), 'utf8'));
+        for (const [gid, v] of Object.entries(reg ?? {}))
+            add('group', gid, String(v?.name ?? ''), Number(v?.lastAt ?? 0));
+    }
+    catch { /* 没有注册表就跳过 */ }
+    try {
+        for (const m of managersOf()) {
+            try {
+                for (const s of (m.listSessions?.() ?? [])) {
+                    // ⚠️ listSessions() 只给 scope/peerId（没有 name）→ 群名靠 groups.json 注册表补
+                    add(s.scope === 'c2c' ? 'c2c' : 'group', String(s.peerId ?? ''), '');
+                }
+            }
+            catch { /* 单个实例失败无妨 */ }
+        }
+    }
+    catch { /* ignore */ }
+    const all = [...known.values()].sort((a, b) => b.lastAt - a.lastAt);
+    return {
+        preset: String(mgr?.config?.preset ?? tag),
+        tag,
+        cwd: String(mgr?.cwd ?? ''),
+        dataRoot: root,
+        appId: mgr?.config?.appId,
+        appSecret: mgr?.config?.appSecret,
+        owners: mgr?.config?.owners ?? [],
+        groups: all.filter((x) => x.scope === 'group').slice(0, 200).map((x) => ({ gid: x.id, name: x.name, lastAt: x.lastAt })),
+        c2c: all.filter((x) => x.scope === 'c2c').slice(0, 200).map((x) => ({ openid: x.id, name: x.name, lastAt: x.lastAt })),
+        sender,
+        /**
+         * 发文本到指定目标：sendText('group', openid, '文本') / sendText('c2c', openid, '文本')
+         * ★ 2026-10-10 主人定：先走被动通道（带会话的最近 msgId），失败自动转主动。
+         *   ① 查目标会话最近一条入站消息的 msgId
+         *      （manager.getSessionRecord(scope, peerId).replyTarget.msgId，每次入站都会刷新）
+         *      ⇒ 带上它发 = 被动回复（不消耗主动消息配额、QQ 也不吞）；
+         *   ② 没有窗口 / msg_id 已过期 / 被动配额用尽 ⇒ 去掉 msgId 重发 = 主动（QQ 允许的兜底）。
+         *   返回据实；两条路径都有诊断留痕（~/.dsh/qqbot-extglob.log）。
+         */
+        sendText: async (scope, id, text) => {
+            if (!id)
+                return false;
+            const snd = sender;
+            if (!snd)
+                return false;
+            const target = toTarget(scope, id);
+            let passiveMsgId = '';
+            try {
+                const rec = mgr?.getSessionRecord?.(target.scope, id);
+                passiveMsgId = String(rec?.replyTarget?.msgId ?? '');
+            }
+            catch { /* ignore */ }
+            if (passiveMsgId && typeof snd.sendMarkdown === 'function') {
+                try {
+                    await snd.sendMarkdown({ ...target, msgId: passiveMsgId }, String(text));
+                    extGlobDiag('send PASSIVE ok -> ' + target.scope + ':' + id);
+                    return true;
+                }
+                catch (e) {
+                    extGlobDiag('send PASSIVE fail, 转主动 -> ' + target.scope + ':' + id + ' :: ' + ((e instanceof Error ? e.message : String(e)) || '').slice(0, 140));
+                }
+            }
+            try {
+                if (typeof snd.sendText === 'function') {
+                    await snd.sendText(target, String(text));
+                    extGlobDiag('send ACTIVE ok -> ' + target.scope + ':' + id);
+                    return true;
+                }
+                if (typeof snd.sendMarkdown === 'function') {
+                    await snd.sendMarkdown(target, String(text));
+                    extGlobDiag('send ACTIVE ok(md) -> ' + target.scope + ':' + id);
+                    return true;
+                }
+            }
+            catch (e) {
+                extGlobDiag('send ACTIVE fail -> ' + target.scope + ':' + id + ' :: ' + ((e instanceof Error ? e.message : String(e)) || '').slice(0, 140));
+                return false;
+            }
+            return false;
+        },
+        sendMarkdown: (scope, id, md) => (typeof sender?.sendMarkdown === 'function' && id ? Promise.resolve(sender.sendMarkdown(toTarget(scope, id), String(md))).then(() => true).catch(() => false) : Promise.resolve(false)),
+        sendImage: (scope, id, src) => (typeof sender?.sendMedia === 'function' && id ? Promise.resolve(sender.sendMedia(toTarget(scope, id), 'image', src)).then(() => true).catch(() => false) : Promise.resolve(false)),
+        apiCall: typeof mgr?.groupAdmin?.apiCall === 'function'
+            ? (m, p, b) => mgr.groupAdmin.apiCall(m, p, b)
+            : undefined,
+    };
+}
 /** 全局「智能判断」开关（由 session-manager 初始化时注入；照 setChannelBridge 同款做法） */
 let ctxSmartGlobal = false;
 export function setContextlessSmartGlobal(v) { ctxSmartGlobal = v === true; }
@@ -2272,6 +2449,21 @@ export async function apply(ctx) {
             diag(`注册失败: ${t.name} → ${msg}`);
         }
     }
+    // ══════════════════════════════════════════════════════════════════════════
+    // expose:'all' 支撑（2026-10-10 主人定）—— 扩展工具的"跨通道"能力
+    // ══════════════════════════════════════════════════════════════════════════
+    // 背景：扩展工具的执行体一直靠 `findSessionRec(当前 agent)` 拿 manager/sender，
+    //   而这条链**只在 QQ 会话里成立** —— 在 web / 终端会话里调用，manager 是空的，
+    //   工具就变成空壳（拿不到 appId，也发不出消息）。
+    // 做法：工具文件里声明 `expose: 'all'` 之后 ——
+    //   ① 注册名带上**人设 id**（`<name>@<preset>`，如 `send_texts@whale`）标明归属；
+    //   ② 执行时注入 `env.qq` = 该人设实例的"QQ 账号包"：
+    //      { preset, appId, appSecret, owners, groups[], c2c[], sender,
+    //        sendText / sendMarkdown / sendImage, apiCall }
+    //      ⇒ 非 QQ 会话也能把消息发进**指定的群 / 私聊**。
+    // 不声明 expose 的工具**行为完全不变**（向后兼容）。
+    // ⚠️ 安全性：这些参数只交给本机 `.qqbot-extensions/tools/*.mjs`（主人自己写的代码），
+    //    与内置工具同权限；别把它当成"对外暴露的口子"。
     // ── P4.2 用户扩展工具: 扫描 {cwd}/.qqbot-extensions/tools/ 并注册 ──
     // 扩展文件 run(args, env) 可拿: { cwd, manager, sender, replyTarget, logger }
     // (调用方 session-manager 已 await mountChannelTools, 此处 await 加载不影响时序)。
@@ -2329,19 +2521,32 @@ export async function apply(ctx) {
             return m;
         })();
         for (const def of defs) {
+            // ★ expose:'all' 的工具**不在这里注册** —— 交给 ensureExtToolsGlobal 挂到插件根
+            //   （只有挂到那一层，web / 终端等非 QQ 会话才继承得到；在这儿重复注册的话，
+            //    QQ 会话会同时看到「带后缀」和「不带后缀」两套工具）
+            if (def.expose === 'all')
+                continue;
             try {
+                // 注：expose:'all' 的工具已在循环开头 continue（它们由 ensureExtToolsGlobal 全局注册）。
+                //     走到这里的都是"只服务 QQ 会话"的工具 ⇒ 名字保持原名，不带 @人设id
+                const scopedName = def.name;
+                // ⚠️ 兜底闸门（同上）：扩展工具作者若写了中文名，这里直接不注册 —— 别把整条链路带崩
+                if (!/^[a-zA-Z0-9_-]+$/.test(scopedName)) {
+                    extDiag('跳过非法工具名(中文等): ' + scopedName);
+                    continue;
+                }
                 // 同一个 ctx 再来一遍（热刷）= 更新已有工具：先摘掉我们自己上次注册的那份
-                const prev = myDisposers.get(def.name);
+                const prev = myDisposers.get(scopedName);
                 if (prev) {
                     try {
                         prev();
                     }
                     catch { /* 旧句柄已失效，忽略 */ }
-                    myDisposers.delete(def.name);
+                    myDisposers.delete(scopedName);
                     extDiag(`热替换: 先注销旧 ${def.name}`);
                 }
                 const tool = defineTool({
-                    name: def.name,
+                    name: scopedName,
                     description: def.description + ' (用户扩展工具)',
                     parameters: def.inputSchema,
                     output: {
@@ -2402,6 +2607,8 @@ export async function apply(ctx) {
                                 if (!(k in env))
                                     env[k] = v;
                             env.caps = caps;
+                            // 注：expose:'all' 的工具带 env.qq 的那份在 ensureExtToolsGlobal 里全局注册
+                            //     （非 QQ 会话只有继承到那一份才能用），这里不再重复注入。
                         }
                         catch (err) {
                             extDiag(`能力包构造失败(不影响工具本身): ${err instanceof Error ? err.message : String(err)}`);
@@ -2420,8 +2627,8 @@ export async function apply(ctx) {
                 const dispose = ctx.tools.register(tool);
                 // 收下 disposer —— 下次(热刷/重装配)靠它做同名替换，不然只能重启宿主
                 if (typeof dispose === 'function')
-                    myDisposers.set(def.name, dispose);
-                ctx.logger?.info?.(`[channel-tools] 已注册扩展工具: ${def.name}`);
+                    myDisposers.set(scopedName, dispose);
+                ctx.logger?.info?.(`[channel-tools] 已注册扩展工具: ${scopedName}`);
                 diag(`扩展工具注册成功: ${def.name}`);
                 extDiag(`注册成功: ${def.name}`);
             }
@@ -2983,13 +3190,189 @@ export function syncContextTools(agentCtx, shouldHave, env, reminderText) {
 //                                      状态没变就一根手指都不动（不产生任何变更通知）。
 // =========================================================================
 /** 三个上下文工具的名字（restrict 用；必须与 ctxToolsRef() 里的 name 完全一致） */
-const CTX_TOOL_NAMES = ['context_memo', 'context_compact', 'context_drop'];
+/** 需要"按会话剪枝"的工具名（restrict 用）。
+ *  ⚠️ 2026-10-10：`qq_group_admin` 也在这里 —— 它跟 context_* 一样是**QQ 通道专属**，
+ *  全局注册后若不在非 QQ 会话里 deny 掉，会白占每个会话的 token（主人要求剪枝覆盖非 QQ 会话）。 */
+const CTX_TOOL_NAMES = ['context_memo', 'context_compact', 'context_drop', 'qq_group_admin'];
 /**
  * 把"三个上下文工具 + QQ 群管理工具"**全局注册一次、永不注销**。
  *
  * 幂等靠 globalThis 记句柄：跨热刷（模块重新 import）依然有效，避免热刷后重复注册被宿主判重名。
  * ⚠️ 可见性不在这里决定 —— 交给 {@link restrictContextTools} 按会话剪枝。
  */
+/**
+
+ * 把 `expose: 'all'` 的扩展工具注册到**插件根作用域**（2026-10-10 主人要的"暴露给全部会话"）。
+
+ *
+
+ * 为什么必须挂在这一层：扩展工具平时由 session-manager 在**每个 QQ 会话**上用 `agentCtx` 注册，
+
+ * 而 web / 终端等**非 QQ 会话不走那条链** ⇒ 压根看不到它们。想让它们跨通道，
+
+ * 只能挂到插件根 —— 宿主会让所有会话继承插件作用域的工具（`context_*` 三工具当年也是为此才改成全局）。
+
+ *
+
+ * 命名：`<name>@<人设 id>`，并且**每个账号实例各注册一份**（实例各有自己的 preset / appId / 账号数据）；
+
+ * 执行时由注册名里的 tag 反查账号包（见 buildWorkspaceQqPack）—— **名字即归属**。
+
+ *
+
+ * 幂等：句柄存 globalThis（跨热刷可见），已注册过的 `name@tag` 不重复注册。
+
+ * fail-soft：拿不到 tools 服务 / 没有实例 / 目录读不到，一律静默跳过，绝不影响主流程。
+
+ */
+export function ensureExtToolsGlobal(globalCtx) {
+    // 节流：本函数挂在 agent/pre-step（**每个 step** 都触发）—— 15 秒内不重复扫盘；
+    // 幂等保证：即便节流窗口外重复进入，已注册的 name@tag 也会被跳过。
+    extGlobDiag('enter ctxType=' + (globalCtx === null ? 'null' : typeof globalCtx));
+    const nowMs = Date.now();
+    if (nowMs - lastExtGlobAt < 15000)
+        return;
+    lastExtGlobAt = nowMs;
+    extGlobDiag('pass-throttle');
+    void (async () => {
+        try {
+            if (!globalCtx || typeof globalCtx !== 'object')
+                return;
+            // ★ 2026-10-10 关键修复：必须拿**插件根 ctx**。
+            //   证据：主人日志里 context_* + qq_group_admin + 人家的两个工具被**一起移除** ——
+            //   说明它们其实都挂在**会话作用域**上（会话一换就没了），也就是说 this.ctx 不是根。
+            //   cordis 的 ctx.root 才是根作用域；拿不到就退回原值（行为不变）。
+            const rootCtx = ((globalCtx?.root) ?? globalCtx);
+            extGlobDiag('root=' + (rootCtx === globalCtx ? 'same-as-passed' : 'DIFFERS'));
+            const gctx = rootCtx;
+            let toolsObj;
+            try {
+                toolsObj = gctx.get?.('tools');
+            }
+            catch { /* ignore */ }
+            if (!toolsObj || typeof toolsObj.register !== 'function') {
+                extGlobDiag('FAIL 拿不到 tools 服务');
+                extDiag('[extglob] 拿不到 tools 服务, 跳过');
+                return;
+            }
+            // 实例清单：每个账号实例注册一份（tag = 人设 id）
+            const insts = [];
+            try {
+                for (const m of managersOf()) {
+                    const mm = m;
+                    const tag = instanceTagOfManager(mm);
+                    if (tag && mm.dataRoot)
+                        insts.push({ tag, dataRoot: String(mm.dataRoot), cwd: String(mm.cwd ?? '') });
+                }
+            }
+            catch { /* ignore */ }
+            extGlobDiag('instances=' + insts.length + ' :: ' + insts.map((x) => x.tag).join(','));
+            if (!insts.length) {
+                extGlobDiag('FAIL 暂无实例');
+                extDiag('[extglob] 暂无实例, 跳过');
+                return;
+            }
+            const g = globalThis;
+            if (!g.__qqbotExtToolsGlobal)
+                g.__qqbotExtToolsGlobal = new Map();
+            const reg = g.__qqbotExtToolsGlobal;
+            for (const inst of insts) {
+                let defs = [];
+                try {
+                    defs = await loadExtensionTools(inst.dataRoot, (gctx.logger ?? console));
+                }
+                catch {
+                    defs = [];
+                }
+                const exposed = defs.filter((d) => d.expose === 'all');
+                extGlobDiag('inst=' + inst.tag + ' defs=' + defs.length + ' exposeAll=' + exposed.length + ' names=' + defs.map((d) => d.name + (d.expose === 'all' ? '*' : '')).join('|'));
+                if (!exposed.length)
+                    continue;
+                for (const def of exposed) {
+                    // ⚠️ 2026-10-10 事故真凶：分隔符必须在 [a-zA-Z0-9_-] 之内 ——
+                    //   `@` 不在 LLM API 允许的工具名字符集里（^[a-zA-Z0-9_-]+$），
+                    //   一旦注册进去就是"每一轮请求都被拒"（机器人整体瘫痪）。故改用 `__`。
+                    const full = def.name + '__' + inst.tag;
+                    // ⚠️ 兜底闸门：工具名只允许 [a-zA-Z0-9_-]（LLM API 硬约束）——
+                    //   非法名一旦注册进工具表，**每一轮请求都会被 API 整轮拒绝**（2026-10-10 事故）。
+                    if (!/^[a-zA-Z0-9_-]+$/.test(full)) {
+                        extGlobDiag('SKIP illegal global name: ' + full);
+                        continue;
+                    }
+                    if (reg.has(full))
+                        continue;
+                    try {
+                        const tool = defineTool({
+                            name: full,
+                            description: def.description + ' (用户扩展工具 · ' + inst.tag + ')',
+                            parameters: def.inputSchema,
+                            output: {
+                                schema: {
+                                    type: 'object', additionalProperties: false,
+                                    properties: { ok: { type: 'boolean', required: true }, msg: { type: 'string', required: true } },
+                                },
+                                render: (_a, v) => [{ type: 'text', text: v.ok ? v.msg : ('失败: ' + v.msg) }],
+                            },
+                            async execute(args, exec) {
+                                // 账号包：按注册名里的 tag 反查（这就是"名字即归属"）
+                                let pack;
+                                try {
+                                    pack = buildWorkspaceQqPack(inst.tag, inst.dataRoot);
+                                }
+                                catch {
+                                    pack = undefined;
+                                }
+                                const env = {
+                                    cwd: inst.cwd || inst.dataRoot,
+                                    exec,
+                                    ctx: globalCtx,
+                                    logger: gctx.logger,
+                                    qq: pack,
+                                };
+                                // 若这一次调用恰好来自 QQ 会话，则会话级上下文优先（sender/replyTarget/manager 用当前会话的）
+                                try {
+                                    const sess = findSessionRec(channelOf(exec), exec);
+                                    if (sess) {
+                                        env.manager = sess.ch.manager;
+                                        env.sender = sess.ch.sender;
+                                        env.replyTarget = sess.rec.replyTarget;
+                                    }
+                                    else if (pack) {
+                                        env.sender = pack.sender;
+                                    }
+                                }
+                                catch { /* ignore */ }
+                                try {
+                                    const r = await def.run(args, env);
+                                    if (r && typeof r === 'object')
+                                        return { ok: r.ok === true, msg: String(r.msg ?? 'done') };
+                                    return { ok: true, msg: r === undefined || r === null ? 'done' : String(r) };
+                                }
+                                catch (err) {
+                                    return { ok: false, msg: err instanceof Error ? err.message : String(err) };
+                                }
+                            },
+                        });
+                        const d = toolsObj.register.call(toolsObj, tool);
+                        if (typeof d === 'function')
+                            reg.set(full, d);
+                        extGlobDiag('OK registered ' + full);
+                        extDiag('[extglob] 全局注册 ' + full);
+                        gctx.logger?.info?.('[channel-tools] 扩展工具已暴露给全部会话: ' + full);
+                    }
+                    catch (e) {
+                        extGlobDiag('FAIL register ' + full + ' :: ' + ((e instanceof Error ? e.message : String(e)) || '').slice(0, 200));
+                        extDiag('[extglob] 注册失败 ' + full + ': ' + ((e instanceof Error ? e.message : String(e)) || '').slice(0, 160));
+                    }
+                }
+            }
+        }
+        catch (e) {
+            extGlobDiag('EXCEPTION ' + ((e instanceof Error ? e.message : String(e)) || '').slice(0, 200));
+            extDiag('[extglob] 异常: ' + ((e instanceof Error ? e.message : String(e)) || '').slice(0, 160));
+        }
+    })();
+}
 export function ensureContextToolsGlobal(globalCtx) {
     try {
         if (!globalCtx || typeof globalCtx !== 'object')
